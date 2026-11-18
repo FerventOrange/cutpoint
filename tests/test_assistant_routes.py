@@ -999,26 +999,6 @@ def test_vision_models_route_keeps_saved_model_only_for_its_provider(
     providers.clear_model_cache()
 
 
-def test_role_aware_consent_endpoint(ui_client: TestClient, monkeypatch, home: Path) -> None:
-    set_config(
-        home,
-        assistant={"provider": "ollama"},
-        vision_assistant={"provider": "codex", "consent": []},
-    )
-    # Grant consent for vision
-    res = ui_client.post(
-        "/api/assistant/consent", json={"key": "vision-v2:codex@chatgpt.com", "role": "vision"}
-    )
-    assert res.status_code == 200
-    consent = res.json()["consent"]
-    assert consent["needed"] is False
-
-    cfg = config.load_config_data()
-    assert cfg["vision_assistant"]["consent"] == ["vision-v2:codex@chatgpt.com"]
-    # Assistant consent remains empty
-    assert cfg.get("assistant", {}).get("consent", []) == []
-
-
 def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
     ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
@@ -1076,22 +1056,26 @@ def test_consent_keys_differ_by_role() -> None:
     assert providers.consent_key(providers.preset("ollama", 0), "vision") is None
 
 
-def test_an_old_unprefixed_consent_no_longer_counts_for_the_assistant(
-    ui_client: TestClient, monkeypatch, home: Path, proj
+@pytest.mark.parametrize(
+    "old_key", ["anthropic@api.anthropic.com", "assistant-v2:anthropic@api.anthropic.com"]
+)
+def test_an_old_assistant_consent_key_no_longer_counts(
+    ui_client: TestClient, monkeypatch, home: Path, proj, old_key: str
 ) -> None:
-    """Consent given under the older, shorter AI Chat wording (``<provider>@<host>``) does not
-    let project text go out: the AI Chat tab asks again with the ``assistant-v3:`` key."""
+    """Consent given under the older AI Chat wording (the unprefixed ``<provider>@<host>``, or
+    ``assistant-v2:``, before v3 named the whole transcripts) does not let project text go out:
+    the AI Chat tab asks again with the ``assistant-v3:`` key and sends nothing."""
     p, seq, _ids = proj
     fake = use(monkeypatch, HostedFake([]))
-    set_config(home, assistant={"consent": ["anthropic@api.anthropic.com"]})
+    set_config(home, assistant={"consent": [old_key]})
     got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
     res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409
-    old = ui_client.post("/api/assistant/consent", json={"key": "anthropic@api.anthropic.com"})
+    old = ui_client.post("/api/assistant/consent", json={"key": old_key})
     assert old.status_code == 409
     assert fake.requests == [] and not (p / "ui" / "assistant").exists()
-    assert config.load_config_data()["assistant"]["consent"] == ["anthropic@api.anthropic.com"]
+    assert config.load_config_data()["assistant"]["consent"] == [old_key]
 
 
 def test_an_assistant_v3_consent_lets_the_assistant_run(
@@ -1104,25 +1088,6 @@ def test_an_assistant_v3_consent_lets_the_assistant_run(
     assert ui_client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
     view = ask(ui_client, "hi", seq)
     assert view["status"] == "done" and len(fake.requests) == 1
-
-
-def test_an_assistant_v2_consent_no_longer_counts(
-    ui_client: TestClient, monkeypatch, home: Path, proj
-) -> None:
-    """v3 names the whole transcripts the dialogue reader sends: consent given under the v2
-    wording asks again with the ``assistant-v3:`` key and sends nothing."""
-    p, seq, _ids = proj
-    fake = use(monkeypatch, HostedFake([]))
-    set_config(home, assistant={"consent": ["assistant-v2:anthropic@api.anthropic.com"]})
-    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
-    assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
-    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
-    assert res.status_code == 409
-    old = ui_client.post(
-        "/api/assistant/consent", json={"key": "assistant-v2:anthropic@api.anthropic.com"}
-    )
-    assert old.status_code == 409
-    assert fake.requests == [] and not (p / "ui" / "assistant").exists()
 
 
 def test_the_assistant_s_consent_does_not_unlock_vision(

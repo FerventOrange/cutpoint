@@ -59,6 +59,37 @@ test('the model picker keeps a model the list lacks (so opening never changes it
   assert.equal(r.options[1].text, 'gpt-4o preview (gpt-4)', 'a name that merely begins with the id text still shows the id');
 });
 
+test('the model picker: default and placeholder, option order, saved model with no list, a typed id', () => {
+  const listed = [{ id: 'claude-a', name: 'Claude A' }, { id: 'claude-b', name: 'claude-b' }];
+  const ids = (r) => r.options.map((o) => (o.value === u.AI_OTHER ? 'OTHER' : o.value));
+  let r = u.aiModelChoices('claude-b', listed, { placeholder: 'claude-sonnet-5-5' });
+  assert.deepEqual(r.options.map((o) => o.text),
+    ['Default (claude-sonnet-5-5)', 'Claude A (claude-a)', 'claude-b', 'Other model…']);
+  assert.equal(r.value, 'claude-b');
+  assert.equal(u.aiModelChoices('', listed).value, '', 'an empty saved model is the default');
+  assert.deepEqual(u.aiModelChoices('', [], { required: true }).options.map((o) => o.text),
+    ['Choose a model', 'Other model…']);
+
+  r = u.aiModelChoices('claude-old', listed, { fallback: ['claude-x'] });
+  assert.deepEqual(ids(r), ['', 'claude-old', 'claude-a', 'claude-b', 'OTHER'], 'the list wins over the fallback');
+
+  const presets = ['claude-sonnet-5-5', 'claude-opus-5-5'];
+  r = u.aiModelChoices('my-model:7b', null, { fallback: presets });
+  assert.equal(r.value, 'my-model:7b');
+  assert.deepEqual(r.options.map((o) => o.text),
+    ['Default', 'my-model:7b', 'claude-sonnet-5-5', 'claude-opus-5-5', 'Other model…']);
+  r = u.aiModelChoices('claude-opus-5-5', null, { fallback: presets });
+  assert.equal(r.value, 'claude-opus-5-5');
+  assert.deepEqual(ids(r), ['', ...presets, 'OTHER'], 'a preset model adds no extra option');
+
+  for (const typed of ['new-model', '']) {
+    r = u.aiModelChoices(typed, listed, { typing: true });
+    assert.equal(r.value, u.AI_OTHER);
+    assert.deepEqual(ids(r), ['', 'claude-a', 'claude-b', 'OTHER'], 'no extra option while typing');
+  }
+  assert.equal(u.aiModelChoices('claude-a', listed, { typing: true }).value, 'claude-a', 'an id the list has is chosen in the list');
+});
+
 test('colorNote says how many clips were graded and why the others were not; a LUT or Strength 0 says nothing', () => {
   const clip = (color) => ({ color });
   const cases = [

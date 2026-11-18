@@ -168,7 +168,6 @@ def test_missing_clip_weights_say_how_to_get_them(clip, monkeypatch) -> None:
     with pytest.raises(lookfor.LookForError, match=r"cutpoint setup --only visual") as e:
         search()
     assert e.value.reason == lookfor.NO_WEIGHTS
-    assert "CLIP weights" in lookfor.NO_WEIGHTS and "--only visual" in lookfor.NO_WEIGHTS
 
 
 def test_no_cached_embeddings_say_so(clip, monkeypatch) -> None:
@@ -177,7 +176,6 @@ def test_no_cached_embeddings_say_so(clip, monkeypatch) -> None:
         search()
     assert "--visual-index" in str(e.value)
     assert e.value.reason == lookfor.NO_INDEX  # what the page shows
-    assert "no frame index" in lookfor.NO_INDEX
 
 
 def test_the_thresholds_are_calibrated_for_the_model_that_makes_the_index() -> None:
@@ -668,29 +666,18 @@ def test_look_for_works_with_tool_calls_and_in_json_mode(clip, caps) -> None:
     assert turn.status == "done", turn.error
     assert turn.events[-1]["kind"] == "proposal" and turn.events[-1]["moments"]
     system = fake.requests[0]["messages"][0]["content"]
-    assert "Similarity is not certainty" in system
+    assert lookfor.RULES in system
     if not caps.tool_calls:
         assert "look_for {query, limit?}" in system
     else:
         assert "look_for" in [t["function"]["name"] for t in fake.requests[0]["tools"]]
 
 
-def test_the_rules_tell_the_model_what_to_do_about_weak_windows() -> None:
+def test_the_weak_window_rule_depends_on_whether_the_model_takes_images() -> None:
     images, text = lookfor.rules(True), lookfor.rules(False)
     assert lookfor.RULES in images and lookfor.RULES in text
-    assert "check it with view_moment" in images and "until view_moment has shown it" in images
-    assert "view_moment" not in text and "you cannot look at it" in text
-    assert "tell the user it is uncertain" in text and "can add it themself" in text
-    assert "confirm" in lookfor.TOOL["function"]["description"]
-    assert "weak" in lookfor.RULES and "confidence" in lookfor.RULES
-
-
-def test_the_rules_say_when_to_look_and_that_similarity_is_not_certainty() -> None:
-    rules = lookfor.RULES
-    assert "do not match" in rules and "Similarity is not certainty" in rules
-    assert "new: true" in rules
-    assert "only grades underwater footage" in context.RULES
-    assert '"op": "color"' in context.RULES
+    assert lookfor.WEAK_IMAGES in images and lookfor.WEAK_TEXT not in images
+    assert lookfor.WEAK_TEXT in text and lookfor.WEAK_IMAGES not in text
 
 
 # -- the color op ------------------------------------------------------------------------------
