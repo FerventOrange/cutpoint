@@ -133,7 +133,7 @@ def test_captions_filter_escapes_the_ass_file_name(tmp_path, monkeypatch):
     ],
 )
 def test_negative_export_options_are_a_usage_error(capsys, argv):
-    """A232: a negative ``--extend-start`` moved the in point into the pick."""
+    """A232: negative export options (e.g. ``--tail-min``) were accepted; all are usage errors now."""
     with pytest.raises(SystemExit) as exc:
         cli.main(argv)
     assert exc.value.code == 2
