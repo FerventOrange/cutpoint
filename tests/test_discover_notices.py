@@ -26,25 +26,17 @@ from cutpoint.events.discover import (
 from cutpoint.events.killfeed import OcrParams
 from cutpoint.events.regions import Region, bigtext_region, preset_from_dict
 from hud_fixtures import verbfeed, write_preset
+from ocr_helpers import FEED_NAMES
+from ocr_helpers import box as _box
+from ocr_helpers import text_frame as _frame
 
-NAMES = ["Ash", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
+NAMES = FEED_NAMES
 BURSTS = 40
-
-
-def _box(text: str, x: int, y: int, w: int = 160, h: int = 20) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
 
 
 def _centred(text: str, cx: int, y: int, h: int = 20) -> dict[str, Any]:
     w = 14 * len(text)
     return _box(text, cx - w // 2, y, w=w, h=h)
-
-
-def _frame(source: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"id": f"{source}@{b * 60 + k * 1.5:.1f}", "source": source, "burst": b, "k": k} | {
-        "frame": f"b{b:03d}_{k}.jpg",
-        "boxes": boxes,
-    }
 
 
 def _hud(b: int, k: int) -> list[dict[str, Any]]:

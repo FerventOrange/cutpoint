@@ -3,6 +3,7 @@ texts)."""
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -10,14 +11,14 @@ import pytest
 
 from cutpoint.events import discover
 from cutpoint.events.discover import DiscoverParams, cluster_regions
+from ocr_helpers import box, text_frame
 
 NAMES = ["Alder", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
 ACTIONS = ["Crate", "Relay", "Beacon", "Gate", "Drone", "Flag"]
 DEEDS = ["Opened", "Spotted", "Sealed", "Tagged", "Cleared", "Held"]
 
 
-def _box(text: str, x: int, y: int, w: int = 160, h: int = 24) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
+_box = partial(box, h=24)  # this file's boxes are 24 px high
 
 
 def _frame(b: int, k: int) -> dict[str, Any]:
@@ -35,10 +36,7 @@ def _frame(b: int, k: int) -> dict[str, Any]:
         label = f"{ACTIONS[n % 6]} {DEEDS[n // 6 % 6]}"
         popup = [_box(f"+{10 * (k + 1)}", 1790, 570, w=40), _box(label, 1700, 596, w=130)]
     boxes = [_box("HEALTH", 20, 1040, w=100), *feed, *popup]
-    return {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "source": "rec.mp4", "burst": b, "k": k} | {
-        "frame": f"b{b:03d}_{k}.jpg",
-        "boxes": boxes,
-    }
+    return text_frame("rec.mp4", b, k, boxes)
 
 
 FRAMES = [_frame(b, k) for b in range(40) for k in range(4)]
@@ -77,14 +75,7 @@ def _side_feed_frame(b: int, k: int, base: int, pitch: int) -> dict[str, Any]:
         name = f"{NAMES[m % 10]}{NAMES[m // 10 % 10]} {NAMES[m % 7]}{NAMES[m // 7 % 10]}"
         boxes.append(_box(name, 1680, y))
         boxes.append(_box(f"+{100 + 50 * (m % 3)}", 1844, y + 10, w=44, h=14))
-    return {
-        "id": f"rec.mp4@{b * 60 + k * 1.5:.1f}",
-        "source": "rec.mp4",
-        "burst": b,
-        "k": k,
-        "frame": f"b{b:03d}_{k}.jpg",
-        "boxes": boxes,
-    }
+    return text_frame("rec.mp4", b, k, boxes)
 
 
 @pytest.mark.parametrize(("base", "pitch"), [(40, 28), (44, 30), (47, 32), (50, 36)])

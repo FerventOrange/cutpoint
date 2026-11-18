@@ -13,18 +13,11 @@ from cutpoint import progress
 from cutpoint.events import discover, pipeline
 from cutpoint.events.killfeed import OcrParams
 from events_fakes import stub_run_events
+from ocr_helpers import progress_lines as _lines
 
 
 class _Stop(Exception):
     pass
-
-
-def _lines(capsys: pytest.CaptureFixture[str]) -> list[dict]:
-    return [
-        json.loads(x.removeprefix("PROGRESS "))
-        for x in capsys.readouterr().err.splitlines()
-        if x.startswith("PROGRESS ")
-    ]
 
 
 @pytest.fixture
