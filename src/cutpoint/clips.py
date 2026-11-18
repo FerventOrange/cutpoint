@@ -922,7 +922,11 @@ def render_clips(
                 end,
                 max(0.0, tail.extension),
                 tail.reason
-                + (", trimmed by read error" if read_err and read_err["end"] < tail.end else ""),
+                + (
+                    ", trimmed by read error"
+                    if read_err and read_err.get("failure_time") is not None
+                    else ""
+                ),
                 f" pad -{plan.pad_rec['applied']['start']:.2f}/+{plan.pad_rec['applied']['end']:.2f}"
                 if plan.pad_rec
                 else "",

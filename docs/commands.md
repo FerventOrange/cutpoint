@@ -1694,7 +1694,7 @@ or partial clip. The next `clips` or `extend` run into that folder (the same com
 `cutpoint resume <project>`) takes over every finished clip whose name, source, in and out
 points, format, crop, grade, audio fade and peak compression are unchanged, encodes only the
 others and removes the folder; a run with other clips removes it and encodes them all. 360
-clips and clips trimmed by a read error are always encoded again. Temporary clips (`assemble <project>`, `edit --no-keep-clips`)
+clips and clips with a `read_error` record (trimmed, or complete with ffmpeg read-error messages) are always encoded again. Temporary clips (`assemble <project>`, `edit --no-keep-clips`)
 and an export straight into an empty drive root or mount point keep no resume folder. Delete
 the folder by hand to start over; it only holds clips Cutpoint exported.
 
@@ -1850,9 +1850,10 @@ Notes:
   A source without a cached transcript gets no `.srt` (one INFO line); a transcript without
   speech in the clip gives an empty one. The manifest records the file (`srt`), and `--force`
   replaces only the `.srt` files the old manifest lists.
-- Each export is checked for silent truncation (an ffmpeg read error, or a clip more than
-  0.3 s short). The read is retried once; a clip still short is re-encoded to end cleanly, with a
-  `read_error` record in the manifest.
+- Each export is checked for silent truncation (a clip more than 0.3 s short). The read is
+  retried once; a clip still short is re-encoded to end cleanly, with a `read_error` record in
+  the manifest (`failure_time` set). A clip of full length is kept even when ffmpeg printed read
+  errors; the `read_error` record then has `failure_time` null and only the messages.
 
 ## extend
 

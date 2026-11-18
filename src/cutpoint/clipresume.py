@@ -7,7 +7,7 @@ staging folder is kept as the hidden ``.<folder>.cutpoint-resume`` next to the c
 (:func:`cutpoint.folders.resume_path`). The next export into that folder moves the clips whose
 name, key and size match its own plan into its staging folder and encodes only the rest; the
 resume folder is then removed, so a run with another plan deletes it. 360 clips and clips
-trimmed by a read error are never taken over. Nothing in the resume folder is ever visible in the clips folder itself.
+with a read_error record (trimmed, or complete with ffmpeg read-error messages) are never taken over. Nothing in the resume folder is ever visible in the clips folder itself.
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class ClipResume:
             c = done.get(name) if isinstance(done, dict) else None
             f = folder / name
             # the clip as it was recorded finished: a partial one is never listed
-            # as extend's _reusable: a clip trimmed by a read error is exported again
+            # as extend's _reusable: a clip with a read_error record (trimmed or not) is exported again
             if not (isinstance(c, dict) and c.get("key") == key and f.is_file()):
                 continue
             if c.get("read_error"):

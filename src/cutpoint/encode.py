@@ -873,15 +873,18 @@ def export_clip_checked(
     """Frame-accurate re-encode of [start, end] into ``out`` (:func:`_export`: ``audio_fade``,
     ``peaks`` and ``grade`` as there), guarded against silent truncation by read errors.
 
-    If ffmpeg reports a read error or the clip comes out short, the read is
-    retried once (marginal sectors sometimes read on a second try). If it is
-    still short, the clip is re-encoded to end just before the failure so it
+    If the clip comes out short, the read is retried once (marginal sectors
+    sometimes read on a second try). A clip of full length is kept even when
+    ffmpeg printed read-error lines (it is complete; the messages are recorded).
+    If it is still short, the clip is re-encoded to end just before the failure so it
     ends cleanly instead of with mismatched audio/video. Every attempt writes to
     the temporary name; ``out`` only appears with the final result.
 
     Returns:
-        None if the clip is complete, else a record for manifest.json with
-        ``failure_time``, ``messages``, ``retried`` and the ``end`` used.
+        None if the clip is complete and ffmpeg printed no read error, else a record for
+        manifest.json with ``failure_time``, ``messages``, ``retried`` and the ``end`` used.
+        ``failure_time`` is None when the clip is complete (``end`` is the requested end);
+        otherwise the clip was trimmed to ``end``.
     """
     with folders.atomic_output(out) as part:
         return _export_checked(
@@ -912,11 +915,21 @@ def _export_checked(
         )
         got = probe(part).duration
         found = [m.strip() for m in READ_ERROR_RE.findall(text)]
-        if not found and got >= expected - CLIP_SHORT_S:
+        long_enough = got >= expected - CLIP_SHORT_S
+        if not found and long_enough:
             if attempt == 1:
                 return None
             logger.warning("  %s: re-read succeeded on retry", out.name)
             return {"failure_time": None, "messages": messages, "retried": True, "end": end}
+        if long_enough:  # complete, but ffmpeg reported read errors inside it: keep it
+            messages = list(dict.fromkeys(messages + found))[:5]
+            logger.warning(
+                "%s from %s is complete but ffmpeg reported read errors inside it: %s",
+                out.name,
+                src.name,
+                "; ".join(messages),
+            )
+            return {"failure_time": None, "messages": messages, "retried": attempt == 2, "end": end}
         messages = list(dict.fromkeys(messages + found))[:5]
         fail_t = start + got
         logger.warning("!" * 78)
