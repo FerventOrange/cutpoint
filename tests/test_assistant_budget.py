@@ -26,7 +26,7 @@ from assistant_helpers import (
     rs_text,
     run,
 )
-from cutpoint.assistant import context, providers, session, watch
+from cutpoint.assistant import context, providers, session, toolcalls, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
     OllamaProvider,
@@ -103,7 +103,7 @@ def test_openai_tool_call_cut_off_is_truncated_not_run(monkeypatch) -> None:
     msg = {"role": "assistant", "content": "", "tool_calls": calls}
     Wire(monkeypatch, _Resp({"choices": [{"message": msg, "finish_reason": "length"}]}))
     with pytest.raises(TruncatedError):
-        OpenAIProvider(OPENAI_COMPAT, "m", 0, KEY).chat(HI, tools=session.TOOLS)
+        OpenAIProvider(OPENAI_COMPAT, "m", 0, KEY).chat(HI, tools=toolcalls.TOOLS)
 
 
 def test_openai_finish_reason_stop_is_a_whole_reply(monkeypatch) -> None:
@@ -391,9 +391,9 @@ def test_a_long_turn_sends_old_results_out_of_the_request_itself() -> None:
 
 def test_budget_counts_the_tool_definitions_and_keeps_room_for_a_reply() -> None:
     plain = context.budget(8192)
-    with_tools = context.budget(8192, session.TOOLS)
+    with_tools = context.budget(8192, toolcalls.TOOLS)
     assert plain.tools == 0
-    assert with_tools.tools == int(len(json.dumps(session.TOOLS)) / context.CHARS_PER_TOKEN)
+    assert with_tools.tools == int(len(json.dumps(toolcalls.TOOLS)) / context.CHARS_PER_TOKEN)
     assert with_tools.tools > 500 and with_tools.chars < plain.chars
     reserve = max(context.REPLY_TOKENS, int(8192 * context.REPLY_SHARE))
     assert reserve == 2457 and plain.chars == 7384  # the fit limit less one result, not 14337
@@ -457,7 +457,7 @@ def test_at_8192_one_small_sheet_leaves_the_budget_at_its_floor() -> None:
 def test_the_fit_cap_counts_the_tools_and_sheets_as_size_counts_them() -> None:
     """F13: in the fit cap a sheet takes what _fit counts it as (CHARS_PER_TOKEN), not
     FIT_CHARS_PER_TOKEN."""
-    b = context.budget(20000, session.TOOLS, images=2, image_tokens=750)
+    b = context.budget(20000, toolcalls.TOOLS, images=2, image_tokens=750)
     fits = int((20000 - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN)
     fits -= int((b.tools + 2 * 750) * context.CHARS_PER_TOKEN) + context.MAX_RESULT_CHARS
     assert b.chars == fits
@@ -466,22 +466,22 @@ def test_the_fit_cap_counts_the_tools_and_sheets_as_size_counts_them() -> None:
 def test_the_8192_budget_is_what_the_fit_allows_less_the_tools_and_one_result() -> None:
     plain = context.budget(8192)
     assert plain.chars == int((8192 - context.REPLY_TOKENS) * context.FIT_CHARS_PER_TOKEN) - 6000
-    with_sheets = context.budget(8192, session.TOOLS, images=1, image_tokens=750)
+    with_sheets = context.budget(8192, toolcalls.TOOLS, images=1, image_tokens=750)
     assert with_sheets.chars == int(8192 // 4 * context.CHARS_PER_TOKEN)  # the floor
     assert with_sheets.chars <= plain.chars
 
 
 def test_the_budget_for_a_large_or_hosted_context_is_not_cut_by_the_fit_limit() -> None:
     for tokens in (50000, 200000):
-        b = context.budget(tokens, session.TOOLS, images=4)
+        b = context.budget(tokens, toolcalls.TOOLS, images=4)
         reserve = max(context.REPLY_TOKENS, int(tokens * context.REPLY_SHARE))
         free = tokens - reserve - b.tools - 4 * context.IMAGE_TOKENS
         assert b.chars == int(free * context.CHARS_PER_TOKEN)
 
 
 def test_budget_tight_halves_the_prompt_and_the_turns() -> None:
-    normal = context.budget(32768, session.TOOLS)
-    tight = context.budget(32768, session.TOOLS, tight=True)
+    normal = context.budget(32768, toolcalls.TOOLS)
+    tight = context.budget(32768, toolcalls.TOOLS, tight=True)
     assert tight.tight and not normal.tight
     assert tight.chars == normal.chars // 2
     assert tight.turns == normal.turns // 2 and tight.moments == normal.moments
@@ -528,7 +528,7 @@ def test_native_text_naming_a_moment_gets_one_nudge_and_may_then_propose() -> No
     assert len(fake.requests) == 2 and len(nudges(fake)) == 1
     assert [e["kind"] for e in turn.events] == ["proposal"]
     assert turn.events[0]["summary"] == "Add the laugh"
-    assert fake.requests[1]["tools"] == session.TOOLS  # the nudged request can still propose
+    assert fake.requests[1]["tools"] == toolcalls.TOOLS  # the nudged request can still propose
 
 
 def test_native_an_advice_question_answered_with_example_moment_ids_is_not_nudged() -> None:

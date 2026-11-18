@@ -15,7 +15,7 @@ import pytest
 from assistant_helpers import CANDS, SEQ, A, B, FakeProvider, call, durations, run
 from conftest import media_info, needs_ffmpeg, write
 from cutpoint import clips, planning, sources, ui
-from cutpoint.assistant import context, ops, session, words
+from cutpoint.assistant import context, ops, prompting, proposing, session, toolcalls, words
 from cutpoint.assistant.providers import Capabilities, Reply
 from cutpoint.ffmpeg_utils import probe
 
@@ -628,7 +628,7 @@ def test_owner_scenario_find_where_she_says_a_in_json_mode() -> None:
     turn = run(fake, "Find me a clip where she says 'A'", proj=chat_project())
     assert turn.status == "done", turn.error
     first = fake.requests[0]
-    assert first["tools"] is None and first["schema"] == session.JSON_SCHEMA
+    assert first["tools"] is None and first["schema"] == toolcalls.JSON_SCHEMA
     assert words.JSON_TOOL in first["messages"][0]["content"]
     result = fake.requests[1]["messages"][-1]["content"]
     assert result.startswith("find_words result:\n<<<DATA words>>>") and "[A]" in result
@@ -716,8 +716,8 @@ def test_a_numbered_name_is_never_the_name_of_another_source() -> None:
     table = context.MomentTable([], [])
     table.durations = dict.fromkeys(paths, 60.0)
     for name, want in (("a.mp4 (2)", real), ("a.mp4 (3)", DAY2), ("a.mp4", DAY1)):
-        assert session._source_of(name, table, 1) == (want, "")
-    assert session._source_of("day2/a.mp4", table, 1)[0] is None  # never shown to it
+        assert proposing._source_of(name, table, 1) == (want, "")
+    assert proposing._source_of("day2/a.mp4", table, 1)[0] is None  # never shown to it
 
 
 def test_the_names_follow_the_table_s_locality_and_rename_an_earlier_reply() -> None:
@@ -727,7 +727,7 @@ def test_the_names_follow_the_table_s_locality_and_rename_an_earlier_reply() -> 
     assert table.file(DAY2) == "day2/a.mp4"
     # a hosted model's earlier reply: its numbered name is one the local model can give back
     assert table.other_names() == {"a.mp4 (2)": "day2/a.mp4"}
-    assert session._without_names("a.mp4 (2)", table.other_names()) == "day2/a.mp4"
+    assert prompting._without_names("a.mp4 (2)", table.other_names()) == "day2/a.mp4"
     table.local = False  # the user switched to a hosted model: no cached folder name
     assert table.file(DAY2) == "a.mp4 (2)"
     renamed = table.other_names()
@@ -739,7 +739,7 @@ def test_the_names_follow_the_table_s_locality_and_rename_an_earlier_reply() -> 
     }
     said = "Cut day2/a.mp4 at 2 s, then day1\\a.mp4, not xday2/a.mp4."
     want = "Cut a.mp4 (2) at 2 s, then a.mp4, not xday2/a.mp4."
-    assert session._without_names(said, renamed) == want
+    assert prompting._without_names(said, renamed) == want
 
 
 def test_a_source_at_a_drive_root_renames_no_path_that_ends_in_its_name() -> None:
@@ -749,7 +749,7 @@ def test_a_source_at_a_drive_root_renames_no_path_that_ends_in_its_name() -> Non
     renamed = table.other_names()
     assert "/a.mp4" not in renamed and "\\a.mp4" not in renamed
     said = "It is clips/a.mp4, from day2/a.mp4."
-    assert session._without_names(said, renamed) == "It is clips/a.mp4, from a.mp4 (2)."
+    assert prompting._without_names(said, renamed) == "It is clips/a.mp4, from a.mp4 (2)."
 
 
 def test_a_reply_names_match_whatever_the_case_and_show_the_name_as_is() -> None:
@@ -760,11 +760,11 @@ def test_a_reply_names_match_whatever_the_case_and_show_the_name_as_is() -> None
     renamed = table.other_names()
     said = "Use B\\Clip.mp4 and b/CLIP.MP4, then C/clip.mp4; not xb/clip.mp4."
     want = "Use Clip.mp4 and Clip.mp4, then Clip.mp4 (2); not xb/clip.mp4."
-    assert session._without_names(said, renamed) == want
+    assert prompting._without_names(said, renamed) == want
     # names that differ only in case keep their own shown name
     table.durations = {"/v/B/clip.mp4": 60.0, "/v/b/clip.mp4": 60.0}
     said = "B/clip.mp4 and b/clip.mp4"
-    assert session._without_names(said, table.other_names()) == "clip.mp4 and clip.mp4 (2)"
+    assert prompting._without_names(said, table.other_names()) == "clip.mp4 and clip.mp4 (2)"
 
 
 def test_a_case_pair_unicode_maps_differently_never_raises_nor_leaks_the_folder() -> None:
@@ -772,7 +772,7 @@ def test_a_case_pair_unicode_maps_differently_never_raises_nor_leaks_the_folder(
     table.durations = {"/v/\u0130zmir/clip.mp4": 60.0, "/v/b/clip.mp4": 60.0}
     table.local = False
     # re.IGNORECASE matches "I" to the dotted capital I; str.lower() does not map them alike
-    assert session._without_names("see Izmir/clip.mp4", table.other_names()) == "see clip.mp4"
+    assert prompting._without_names("see Izmir/clip.mp4", table.other_names()) == "see clip.mp4"
 
 
 ROOT, UNDER = "C:\\clip.mp4", "C:\\v\\a\\clip.mp4"  # Windows paths: not keys of "/clip.mp4"
@@ -796,12 +796,12 @@ def test_a_local_model_picks_the_source_at_a_drive_root_by_the_name_it_is_shown(
     table.local = True
     assert [table.file(p) for p in table.durations] == ["C:/clip.mp4", "a/clip.mp4"]
     for p in table.durations:
-        assert session._source_of(table.file(p), table, 1) == (p, "")
-    assert session._source_of("/clip.mp4", table, 1)[0] is None  # not what it was shown
+        assert proposing._source_of(table.file(p), table, 1) == (p, "")
+    assert proposing._source_of("/clip.mp4", table, 1)[0] is None  # not what it was shown
     table.durations = {ROOT: 60.0, "/clip.mp4": 60.0}  # a POSIX root twin keeps "/clip.mp4"
     assert [table.file(p) for p in table.durations] == ["C:/clip.mp4", "/clip.mp4"]
     for p in table.durations:
-        assert session._source_of(table.file(p), table, 1) == (p, "")
+        assert proposing._source_of(table.file(p), table, 1) == (p, "")
     told = [{"op": "add_range", "file": "C:/clip.mp4", "start": 1.0, "end": 1.1}]
     fake = FakeProvider([call("propose_edit", summary="x", ops=told)])
     turn = run(fake, "add it", proj=_root_twins())
@@ -815,8 +815,8 @@ def test_a_root_without_a_drive_is_shown_with_a_slash_and_resolves() -> None:
     table.local = True
     assert table.file("\\clip.mp4") == "/clip.mp4"
     for name in ("/clip.mp4", "\\clip.mp4"):
-        assert session._source_of(name, table, 1) == ("\\clip.mp4", "")
-    assert session._source_of("a/clip.mp4", table, 1) == (UNDER, "")
+        assert proposing._source_of(name, table, 1) == ("\\clip.mp4", "")
+    assert proposing._source_of("a/clip.mp4", table, 1) == (UNDER, "")
 
 
 def test_drive_roots_of_two_drives_are_told_apart_and_the_drive_stays_from_a_hosted_model() -> None:
@@ -826,13 +826,13 @@ def test_drive_roots_of_two_drives_are_told_apart_and_the_drive_stays_from_a_hos
     table.local = True
     assert [table.file(p) for p in table.durations] == ["C:/clip.mp4", "D:/clip.mp4"]
     for p in table.durations:
-        assert session._source_of(table.file(p), table, 1) == (p, "")
+        assert proposing._source_of(table.file(p), table, 1) == (p, "")
     assert table.other_names() == {"clip.mp4 (2)": "D:/clip.mp4"}
     table.local = False
     assert [table.file(p) for p in table.durations] == ["clip.mp4", "clip.mp4 (2)"]
     renamed = table.other_names()
     said = "Cut C:/clip.mp4 and D:\\clip.mp4."
-    assert session._without_names(said, renamed) == "Cut clip.mp4 and clip.mp4 (2)."
+    assert prompting._without_names(said, renamed) == "Cut clip.mp4 and clip.mp4 (2)."
 
 
 def test_a_hosted_model_picks_either_twin_of_a_drive_root_by_its_shown_name() -> None:
@@ -840,7 +840,7 @@ def test_a_hosted_model_picks_either_twin_of_a_drive_root_by_its_shown_name() ->
     table.durations = {ROOT: 60.0, UNDER: 60.0}
     table.local = False
     for name, want in (("clip.mp4", ROOT), ("clip.mp4 (2)", UNDER)):
-        assert session._source_of(name, table, 1) == (want, "")
+        assert proposing._source_of(name, table, 1) == (want, "")
     told = [{"op": "add_range", "file": "clip.mp4 (2)", "start": 2.0, "end": 2.1}]
     turn = run(Hosted([call("propose_edit", summary="x", ops=told)]), "add", proj=_root_twins())
     assert turn.status == "done", turn.error

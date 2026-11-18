@@ -8,7 +8,7 @@ import json
 
 from assistant_helpers import FakeProvider, call, durations
 from cutpoint import ui
-from cutpoint.assistant import context, session
+from cutpoint.assistant import context, session, toolcalls
 
 A, B = "/v/a.mp4", "/v/b.mp4"
 SKI = {  # an action-cam candidate's signals: the grids' maximum over the clip, 0-1
@@ -277,7 +277,7 @@ def test_the_rules_and_tool_say_to_use_the_visual_fields_before_asking() -> None
     assert "before asking the user for moment ids" in rules
     msgs = context.build_messages(table(), [], "hi", context.budget(8192))
     assert msgs[0]["content"] == rules
-    find = next(t for t in session.TOOLS if t["function"]["name"] == "find_moments")
+    find = next(t for t in toolcalls.TOOLS if t["function"]["name"] == "find_moments")
     assert "cue names" in find["function"]["description"]
 
 
