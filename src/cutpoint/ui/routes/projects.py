@@ -159,12 +159,17 @@ def get_project(request: Request, pid: str):
     listing, source_error = sources.listing(p)
     for s in listing:
         # Never probes: 200 sources took 11 s of ffprobe. The page prepares the one it plays.
-        status, proxied, done = media.cached_view(p, s["path"])
-        ready, pending = media.windows_of(p, s["path"])
-        failed = media.failed_windows(p, s["path"])
+        key = media.key(remap_source(s["path"]))  # one stat of the source for all three
+        if key is None:  # missing: what the three say, without checking it again
+            status, proxied, done = "failed", False, None
+            ready, pending, failed = [], [], []
+        else:
+            status, proxied, done = media.cached_view(p, s["path"], key)
+            ready, pending = media.windows_of(p, s["path"], key)
+            failed = media.failed_windows(p, s["path"], key)
         duration = s["duration"]
         if duration is None and (ready or pending):  # the page needs it to play windows
-            duration = media.probed_duration(s["path"])
+            duration = media.probed_duration(s["path"], key)
         found.append(
             {
                 "id": s["id"],

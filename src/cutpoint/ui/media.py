@@ -78,6 +78,9 @@ PROXY_PRUNE_GRACE_S = 3600.0
 # while a source cannot be read, a proxy or window that names no other source goes only once
 # it has been idle this long (a drive that stays offline must not keep them forever)
 PROXY_OFFLINE_PRUNE_S = 30 * 86400.0
+# A frames folder over FRAME_CACHE_MAX stills is evicted to this share of the cap below it, so
+# the next evictions (each stats every still) wait for that many new stills
+FRAME_EVICT_SHARE = 0.05
 # a ``key=value`` line of ffmpeg's ``-progress`` output (frame=, out_time_us=, progress=...)
 PROXY_PROGRESS_LINE = re.compile(r"([a-z0-9_]+)= *(\S*)")  # bitrate= 4.1kbits/s
 
@@ -221,6 +224,9 @@ class Media:
         # key -> (browser plays it as is, duration, audio tracks, preview_filter of a proxy)
         # or None
         self.probed: dict[str, tuple[bool, float, int, str] | None] = {}
+        # key -> set once its probe ends: the one ffprobe a key runs at a time (see info)
+        self.probing: dict[str, threading.Event] = {}
+        self.probe_lock = threading.Lock()  # guards ``probing`` only, never held while probing
         # (project, key) -> "preparing" | "failed": each project builds its own proxy file
         self.proxies: dict[tuple[Path, str], str] = {}
         # (project, key) -> share of its whole proxy encoded, 0-1
@@ -275,24 +281,44 @@ class Media:
     def info(self, real: Path, key: str) -> tuple[bool, float, int, str] | None:
         """``(browser plays it as is, duration, audio tracks, colour filter of its proxy)``, or
         None if unreadable. The filter is :func:`~cutpoint.encode.preview_filter`'s, "" for a
-        source that plays as is."""
-        if key not in self.probed:
+        source that plays as is. One ffprobe per key: concurrent callers of a key not probed yet
+        wait for the first one's result (no lock is held while it probes)."""
+        while key not in self.probed:
+            with self.probe_lock:
+                gate = self.probing.get(key)
+                mine = gate is None and key not in self.probed
+                if mine:
+                    gate = self.probing[key] = threading.Event()
+            if gate is None:  # probed meanwhile
+                break
+            if not mine:
+                gate.wait()  # then probed, or its probe raised: this caller probes
+                continue
             try:
-                i = probe(real)
-                ok = (
-                    real.suffix.lower() in BROWSER_CONTAINERS
-                    and i.vcodec in BROWSER_VIDEO
-                    and (i.vcodec != "h264" or i.pix_fmt in {"yuv420p", "yuvj420p"})
-                    and i.acodec in BROWSER_AUDIO
-                    and i.audio_streams <= 1  # a browser plays one track; exports mix them all
-                )
-                color = preview_filter(i)
-                self.still_color[key] = still_filter(i)
-                self.fragmented[str(real)] = ok and fragmented_mp4(real)
-                self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else color)
-            except (FFmpegError, OSError, ValueError, KeyError):
-                self.probed[key] = None
+                self._probe(real, key)
+            finally:
+                with self.probe_lock:
+                    del self.probing[key]
+                gate.set()
         return self.probed[key]
+
+    def _probe(self, real: Path, key: str) -> None:
+        """Probe ``real`` into ``self.probed[key]`` (see :meth:`info`)."""
+        try:
+            i = probe(real)
+            ok = (
+                real.suffix.lower() in BROWSER_CONTAINERS
+                and i.vcodec in BROWSER_VIDEO
+                and (i.vcodec != "h264" or i.pix_fmt in {"yuv420p", "yuvj420p"})
+                and i.acodec in BROWSER_AUDIO
+                and i.audio_streams <= 1  # a browser plays one track; exports mix them all
+            )
+            color = preview_filter(i)
+            self.still_color[key] = still_filter(i)
+            self.fragmented[str(real)] = ok and fragmented_mp4(real)
+            self.probed[key] = (ok, i.duration, i.audio_streams, "" if ok else color)
+        except (FFmpegError, OSError, ValueError, KeyError):
+            self.probed[key] = None
 
     def _proxy_key(self, key: str | None) -> str | None:
         """The key naming a source's proxies (whole, windows, builds): its content key, mixed
@@ -316,9 +342,10 @@ class Media:
         res = self._lookup(real)[1]
         return res[1] if res else None
 
-    def probed_duration(self, path: str) -> float | None:
-        """The duration of ``path`` if it is probed already; never runs ffprobe."""
-        key = self.key(remap_source(path))
+    def probed_duration(self, path: str, key: str | None = None) -> float | None:
+        """The duration of ``path`` if it is probed already; never runs ffprobe. ``key``: its
+        content key if known (see :meth:`_lookup`)."""
+        key = key or self.key(remap_source(path))
         res = self.probed.get(key) if key else None
         return res[1] if res else None
 
@@ -339,13 +366,18 @@ class Media:
             self.proxies.get((project, key), ""), "needs-proxy"
         ), None
 
-    def cached_view(self, project: Path, path: str) -> tuple[str, bool, float | None]:
+    def cached_view(
+        self, project: Path, path: str, key: str | None = None
+    ) -> tuple[str, bool, float | None]:
         """``(the cached status, the source plays from a proxy, share of its whole proxy encoded or
-        None while that is not encoding)``; never runs ffprobe."""
-        key = self.key(remap_source(path))
-        if key is not None and key not in self.probed:
+        None while that is not encoding)``; never runs ffprobe. ``key``: the source's content key
+        if known (see :meth:`_lookup`)."""
+        key = key or self.key(remap_source(path))
+        if key is None:  # missing: what status says, without a second stat
+            return "failed", False, None
+        if key not in self.probed:
             return "unknown", False, None
-        status = self.status(project, path)[0]
+        status = self.status(project, path, key)[0]  # the key once: one stat of the source
         res = self.probed.get(key) if key else None
         pkey = self._proxy_key(key)
         with self.lock:
@@ -534,13 +566,16 @@ class Media:
             while len(failed) > PROXY_WINDOWS_MAX:
                 del failed[next(iter(failed))]
 
-    def failed_windows(self, project: Path, path: str) -> list[tuple[int, int, str]]:
+    def failed_windows(
+        self, project: Path, path: str, key: str | None = None
+    ) -> list[tuple[int, int, str]]:
         """``(lo, hi, reason)`` of a source's failed window encodes, in centiseconds; no stat
-        while the project has none."""
+        while the project has none. ``key``: the source's content key if known (see
+        :meth:`_lookup`)."""
         with self.lock:
             if not any(p == project and f for (p, _), f in self.window_failures.items()):
                 return []
-        key = self._proxy_key(self.key(remap_source(path)))
+        key = self._proxy_key(key or self.key(remap_source(path)))
         with self.lock:
             return [
                 (lo, hi, r) for (lo, hi), r in self.window_failures.get((project, key), {}).items()
@@ -611,10 +646,11 @@ class Media:
         return file
 
     def windows_of(
-        self, project: Path, path: str
+        self, project: Path, path: str, key: str | None = None
     ) -> tuple[list[tuple[int, int]], list[tuple[int, int, str]]]:
         """``(ready windows, pending ones with "encoding" | "queued")`` of a source, in
-        centiseconds, from memory only; no stat at all while the project has none."""
+        centiseconds, from memory only; no stat at all while the project has none. ``key``: the
+        source's content key if known (see :meth:`_lookup`)."""
         with self.lock:
             busy = [
                 w for w in (self.window_running, *self.windows_queue)
@@ -623,7 +659,7 @@ class Media:
             any_ready = any(p == project and r for (p, _), r in self.windows.items())
         if not busy and not any_ready:
             return [], []
-        key = self._proxy_key(self.key(remap_source(path)))
+        key = self._proxy_key(key or self.key(remap_source(path)))
         with self.lock:
             ready = sorted(self.windows.get((project, key), {}))
             run = self.window_running
@@ -932,17 +968,29 @@ class Media:
     def _evict_frames(self, folder: Path) -> None:
         """Keep at most ``FRAME_CACHE_MAX`` stills in ``folder``, dropping the least recently used.
 
+        Each new still only counts the folder's names; the stills are stat-ed only once there are
+        more than the cap, and then evicted down to ``FRAME_EVICT_SHARE`` of it below the cap, so
+        a full folder pays the stats once per that many new stills, not on each one (A746). No
+        count is kept in memory: other processes' stills and a restart count as well.
+
         The folder is listed without ``self.lock`` (1500 stats would hold up every other request);
         two evictions at once pick the same oldest stills, and ``_drop_frames`` (under the lock)
         still skips any being built."""
+        try:
+            with os.scandir(folder) as found:
+                names = [e for e in found if e.name.endswith(".jpg")]
+        except OSError:
+            return
+        if len(names) <= FRAME_CACHE_MAX:
+            return
         stills: list[tuple[int, Path]] = []
-        for f in folder.glob("*.jpg"):
-            with contextlib.suppress(OSError):
-                stills.append((f.stat().st_mtime_ns, f))
-        if len(stills) > FRAME_CACHE_MAX:
-            stills.sort()
-            with self.lock:
-                self._drop_frames([f for _, f in stills[: len(stills) - FRAME_CACHE_MAX]])
+        for e in names:
+            with contextlib.suppress(OSError):  # e.stat: no second call on Windows
+                stills.append((e.stat().st_mtime_ns, Path(e.path)))
+        keep = FRAME_CACHE_MAX - int(FRAME_CACHE_MAX * FRAME_EVICT_SHARE)
+        stills.sort()
+        with self.lock:
+            self._drop_frames([f for _, f in stills[: max(0, len(stills) - keep)]])
 
     def prune_frames(self, project: Path, paths: list[str]) -> None:
         """Once per run and project: delete stills of sources that changed or left, and leftovers."""

@@ -404,10 +404,29 @@ def source_folder(p: Path) -> Path | None:
         return None
 
 
-def bit_description(c: dict[str, Any], events: Any) -> str:
+def dialogue_events(events: Any) -> dict[str, list[dict[str, Any]]]:
+    """The dialogue events of ``events`` (the events.json object) that :func:`bit_description`
+    can use, by source, in file order: indexed once per reply, not scanned per moment (A743)."""
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    rows = events.get("events") if isinstance(events, dict) else None
+    for e in rows if isinstance(rows, list) else []:
+        if (
+            isinstance(e, dict)
+            and e.get("kind") == "text"
+            and e.get("type") == scoring.DIALOGUE_TYPE
+            and isinstance(e.get("source"), str)
+            and isinstance(e.get("start"), int | float)
+            and isinstance(e.get("end"), int | float)
+            and e.get("description")
+        ):
+            by_source.setdefault(e["source"], []).append(e)
+    return by_source
+
+
+def bit_description(c: dict[str, Any], dialogue: dict[str, list[dict[str, Any]]]) -> str:
     """What the dialogue reader said happens in the moment ``c`` if it is a dialogue moment (one a
     talk stretch nominated or widened, or that has a ``dialogue_title``): the ``description`` of
-    the most confident dialogue event of ``events`` (the events.json object) inside it, else the
+    the most confident dialogue event inside it (``dialogue``: :func:`dialogue_events`), else the
     ``dialogue_description`` highlights.json keeps; "" for any other moment."""
     nominated = ((c.get("signals") or {}).get("events") or {}).get("nominated") or []
     if not (
@@ -418,17 +437,10 @@ def bit_description(c: dict[str, Any], events: Any) -> str:
     ):
         return ""
     best, conf = "", -1.0
-    for e in (events.get("events") or []) if isinstance(events, dict) else []:
+    for e in dialogue.get(c.get("source"), []):
         if (
-            isinstance(e, dict)
-            and e.get("kind") == "text"
-            and e.get("type") == scoring.DIALOGUE_TYPE
-            and e.get("source") == c.get("source")
-            and isinstance(e.get("start"), int | float)
-            and isinstance(e.get("end"), int | float)
-            and e["start"] >= c["start"] - 0.01
+            e["start"] >= c["start"] - 0.01
             and e["end"] <= c["end"] + 0.01
-            and e.get("description")
             and (e.get("confidence") or 0) > conf
         ):
             best, conf = str(e["description"]), e.get("confidence") or 0
@@ -454,6 +466,8 @@ def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any
             reals[source] = os.path.realpath(source)
         return reals[source]
 
+    dialogue = dialogue_events(events)
+
     return {
         **hl,
         "candidates": [
@@ -463,7 +477,7 @@ def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any
                 "display_label": c.get("dialogue_title")
                 or ai_context.shown_label(c.get("label"), c),
                 "long_bit": scoring.is_long_dialogue(c),
-                "bit_description": bit_description(c, events),
+                "bit_description": bit_description(c, dialogue),
                 "id": span_id(real(c["source"]), c["start"], c["end"]),
             }
             for c in hl.get("candidates") or []
