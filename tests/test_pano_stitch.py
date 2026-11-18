@@ -710,68 +710,48 @@ def test_a_stitch_holds_the_lock_of_its_output(tmp_path, monkeypatch):
     assert stitch.stitch_clips([clip]) == [{"status": "ok"}]
 
 
-class TestStitchArgs:
-    def test_default(self):
-        assert project.stitch_args() == list(project.DEFAULT_STITCH_ARGS)
-        assert project.FLOWSTATE_ARG not in project.stitch_args()
-
-    def test_configured(self):
-        _config(stitch_args=["-stitch_type", "aistitch", "-output_size", "2880x1440"])
-        assert project.stitch_args() == ["-stitch_type", "aistitch", "-output_size", "2880x1440"]
-
-    def test_template_rejected(self):
-        _config(stitch_args=["-stitch_type", "template"])
-        with pytest.raises(ValueError, match="template"):
-            project.stitch_args()
-
-    def test_not_a_list(self):
-        _config(stitch_args="-stitch_type optflow")
-        with pytest.raises(ValueError, match="must be a list"):
-            project.stitch_args()
-
-    def test_non_string_items_rejected(self):
-        _config(stitch_args=["-stitch_type", "optflow", None])
-        with pytest.raises(ValueError, match="items must be strings"):
-            project.stitch_args()
-
-    def test_number_items_stringified(self):
-        _config(stitch_args=["-bitrate", 100000000])
-        assert project.stitch_args() == ["-bitrate", "100000000"]
+NO_PANO = object()  # no pano section in config.json
+DEFAULT_ARGS = list(project.DEFAULT_STITCH_ARGS)
+AISTITCH = ["-stitch_type", "aistitch", "-output_size", "2880x1440"]
+WITH_NONE = ["-stitch_type", "optflow", None]
 
 
-class TestStitchTimeout:
-    def test_valid(self):
-        _config(stitch_timeout_s=7200)
-        got = project.stitch_timeout_s()
-        assert got == 7200.0 and isinstance(got, float)
-
-    @pytest.mark.parametrize("value", [0, "60"])
-    def test_invalid(self, value):
-        _config(stitch_timeout_s=value)
-        with pytest.raises(ValueError, match="stitch_timeout_s"):
-            project.stitch_timeout_s()
-
-    def test_unset_or_null_means_no_limit(self):
-        assert project.stitch_timeout_s() is None
-        _config(stitch_timeout_s=None)
-        assert project.stitch_timeout_s() is None
-
-
-class TestAutoStitch:
-    def test_on_by_default(self):
-        assert project.auto_stitch() is True
-        _config(stitched_dir="x")  # a pano section without the key
-        assert project.auto_stitch() is True
-
-    def test_off(self):
-        _config(auto_stitch=False)
-        assert project.auto_stitch() is False
-
-    @pytest.mark.parametrize("value", ["false", 0, None])
-    def test_not_a_boolean(self, value):
-        _config(auto_stitch=value)
-        with pytest.raises(ValueError, match="auto_stitch"):
-            project.auto_stitch()
+@pytest.mark.parametrize(
+    ("read", "pano", "expected"),
+    [
+        # pano.stitch_args: a list of strings (numbers stringified), checked by the validator
+        ("stitch_args", NO_PANO, DEFAULT_ARGS),
+        ("stitch_args", {"stitch_args": AISTITCH}, AISTITCH),
+        ("stitch_args", {"stitch_args": ["-bitrate", 100000000]}, ["-bitrate", "100000000"]),
+        ("stitch_args", {"stitch_args": ["-stitch_type", "template"]}, "template"),
+        ("stitch_args", {"stitch_args": "-stitch_type optflow"}, "must be a list"),
+        ("stitch_args", {"stitch_args": WITH_NONE}, "items must be strings"),
+        # pano.stitch_timeout_s: a positive number of seconds; unset or null is no limit
+        ("stitch_timeout_s", {"stitch_timeout_s": 7200}, 7200.0),
+        ("stitch_timeout_s", NO_PANO, None),
+        ("stitch_timeout_s", {"stitch_timeout_s": None}, None),
+        ("stitch_timeout_s", {"stitch_timeout_s": 0}, "stitch_timeout_s"),
+        ("stitch_timeout_s", {"stitch_timeout_s": "60"}, "stitch_timeout_s"),
+        # pano.auto_stitch: true or false, on by default (also in a section without the key)
+        ("auto_stitch", NO_PANO, True),
+        ("auto_stitch", {"stitched_dir": "x"}, True),
+        ("auto_stitch", {"auto_stitch": False}, False),
+        ("auto_stitch", {"auto_stitch": "false"}, "auto_stitch"),
+        ("auto_stitch", {"auto_stitch": None}, "auto_stitch"),  # null is not off
+    ],
+)
+def test_pano_stitch_settings(read: str, pano: object, expected: object) -> None:
+    """The stitch settings of config.json's pano section; a str ``expected`` is the error."""
+    if pano is not NO_PANO:
+        _config(**pano)
+    if isinstance(expected, str):
+        with pytest.raises(ValueError, match=expected):
+            getattr(project, read)()
+        return
+    got = getattr(project, read)()
+    assert got == expected and type(got) is type(expected)
+    if read == "stitch_args" and pano is NO_PANO:
+        assert project.FLOWSTATE_ARG not in got
 
 
 class TestSpaceEstimate:

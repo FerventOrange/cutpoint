@@ -360,8 +360,6 @@ TIMING_RUNS = {
     "scan": ({"scan": ["cam"]}, {"scan_s", "views", "analyze_s", "events_s", "paths_s"}),
     "no_scan": ({}, {"views", "analyze_s", "events_s", "paths_s"}),
     "no_events": ({"no_events": True}, {"views", "analyze_s", "paths_s"}),
-    # no earlier file to keep the analysis keys of (see the views_only_keeps test)
-    "views_only_scan": ({"views_only": True, "scan": ["cam"]}, {"views", "scan_s"}),
 }
 STALE_TIMINGS = {"scan_s": 99.0, "events_s": 99.0, "analyze_total_s": 99.0, "views": {"old": 1}}
 
@@ -414,10 +412,8 @@ def test_360_analyze_timings_hold_this_run_only(
 ) -> None:
     """pano_timings.json is one dict per run, saved once on every return path: no keys of an
     earlier run (#11), no analyze_total_s any more; total_s times the whole run, scan
-    included. --views-only runs here have no earlier file to keep."""
+    included. --views-only runs: test_360_analyze_views_only_timings."""
     scanned = _timing_run(monkeypatch, tmp_path)
-    if over.get("views_only"):
-        (tmp_path / "pano_timings.json").unlink()
     _run_analyze(**over)
     timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
     assert set(timings) == keys | {"total_s"}
@@ -433,74 +429,48 @@ def test_360_analyze_timings_hold_this_run_only(
 
 
 @pytest.mark.parametrize(
-    ("over", "step", "exc"),
+    ("over", "target", "exc", "seeded", "removed"),
     [
-        ({}, "run_events", RuntimeError),
-        ({"no_events": True}, "cache_candidate_paths", KeyboardInterrupt),  # Exception: warns
-        ({}, "analyze", KeyboardInterrupt),  # held until analyze's commit, then raised
+        # after analyze() rewrote highlights.json: the earlier run's file goes
+        ({}, (pipeline, "run_events"), RuntimeError, True, True),
+        ({"no_events": True}, (C, "cache_candidate_paths"), KeyboardInterrupt, True, True),
+        ({}, (analyze_mod, "analyze"), KeyboardInterrupt, True, True),  # held until its commit
+        ({}, (pipeline, "run_events"), OSError, False, True),  # no file to remove
+        # before highlights.json was rewritten: the earlier run's file still matches it
+        ({}, (analyze_mod, "analyze"), RuntimeError, True, False),
+        ({"views_only": True}, (VW, "run_layer"), KeyboardInterrupt, True, False),
     ],
+    ids=["events", "paths", "analyze_commit", "no_file", "analyze", "views_only"],
 )
-def test_360_analyze_failure_after_highlights_removes_stale_timings(
-    monkeypatch, tmp_path: Path, over: dict, step: str, exc: type[BaseException]
+def test_360_analyze_failure_removes_only_stale_timings(
+    monkeypatch,
+    tmp_path: Path,
+    over: dict,
+    target: tuple,
+    exc: type[BaseException],
+    seeded: bool,
+    removed: bool,
 ) -> None:
     """A step failing after analyze() rewrote highlights.json (Ctrl+C included) removes the
-    earlier run's pano_timings.json, which describes another analysis, and re-raises."""
+    earlier run's pano_timings.json, which describes another analysis; a failure before that
+    leaves it alone. Either way the step's own error comes through."""
     _timing_run(monkeypatch, tmp_path)
+    if not seeded:
+        (tmp_path / "pano_timings.json").unlink()
+    before = (tmp_path / "pano_timings.json").read_bytes() if seeded else None
 
     def fail(*a, **k):
-        if step == "analyze":
+        if removed and target == (analyze_mod, "analyze"):
             _rewrite_highlights(*a, **k)
         raise exc("boom")
 
-    owners = {
-        "cache_candidate_paths": C,
-        "reanalyze_if_reachable": analyze_mod,
-        "analyze": analyze_mod,
-    }
-    monkeypatch.setattr(owners.get(step, pipeline), step, fail)
-    with pytest.raises(exc):
-        _run_analyze(**over)
-    assert not (tmp_path / "pano_timings.json").exists()
-
-
-def test_360_analyze_failure_after_highlights_without_timings_file(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """No pano_timings.json to remove: the step's own error comes through."""
-    _timing_run(monkeypatch, tmp_path)
-    (tmp_path / "pano_timings.json").unlink()
-
-    def fail(*a, **k):
-        raise OSError("boom")
-
-    monkeypatch.setattr(pipeline, "run_events", fail)
-    with pytest.raises(OSError, match="boom"):
-        _run_analyze()
-    assert not (tmp_path / "pano_timings.json").exists()
-
-
-@pytest.mark.parametrize(
-    ("over", "target", "exc"),
-    [
-        ({}, (analyze_mod, "analyze"), RuntimeError),
-        ({"views_only": True}, (VW, "run_layer"), KeyboardInterrupt),
-    ],
-)
-def test_360_analyze_failure_before_highlights_keeps_timings(
-    monkeypatch, tmp_path: Path, over: dict, target: tuple, exc: type[BaseException]
-) -> None:
-    """A failure before highlights.json was rewritten leaves the earlier run's file alone:
-    it still matches the analysis in the project."""
-    _timing_run(monkeypatch, tmp_path)
-    before = (tmp_path / "pano_timings.json").read_bytes()
-
-    def fail(*a, **k):
-        raise exc("boom")
-
     monkeypatch.setattr(*target, fail)
-    with pytest.raises(exc):
+    with pytest.raises(exc, match="boom"):
         _run_analyze(**over)
-    assert (tmp_path / "pano_timings.json").read_bytes() == before
+    if removed:
+        assert not (tmp_path / "pano_timings.json").exists()
+    else:
+        assert (tmp_path / "pano_timings.json").read_bytes() == before
 
 
 def test_360_analyze_locked_stale_timings_keep_the_runs_own_error(
@@ -560,58 +530,55 @@ def test_360_analyze_failure_json_does_not_name_stale_timings(
     assert warned == ([(cli.STALE_TIMINGS_KEPT, [str(timings)])] if locked else [])
 
 
-@pytest.mark.parametrize("scan", [None, ["cam"]], ids=["no_scan", "scan"])
-def test_360_analyze_views_only_keeps_the_analysis_timings(
-    monkeypatch, tmp_path: Path, scan: list[str] | None
-) -> None:
-    """--views-only leaves highlights.json as it was, so the earlier run's timings still
-    describe it: their keys stay (total_s and scan_s included), views is this run's and
-    views_only_s times this run, its scan included."""
-    _timing_run(monkeypatch, tmp_path)
-    earlier = {"views": {"old": 1}, "analyze_s": 90.0, "events_s": 30.0, "paths_s": 1.5}
-    earlier |= {"scan_s": 12.0, "total_s": 140.0}
-    cache.save_json(tmp_path / "pano_timings.json", earlier)
-    highlights = (tmp_path / "highlights.json").read_bytes()
-    _run_analyze(views_only=True, scan=scan)
-    timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
-    assert set(timings) == set(earlier) | {"views_only_s"}
-    assert {k: timings[k] for k in earlier if k != "views"} == {
-        k: v for k, v in earlier.items() if k != "views"
-    }
-    assert set(timings["views"]) == {"computed", "total_s"}
-    assert timings["views_only_s"] > timings["views"]["total_s"]
-    assert (tmp_path / "highlights.json").read_bytes() == highlights
+EARLIER_ANALYSIS = {"views": {"old": 1}, "analyze_s": 90.0, "events_s": 30.0, "paths_s": 1.5}
+EARLIER_ANALYSIS |= {"scan_s": 12.0, "total_s": 140.0}
+OLDER_FILE = {"views": {"old": 1}, "scan_s": 12.5, "analyze_total_s": 300.0}  # before analyze_s
 
 
 @pytest.mark.parametrize(
-    "earlier",
-    [{"scan_s": 5.0}, ["not", "a", "dict"]],
-    ids=["scan_only", "not_a_dict"],
+    ("earlier", "scan", "keys"),
+    [
+        # an earlier analysis (keys None): its keys stay (total_s and scan_s included), views_only_s added
+        (EARLIER_ANALYSIS, None, None),
+        (EARLIER_ANALYSIS, ["cam"], None),
+        # nothing to keep: no earlier file, a standalone 360 scan's or a views-only run's,
+        # not a dict, or a file from before analyze_s (timed by analyze_total_s alone)
+        (None, ["cam"], {"views", "scan_s", "total_s"}),
+        ({"scan_s": 5.0}, None, {"views", "total_s"}),
+        (["not", "a", "dict"], None, {"views", "total_s"}),
+        (OLDER_FILE, None, {"views", "total_s"}),
+    ],
+    ids=["analysis", "analysis_scan", "no_file_scan", "scan_only", "not_a_dict", "older_file"],
 )
-def test_360_analyze_views_only_without_an_earlier_analysis(
-    monkeypatch, tmp_path: Path, earlier: object
+def test_360_analyze_views_only_timings(
+    monkeypatch, tmp_path: Path, earlier: object, scan: list[str] | None, keys: set | None
 ) -> None:
-    """An earlier file that times no analysis (a standalone 360 scan's, a views-only run's)
-    is not kept: --views-only writes its own keys, as with no earlier file."""
-    _timing_run(monkeypatch, tmp_path)
-    cache.save_json(tmp_path / "pano_timings.json", earlier)
-    _run_analyze(views_only=True)
+    """--views-only leaves highlights.json as it was, so an earlier analysis's timings still
+    describe it and are kept, views being this run's and views_only_s timing this run, its
+    scan included. An earlier file that times no analysis is not kept: the run writes its
+    own keys."""
+    scanned = _timing_run(monkeypatch, tmp_path)
+    if earlier is None:
+        (tmp_path / "pano_timings.json").unlink()
+    else:
+        cache.save_json(tmp_path / "pano_timings.json", earlier)
+    highlights = (tmp_path / "highlights.json").read_bytes()
+    _run_analyze(views_only=True, scan=scan)
     timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
-    assert set(timings) == {"views", "total_s"}
-    assert set(timings["views"]) == {"computed", "total_s"}
-
-
-def test_360_analyze_views_only_replaces_an_older_file_without_analyze_s(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """A file from before analyze_s (its analysis timed by analyze_total_s alone) does not
-    time an analysis any more: a views-only run writes its own timings over it."""
-    _timing_run(monkeypatch, tmp_path)
-    earlier = {"views": {"old": 1}, "scan_s": 12.5, "analyze_total_s": 300.0}
-    cache.save_json(tmp_path / "pano_timings.json", earlier)
-    _run_analyze(views_only=True)
-    timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
-    assert set(timings) == {"views", "total_s"}
+    assert set(timings["views"]) == {"computed", "total_s"}  # not the earlier run's "old"
+    assert (tmp_path / "highlights.json").read_bytes() == highlights
+    assert len(scanned) == (scan is not None)
+    if keys is None:  # kept
+        assert set(timings) == set(earlier) | {"views_only_s"}
+        assert {k: v for k, v in timings.items() if k not in ("views", "views_only_s")} == {
+            k: v for k, v in earlier.items() if k != "views"
+        }
+        assert timings["views_only_s"] > timings["views"]["total_s"]
+        return
+    assert set(timings) == keys
+    # total_s: from the run's start (before the scan) to the save
+    assert timings.get("scan_s", 2.0) == 2.0
+    assert timings["total_s"] > timings.get("scan_s", 0.0) + timings["views"]["total_s"]
 
 
 def test_standalone_360_scan_merges_scan_s(monkeypatch, tmp_path: Path) -> None:

@@ -170,10 +170,10 @@ def _ev(
         (list(NONE), 16.0, _ev(laugh=0.5, scream=0.1)),
         (list(LAYER), 30.0, _ev(0.5, 0.1, 2, 1, 3)),
         (["boxfeed_kill", "boxfeed_double"], 12.0, _ev(kills=1, banners=1)),
-        (["boxfeed_rff"], 0.0, _ev()),  # the removed R6 banner scores nothing
-        (["boxfeed_match_point", "boxfeed_other_kill"], 0.0, _ev()),
-        (["boxfeed_death"], 0.0, _ev()),  # the player's own death is no kill
-        (["verbfeed_death", "verbfeed_crash"], 0.0, _ev()),
+        # what the boxfeed cap hides scores nothing: the removed R6 banner (RFF), another
+        # banner, someone else's kill and the player's own death (no kill); verbfeed's death
+        # and crash: its 12 above
+        (["boxfeed_rff", "boxfeed_match_point", "boxfeed_other_kill", "boxfeed_death"], 0.0, _ev()),
     ],
 )
 def test_event_boost(names, boost, evidence):
@@ -365,15 +365,13 @@ PROMPT_PIN = {True: (5, "6fce463aac38"), False: (6, "6f2bb21f0089")}
     ("game", "intro", "hype", "bare", "combat"),
     [
         ("boxfeed", "top-down Box Feed", HYPE_BOXFEED, False, True),
-        ("verbfeed", "top-down Verb Feed", HYPE_BOXFEED, False, True),
         # a preset's own hype line stays without kills; the other text is the neutral one
         ("boxfeed", "top-down Box Feed", HYPE_BOXFEED, False, False),
         # a title but no view/hype: the intro has no view, the rubric is the generic one
         ("verbfeed", "Verb Feed", HYPE_COMBAT, True, True),
         ("some-game", "Some Game", HYPE_COMBAT, False, True),
         ("some-game", "Some Game", HYPE_NEUTRAL, False, False),
-        (None, "video game", HYPE_COMBAT, False, True),
-        (None, "video game", HYPE_NEUTRAL, False, False),
+        (None, "video game", HYPE_COMBAT, False, True),  # neutral without kills: some-game's
     ],
 )
 def test_prompt(tmp_path, home, game, intro, hype, bare, combat):
