@@ -113,12 +113,22 @@ def iter_audio_blocks(
 
     Blocks overlap by ``overlap_s`` so models get context at the edges. Only
     one block is in memory at a time.
+
+    Raises:
+        ValueError: ``overlap_s`` is negative, or ``block_s`` or ``block_s - overlap_s``
+            is under one sample (the read position would never advance). Raised on the
+            first ``next()``, before any audio is decoded.
     """
+    step = int((block_s - overlap_s) * WAV_SR)
+    size = int(block_s * WAV_SR)
+    if overlap_s < 0 or step < 1 or size < 1:
+        raise ValueError(
+            f"overlap_s must be >= 0 and block_s and block_s - overlap_s at least one sample: "
+            f"got block_s={block_s}, overlap_s={overlap_s}"
+        )
     for part in src.audio_parts:
         with wave.open(str(part.wav), "rb") as w:
             n_total = w.getnframes()
-            step = int((block_s - overlap_s) * WAV_SR)
-            size = int(block_s * WAV_SR)
             pos = 0
             while pos < n_total:
                 w.setpos(pos)
