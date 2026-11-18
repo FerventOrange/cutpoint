@@ -456,7 +456,16 @@ def test_the_budget_ends_the_labelling_and_keeps_the_labels_so_far(
     assert seen == [60, 60, 20] and len(got) == 3
 
 
-def test_a_hosted_rater_is_never_given_the_model_load_timeout(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("provider", "loads"),
+    [("ollama", [feed_labels.FIRST_ASK_TIMEOUT]), ("anthropic", [])],
+    ids=["ollama", "hosted"],
+)
+def test_only_the_model_load_gets_the_load_timeout(
+    tmp_path: Path, provider: str, loads: list[float]
+) -> None:
+    """The load has its own request, so every call gets the short timeout; a hosted rater has
+    no load and is never given the long one."""
     _write_frames(tmp_path / "frames")
     seen: list[Any] = []
 
@@ -464,32 +473,14 @@ def test_a_hosted_rater_is_never_given_the_model_load_timeout(tmp_path: Path) ->
         seen.append(kw.get("timeout"))
         return {"text_in_box": "", "label": "chat"}
 
-    rater = _rater(describe=describe, provider_name="anthropic")
     proposals = [
         _prop("feed", "feed", 0.5, x=1500, y=100),
         _prop("feed2", "feed", 0.5, x=1500, y=400),
     ]
+    rater = _rater(describe=describe, provider_name=provider)
     assert len(feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")) == 2
+    assert rater.loads == loads
     assert seen == [feed_labels.ASK_TIMEOUT] * 2
-
-
-def test_only_the_model_load_gets_the_load_timeout(tmp_path: Path) -> None:
-    _write_frames(tmp_path / "frames")
-    seen: list[Any] = []
-
-    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
-        seen.append(kw.get("timeout"))
-        return {"text_in_box": "", "label": "chat"}
-
-    proposals = [
-        _prop("feed", "feed", 0.5, x=1500, y=100),
-        _prop("feed2", "feed", 0.5, x=1500, y=400),
-    ]
-    rater = _rater(describe=describe)
-    feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")
-    # the load has its own request: every call gets the short timeout
-    assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT]
-    assert seen == [feed_labels.ASK_TIMEOUT, feed_labels.ASK_TIMEOUT]
 
 
 def test_each_game_has_its_own_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

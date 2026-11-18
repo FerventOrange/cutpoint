@@ -75,8 +75,7 @@ _SMI = "0, GPU-aaaa-1111, 1024\n1, GPU-bbbb-2222, 6144\n2, GPU-cccc-3333, [N/A]\
     ("visible", "mib"),
     [
         (None, 1024),  # unset: GPU 0
-        ("1", 6144),  # cuda:0 is the first entry
-        ("1,0", 6144),
+        ("1,0", 6144),  # cuda:0 is the first entry
         (" 01 ", 6144),
         ("GPU-bbbb-2222,0", 6144),  # a UUID
         ("gpu-BBBB", 6144),  # a unique prefix, as CUDA takes it
@@ -85,8 +84,7 @@ _SMI = "0, GPU-aaaa-1111, 1024\n1, GPU-bbbb-2222, 6144\n2, GPU-cccc-3333, [N/A]\
         ("GPU-dddd", None),
         ("GPU-", None),  # a prefix of several UUIDs: not unique
         ("", None),  # no GPU visible
-        ("-1", None),
-        ("-1,0", None),
+        ("-1,0", None),  # -1 hides it and every GPU after it
     ],
 )
 def test_nvidia_smi_reads_the_gpu_cuda_visible_devices_names(monkeypatch, visible, mib):
@@ -144,12 +142,10 @@ def test_vram_from_torch_once_it_uses_cuda(monkeypatch):
     ("name", "key"),
     [
         ("small", "whisper-small"),
-        ("small.en", "whisper-small"),
-        ("medium", "whisper-medium"),
         ("large-v3", "whisper-large"),
         ("large-v3-turbo", "whisper-turbo"),
         ("distil-large-v3", "whisper-turbo"),
-        ("distil-small.en", "whisper-small"),
+        ("distil-small.en", "whisper-small"),  # .en and distil- dropped
         (str(Path("models") / "my-whisper"), "whisper-medium"),
     ],
 )
@@ -273,27 +269,13 @@ def test_ollama_loaded_reads_api_ps(monkeypatch):
     assert not memguard.ollama_loaded("http://127.0.0.1:11434", "llava")
 
 
-def test_ollama_loaded_probe_has_a_short_connect_timeout(monkeypatch):
-    import requests  # noqa: PLC0415
-
-    seen = []
-
-    def get(url, **kw):
-        seen.append(kw.get("timeout"))
-        return _Resp({"models": []})
-
-    monkeypatch.setattr(requests, "get", get)
-    memguard.ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
-    assert seen == [(1, 3)]
-
-
-def test_ollama_loaded_does_not_follow_a_redirect(monkeypatch):
+def test_ollama_loaded_probes_briefly_and_does_not_follow_a_redirect(monkeypatch):
     import requests  # noqa: PLC0415
 
     sent = []
 
     def moved(url, **kw):
-        sent.append((url, kw.get("allow_redirects", True)))
+        sent.append((url, kw.get("allow_redirects", True), kw.get("timeout")))
         resp = requests.Response()
         resp.status_code = 307
         resp.headers["Location"] = "http://elsewhere.example.com/api/ps"
@@ -301,7 +283,8 @@ def test_ollama_loaded_does_not_follow_a_redirect(monkeypatch):
 
     monkeypatch.setattr(requests, "get", moved)
     assert not memguard.ollama_loaded("http://127.0.0.1:11434", "qwen3.5:9b")
-    assert sent == [("http://127.0.0.1:11434/api/ps", False)]
+    # one probe with a short connect timeout, its redirect not followed
+    assert sent == [("http://127.0.0.1:11434/api/ps", False, (1, 3))]
 
 
 @pytest.mark.parametrize("via", [False, True], ids=["ollama", "hosted"])

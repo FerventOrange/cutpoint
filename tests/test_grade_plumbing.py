@@ -248,20 +248,22 @@ def test_force_warns_when_the_replaced_clips_were_graded_and_this_run_is_not(
     assert any("were graded" in m and f"({keys})" in m and "1 clip(s)" in m for m in msgs)
 
 
-def test_force_does_not_warn_with_a_lut_this_run(home, monkeypatch, caplog):
-    _run(home, monkeypatch, old=GRADED, lut=Lut(Path("/l/a.cube"), 1.0))
-    assert "were graded" not in caplog.text
-
-
-def test_no_warning_without_force(home, monkeypatch, caplog):
-    with pytest.raises(FileExistsError):
-        _run(home, monkeypatch, force=False, old=GRADED)
-    assert "were graded" not in caplog.text
-
-
-@pytest.mark.parametrize("old", [{}, None], ids=["ungraded", "no-manifest"])
-def test_no_warning_when_the_old_clips_were_not_graded(home, monkeypatch, caplog, old):
-    _run(home, monkeypatch, old=old)
+@pytest.mark.parametrize(
+    ("kw", "raises"),
+    [
+        ({"old": GRADED, "lut": Lut(Path("/l/a.cube"), 1.0)}, None),  # graded this run too
+        ({"old": GRADED, "force": False}, FileExistsError),  # without --force nothing is replaced
+        ({"old": {}}, None),
+        ({"old": None}, None),
+    ],
+    ids=["lut-this-run", "no-force", "ungraded", "no-manifest"],
+)
+def test_no_warning_when_no_grade_is_dropped(home, monkeypatch, caplog, kw, raises):
+    if raises is None:
+        _run(home, monkeypatch, **kw)
+    else:
+        with pytest.raises(raises):
+            _run(home, monkeypatch, **kw)
     assert "were graded" not in caplog.text
 
 

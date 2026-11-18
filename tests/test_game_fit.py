@@ -97,13 +97,12 @@ def test_too_little_text_decides_nothing(frames: list[dict]) -> None:
 @pytest.mark.parametrize(
     "ref",
     [
-        None,  # a preset of an earlier version, or written by hand
-        {"inside": 1.0, "occ": {"feed": 1.0}},  # the per-region fit_ref of an earlier version
-        {"cells": [8, 6], "grid": {"0,0": 1.0}},  # another grid
+        None,  # a preset of an earlier version, or written by hand (any non-dict)
+        # the per-region fit_ref of an earlier version (other cells: the same check)
+        {"inside": 1.0, "occ": {"feed": 1.0}},
         {"cells": [16, 12], "grid": "bad"},
         {"cells": [16, 12], "grid": {"0,0": "x"}},
         {"cells": [16, 12], "grid": {}},  # all zero: nothing to compare with
-        "bad",
         {"cells": [16, 12], "grid": {"0,0": float("nan")}},
         {"cells": [16, 12], "grid": {"0,0": -0.5}},
         {"cells": [16, 12], "grid": {"junk": 5}},
@@ -813,13 +812,37 @@ def test_a_forced_discovery_gives_an_old_preset_the_fit_ref_only(folder, caplog,
     assert _keys(folder.project) == {"alpha one.mp4": "neon-drift", "alpha two.mp4": "neon-drift"}
 
 
-def test_a_forced_discovery_with_too_little_text_leaves_the_preset(folder, caplog) -> None:
-    srcs = folder.sources({"alpha one.mp4": "c", "alpha two.mp4": "c"})
-    target, before = _old_preset({"elapsed_s": 12.5})
+@pytest.mark.parametrize(
+    ("corner", "discovery", "force", "keys", "runs"),
+    [
+        # too little text to make a grid of
+        ({"alpha one.mp4": "c", "alpha two.mp4": "c"}, {"elapsed_s": 12.5}, True, None, None),
+        # no source fits the preset's grid: they are split off, the grid stays
+        (
+            {"beta one.mp4": "b", "beta two.mp4": "b"},
+            {"elapsed_s": 12.5, "fit_ref": profile(_frames("a", 10), MIN_SCORE).ref()},
+            True,
+            {"beta one.mp4": "beta-one", "beta two.mp4": "beta-one"},
+            None,
+        ),
+        # without --discover-regions nothing is discovered
+        ({"alpha one.mp4": "a", "beta one.mp4": "b"}, None, None, None, []),
+    ],
+    ids=["too-little-text", "no-source-fits", "without-force"],
+)
+def test_a_discovery_that_adds_no_fit_check_leaves_the_preset(
+    folder, caplog, corner, discovery, force, keys, runs
+) -> None:
+    srcs = folder.sources(corner)
+    target, before = _old_preset(discovery)
     with caplog.at_level("INFO"):
-        folder.run(srcs, force=True)
+        folder.run(srcs, force=force)
     assert target.read_bytes() == before
     assert not [m for m in caplog.messages if "Added the HUD fit check" in m]
+    if keys is not None:
+        assert _keys(folder.project) == keys
+    if runs is not None:
+        assert folder.fake.runs == runs
 
 
 @pytest.mark.parametrize(
@@ -897,18 +920,6 @@ def test_a_forced_discovery_anchors_on_the_presets_grid(folder, caplog) -> None:
     )
 
 
-def test_a_forced_discovery_where_no_source_fits_keeps_the_presets_grid(folder, caplog) -> None:
-    srcs = folder.sources({"beta one.mp4": "b", "beta two.mp4": "b"})
-    target, before = _old_preset(
-        {"elapsed_s": 12.5, "fit_ref": profile(_frames("a", 10), MIN_SCORE).ref()}
-    )
-    with caplog.at_level("INFO"):
-        folder.run(srcs, force=True)
-    assert target.read_bytes() == before
-    assert not [m for m in caplog.messages if "Added the HUD fit check" in m]
-    assert _keys(folder.project) == {"beta one.mp4": "beta-one", "beta two.mp4": "beta-one"}
-
-
 def test_a_preset_that_cannot_be_written_does_not_stop_the_run(folder, caplog, monkeypatch) -> None:
     from cutpoint import cache  # noqa: PLC0415
 
@@ -930,13 +941,3 @@ def test_a_preset_that_cannot_be_written_does_not_stop_the_run(folder, caplog, m
         "Could not add the HUD fit check" in r.message and str(target) in r.message for r in warned
     )
     assert _keys(folder.project) == {"alpha one.mp4": "neon-drift", "alpha two.mp4": "neon-drift"}
-
-
-def test_a_run_without_force_leaves_an_old_preset(folder, caplog) -> None:
-    srcs = folder.sources({"alpha one.mp4": "a", "beta one.mp4": "b"})
-    target, before = _old_preset(None)
-    with caplog.at_level("INFO"):
-        folder.run(srcs)
-    assert folder.fake.runs == []
-    assert target.read_bytes() == before
-    assert not [m for m in caplog.messages if "Added the HUD fit check" in m]
