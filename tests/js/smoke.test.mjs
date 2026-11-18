@@ -24,6 +24,17 @@ test('no projects: boots to the empty workspace', async (t) => {
   page.assertNoUnhandled();
 });
 
+for (const hash of ['#%', '#%E0']) {
+  test(`a malformed hash (${hash}) still opens the first project and polls jobs (#1085, A283)`, async (t) => {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    const page = await boot({ hash });
+    t.after(() => page.close());
+    assert.equal(page.document.querySelector('#projectName').textContent, 'Project One');
+    assert.ok(page.requests.some((r) => r.method === 'GET' && r.path === '/api/jobs'), 'pollJobs started');
+    page.assertNoUnhandled();
+  });
+}
+
 test('an unmocked route is recorded and fails loudly', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const page = await boot({ allowUnhandled: true });
