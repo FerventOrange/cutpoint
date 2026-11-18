@@ -7,6 +7,7 @@ import importlib.util
 import logging
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -143,11 +144,11 @@ def ui_styles() -> list[str]:
     return names
 
 
-def _gaming_style(name: object, hl: dict[str, Any] | None = None) -> bool:
+def _gaming_style(name: object, ps: ProjectStyle) -> bool:
     """``name`` is a ``gaming`` style (or one based on it): config.json's ``color`` never grades
-    it, so the page's Color starts at Off for it. ``hl``: the project's highlights.json, whose
-    recorded base stands in for its deleted style (:func:`_style`)."""
-    s = _style(name, hl)
+    it, so the page's Color starts at Off for it. ``ps``: the project's style, whose recorded
+    base stands in for its deleted style (:meth:`ProjectStyle.style`)."""
+    s = ps.style(name)
     return s is not None and s.base == "gaming"
 
 
@@ -225,37 +226,137 @@ def _rerank_mark(hl: dict[str, Any] | None) -> str | None:
     return mark if isinstance(st.get("reranked"), dict) and isinstance(mark, str) else None
 
 
-def _reranked_style(hl: dict[str, Any] | None, meta: dict[str, Any] | None = None) -> Any:
+@dataclass(frozen=True)
+class ProjectStyle:
+    """A project's style, resolved once from its ``ui/meta.json`` (``meta``) and its
+    ``highlights.json`` (``hl``, None before the first analysis, perhaps an older file without
+    the newer keys): each style a part of the UI needs, and the style library lookups that
+    stand in a style's recorded built-in base for a deleted style (``style_base``).
+
+    The styles differ on purpose. ``chosen`` is what the next analysis runs on, so an ``auto``
+    or an action-cam request that fell back stays as asked and the detection (or the telemetry
+    check) repeats; ``resolved`` is what the current analysis ran as (the header's style and the
+    page's Color); ``ran`` is the recorded style itself, else the one in ``ui/meta.json`` (the
+    Analyze options and presets judge what the analysis did, not a style that may be
+    mid-switch).
+    """
+
+    inputs: Any
+    """The inputs the user picked, else (made on the command line) ``settings.inputs``."""
+    chosen: Any
+    """The style a project's analysis runs on: :attr:`reranked`, else the style the user chose,
+    else ``auto`` for an analysis run with ``--style auto``, else the style asked for when an
+    action-cam one fell back for footage without telemetry (#939, ``settings.style_fallback``),
+    else the recorded one. A re-rank on the command line leaves ``ui/meta.json`` as it was."""
+    resolved: Any
+    """The style the analysis ran as: :attr:`reranked`, else the project's chosen style, or for
+    ``auto`` (or none) the style the footage was detected as (recorded), else the chosen one.
+    An action-cam style that fell back for footage without telemetry resolves to the style
+    that ran."""
+    reranked: Any
     """The style a re-ranked analysis (``settings.reranked``, #902) runs on, else None. None too
-    when ``meta``'s chosen style was picked after that re-rank (:data:`STYLE_FOR` names it): the
+    when the chosen style was picked after that re-rank (:data:`STYLE_FOR` names it): the
     user's last pick wins, even when its analysis did not finish, until the next re-rank."""
-    if not isinstance(((hl or {}).get("settings") or {}).get("reranked"), dict):
-        return None
-    meta = meta or {}
-    mark = _rerank_mark(hl)
-    if meta.get("style") and mark is not None and meta.get(STYLE_FOR) == mark:
-        return None
-    return (hl or {}).get("style") or None
+    recorded: Any
+    """The style ``highlights.json`` records (``style``), as it is (None without one)."""
+    ran: Any
+    """:attr:`recorded`, else the style the user chose (as it is)."""
+    hl: dict[str, Any] | None = field(default=None, repr=False, compare=False)
+
+    @classmethod
+    def of(cls, meta: dict[str, Any], hl: dict[str, Any] | None) -> ProjectStyle:
+        """The style of the project with ``meta`` and ``hl``."""
+        st = (hl or {}).get("settings") or {}
+        recorded = (hl or {}).get("style")
+        picked = meta.get("style")
+        reranked = None
+        if isinstance(st.get("reranked"), dict):
+            mark = _rerank_mark(hl)
+            if not (picked and mark is not None and meta.get(STYLE_FOR) == mark):
+                reranked = recorded or None
+        fell_back = isinstance(st.get("style_fallback"), dict)
+        requested = st.get("style_requested")
+        if reranked:
+            chosen = reranked
+        elif picked:
+            chosen = picked
+        elif requested == AUTO or (fell_back and requested):
+            chosen = requested
+        else:
+            chosen = recorded
+        if reranked:
+            resolved = reranked
+        elif not picked or picked == AUTO or (fell_back and requested == picked):
+            resolved = recorded or picked
+        else:
+            resolved = picked
+        return cls(
+            inputs=picked_inputs(meta) or st.get("inputs"),
+            chosen=chosen,
+            resolved=resolved,
+            reranked=reranked,
+            recorded=recorded,
+            ran=recorded or picked,
+            hl=hl,
+        )
+
+    def style(self, name: object) -> Style | None:
+        """The style ``name``, else None. The recorded style, gone from the library (deleted), is
+        its recorded built-in base; None when the file records none (an older file): the page
+        then shows the style's options as unknown."""
+        try:
+            return get_style(str(name)) if name else None
+        except (ValueError, TypeError, AttributeError):
+            if isinstance(self.hl, dict) and name and name == self.hl.get("style"):
+                try:
+                    return scoring.recorded_style(self.hl, logging.DEBUG)
+                except ValueError:
+                    pass
+            return None
+
+    def library(self, style: object) -> object:
+        """``style`` as a job may pass it to ``--style``: the recorded style gone from the
+        library (deleted) is the built-in base the file records for it (the job then records
+        the base); a bad request (400) when the file records none (an older file), or for any
+        other deleted style. Auto, a style in the library and a style whose file is there but
+        broken (the CLI says why) stay as they are."""
+        if not isinstance(style, str) or not style or style == AUTO:
+            return style
+        try:
+            get_style(style)
+        except (ValueError, TypeError, AttributeError):
+            if style in learned_styles():
+                return style
+            try:
+                if not isinstance(self.hl, dict) or self.hl.get("style") != style:
+                    raise ValueError(style)
+                return scoring.recorded_style(self.hl).name
+            except ValueError:
+                raise bad(
+                    f"The style {style!r} of this analysis is not in the style library "
+                    "(deleted?); pick another style"
+                ) from None
+        return style
+
+    @property
+    def ran_deleted(self) -> bool:
+        """:attr:`ran` is a style gone from the library (deleted): not auto, not built in, no
+        file."""
+        name = self.ran
+        if not isinstance(name, str) or not name or name == AUTO:
+            return False
+        try:
+            get_style(name)
+        except (ValueError, TypeError, AttributeError):
+            return name not in learned_styles()
+        return False
 
 
 def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
-    """The inputs and style a project's analysis runs on: the inputs the user picked, else (made
-    on the command line) the recorded inputs; either may be missing. The style is the one the
-    user chose, else ``auto`` for an analysis run with ``--style auto``, else the style asked
-    for when an action-cam one fell back for footage without telemetry (#939), else the
-    recorded one. A re-ranked analysis (``settings.reranked``, #902) runs on the style it was
-    re-ranked to, ahead of a style chosen before that re-rank (:func:`_reranked_style`): a
-    re-rank on the command line leaves ``ui/meta.json`` as it was."""
-    st = (hl or {}).get("settings") or {}
-    inputs = picked_inputs(meta) or st.get("inputs")
-    if reranked := _reranked_style(hl, meta):
-        return inputs, reranked
-    if meta.get("style"):
-        return inputs, meta["style"]
-    requested = st.get("style_requested")
-    if requested == AUTO or (isinstance(st.get("style_fallback"), dict) and requested):
-        return inputs, requested
-    return inputs, (hl or {}).get("style")
+    """:attr:`ProjectStyle.inputs` and :attr:`ProjectStyle.chosen`, for ui/routes/ranking.py
+    (moves to :class:`ProjectStyle` with that file's next change)."""
+    ps = ProjectStyle.of(meta, hl)
+    return ps.inputs, ps.chosen
 
 
 def _no_options(values: Any, what: str) -> None:
@@ -264,41 +365,6 @@ def _no_options(values: Any, what: str) -> None:
     for v in values:
         if str(v).startswith("-"):
             raise bad(f"{what} {str(v)!r} in the project's files is not a path")
-
-
-def _library_style(style: object, hl: dict[str, Any] | None) -> object:
-    """``style`` as a job may pass it to ``--style``: a style gone from the library (deleted) is
-    the built-in base ``hl`` records for it (the job then records the base); a bad request
-    (400) when the file records none (an older file). Auto, a style in the library and a style
-    whose file is there but broken (the CLI says why) stay as they are."""
-    if not isinstance(style, str) or not style or style == AUTO:
-        return style
-    try:
-        get_style(style)
-    except (ValueError, TypeError, AttributeError):
-        if style in learned_styles():
-            return style
-        try:
-            if not isinstance(hl, dict) or hl.get("style") != style:
-                raise ValueError(style)
-            return scoring.recorded_style(hl).name
-        except ValueError:
-            raise bad(
-                f"The style {style!r} of this analysis is not in the style library (deleted?); "
-                "pick another style"
-            ) from None
-    return style
-
-
-def _deleted_style(name: object) -> bool:
-    """``name`` is a style gone from the library (deleted): not auto, not built in, no file."""
-    if not isinstance(name, str) or not name or name == AUTO:
-        return False
-    try:
-        get_style(name)
-    except (ValueError, TypeError, AttributeError):
-        return name not in learned_styles()
-    return False
 
 
 def _keep_style(
@@ -325,22 +391,6 @@ def _keep_style(
     undo.append(put_back)
 
 
-def _resolved_style(meta: dict[str, Any], hl: dict[str, Any] | None) -> object:
-    """The style the analysis ran as: the project's chosen style, or for ``auto`` the style the
-    footage was detected as (recorded in highlights.json), else the recorded style. An
-    action-cam style that fell back for footage without telemetry (#939,
-    ``settings.style_fallback``) resolves to the style that ran."""
-    if reranked := _reranked_style(hl, meta):
-        return reranked
-    style = meta.get("style")
-    if not style or style == AUTO:
-        return (hl or {}).get("style") or style
-    st = (hl or {}).get("settings") or {}
-    if isinstance(st.get("style_fallback"), dict) and st.get("style_requested") == style:
-        return (hl or {}).get("style") or style
-    return style
-
-
 def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, Any] | None:
     """What the header's style button shows (#897): the style the user chose (``chosen``,
     ``auto`` for Auto) and the footage category the analysis detected, with its reason, whether
@@ -357,7 +407,7 @@ def detected_view(meta: dict[str, Any], hl: dict[str, Any] | None) -> dict[str, 
     from cutpoint import category  # noqa: PLC0415
     from cutpoint.styles import auto_fallback_category, resolve_auto  # noqa: PLC0415
 
-    chosen = _analysis_inputs(meta, hl)[1] or None
+    chosen = ProjectStyle.of(meta, hl).chosen or None
     st = hl.get("settings") or {}
     det = hl.get("detection") if chosen == AUTO and st.get("style_requested") == AUTO else None
     stale = not isinstance(det, dict)
@@ -498,35 +548,21 @@ def _default_model(st: dict[str, Any]) -> str:
     return transcribe.default_model("cuda" if st.get("whisper_device") == "cuda" else "cpu")
 
 
-def _style(name: object, hl: dict[str, Any] | None = None) -> Style | None:
-    """The style ``name``, else None. The style ``hl`` (a project's highlights.json) records,
-    gone from the library (deleted), is its recorded built-in base; None when the file records
-    none (an older file): the page then shows the style's options as unknown."""
-    try:
-        return get_style(str(name)) if name else None
-    except (ValueError, TypeError, AttributeError):
-        if isinstance(hl, dict) and name and name == hl.get("style"):
-            try:
-                return scoring.recorded_style(hl, logging.DEBUG)
-            except ValueError:
-                pass
-        return None
-
-
-def _style_crash(style: object, hl: dict[str, Any] | None = None) -> float | None:
+def _style_crash(style: object, ps: ProjectStyle | None = None) -> float | None:
     """The ``must_include_crash`` of ``style`` (what ``--must-include-crash`` overrides), else
     None (no known style). ``auto`` picks a built-in style, all with the same value: its
-    fallback's."""
+    fallback's. ``ps``: the project's style (:meth:`ProjectStyle.style`)."""
     from cutpoint.category import HYPE  # noqa: PLC0415
 
-    s = _style(auto_fallback(HYPE) if style == AUTO else style, hl)
+    ps = ps or ProjectStyle.of({}, None)
+    s = ps.style(auto_fallback(HYPE) if style == AUTO else style)
     return s.must_include_crash if s is not None else None
 
 
-def _no_scenes(st: dict[str, Any], style: object, hl: dict[str, Any] | None = None) -> bool:
+def _no_scenes(st: dict[str, Any], style: object, ps: ProjectStyle) -> bool:
     """The analysis ran with ``--no-scenes``: it recorded no scene detection although its style
     detects scenes (action-cam never does, so it records none without the flag)."""
-    s = _style(style, hl)
+    s = ps.style(style)
     return st.get("scenes") is False and (s is None or s.use_scenes)
 
 
@@ -563,8 +599,9 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     model = st.get("whisper_model")
     mc = st.get("max_candidates")
     crash = st.get("must_include_crash")
-    ran = (hl or {}).get("style") or _resolved_style(meta, hl)  # not meta's: it may be mid-switch
-    default_crash = _style_crash(ran, hl)
+    ps = ProjectStyle.of(meta, hl)
+    ran = ps.ran  # not meta's: it may be mid-switch
+    default_crash = _style_crash(ran, ps)
     return {
         "model": model
         if isinstance(model, str) and model and model != _default_model(st)
@@ -575,7 +612,7 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         "max_candidates": mc
         if isinstance(mc, int) and not isinstance(mc, bool) and mc > 0
         else None,
-        "no_scenes": _no_scenes(st, ran, hl),
+        "no_scenes": _no_scenes(st, ran, ps),
         "skip": _saved_skip(p, hl),
         "must_include_crash": float(crash)
         if default_crash is not None
@@ -628,15 +665,16 @@ def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
     styles, ``auto`` or none (the footage decides), no for any other."""
     if meta.get("kind") == "360":
         return False
+    ps = ProjectStyle.of(meta, hl)
     if hl is None:
         style = meta.get("style")
         if not style or style == AUTO:
             return True
-        s = _style(style)
+        s = ps.style(style)
         return s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport"))
     from cutpoint import category  # noqa: PLC0415
 
-    s = _style(hl.get("style") or meta.get("style"), hl)
+    s = ps.style(ps.ran)
     if s is not None and (s.kind == ACTION_CAM or s.base in ("action", "sport")):
         return True
     det = hl.get("detection")
@@ -762,9 +800,9 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
             f"Presets are not available here: this project was transcribed with the {model} "
             "model (analyze --model), which cutpoint edit does not take."
         )
-    inputs, style = _analysis_inputs(meta, hl)
-    ran = (hl or {}).get("style") or _resolved_style(meta, hl)  # as analyze_options
-    if _no_scenes(st, ran, hl):
+    ps = ProjectStyle.of(meta, hl)
+    inputs, style, ran = ps.inputs, ps.chosen, ps.ran  # ran: as analyze_options
+    if _no_scenes(st, ran, ps):
         return (
             "Presets are not available here: this project's analysis used --no-scenes, which "
             "cutpoint edit does not take."
@@ -782,13 +820,13 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
                 "cutpoint edit does not take."
             )
     # nor --must-include-crash: edit would analyze with the style's own confidence
-    crash, default_crash = st.get("must_include_crash"), _style_crash(ran, hl)
+    crash, default_crash = st.get("must_include_crash"), _style_crash(ran, ps)
     # (a deleted style runs in its base: the base's confidence, whatever the style had)
     if (
         default_crash is not None
         and crash is not None
         and crash != default_crash
-        and not _deleted_style(ran)
+        and not ps.ran_deleted
     ):
         return (
             "Presets are not available here: this project's analysis used --must-include-crash, "

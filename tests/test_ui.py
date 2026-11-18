@@ -10672,9 +10672,10 @@ def test_an_action_cam_project_that_fell_back_shows_the_style_that_ran() -> None
             "style_fallback": {"from": "action-cam", "reason": "no telemetry"},
         },
     }
-    assert ui._resolved_style({"style": "action-cam"}, hl) == "action"
-    assert ui._resolved_style({"style": "gaming"}, hl) == "gaming"
-    assert ui._resolved_style({"style": "action-cam"}, {"style": "action-cam"}) == "action-cam"
+    assert ui.ProjectStyle.of({"style": "action-cam"}, hl).resolved == "action"
+    assert ui.ProjectStyle.of({"style": "gaming"}, hl).resolved == "gaming"
+    cam = {"style": "action-cam"}
+    assert ui.ProjectStyle.of(cam, {"style": "action-cam"}).resolved == "action-cam"
     d = ui.detected_view({"style": "action-cam"}, hl)
     assert d is not None and (d["chosen"], d["style"]) == ("action-cam", "action")
 
@@ -10747,10 +10748,10 @@ def analyzed_again(p: Path) -> None:
 def test_a_reranked_analysis_runs_on_its_style_over_the_chosen_auto() -> None:
     """#902: meta.json still says auto after a command-line re-rank; the analysis runs on funny."""
     hl = {"style": "funny", "settings": {"reranked": {"from": "gaming", "requested": "auto"}}}
-    assert ui._analysis_inputs({"style": "auto"}, hl)[1] == "funny"
-    assert ui._analysis_inputs({}, hl)[1] == "funny"
+    assert ui.ProjectStyle.of({"style": "auto"}, hl).chosen == "funny"
+    assert ui.ProjectStyle.of({}, hl).chosen == "funny"
     plain = {"style": "funny", "settings": {"style_requested": "auto"}}
-    assert ui._analysis_inputs({"style": "auto"}, plain)[1] == "auto"  # no re-rank: unchanged
+    assert ui.ProjectStyle.of({"style": "auto"}, plain).chosen == "auto"  # no re-rank: unchanged
 
 
 def test_a_reranked_project_shows_its_style_and_the_detection_as_stale(
@@ -10841,10 +10842,10 @@ def test_an_older_meta_without_the_rerank_mark_lets_the_rerank_win() -> None:
         "style": "funny",
         "settings": {"reranked": {"from": "gaming"}, "rerank_backup": "0123456789abcdef"},
     }
-    assert ui._analysis_inputs({"style": "action"}, hl)[1] == "funny"
-    assert ui._analysis_inputs({"style": "action", "style_for": None}, hl)[1] == "funny"
+    assert ui.ProjectStyle.of({"style": "action"}, hl).chosen == "funny"
+    assert ui.ProjectStyle.of({"style": "action", "style_for": None}, hl).chosen == "funny"
     marked = {"style": "action", "style_for": "0123456789abcdef"}
-    assert ui._analysis_inputs(marked, hl)[1] == "action"
+    assert ui.ProjectStyle.of(marked, hl).chosen == "action"
 
 
 def deleted_style_project(tmp_path: Path, base: str | None) -> Path:

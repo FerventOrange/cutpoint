@@ -26,7 +26,7 @@ from cutpoint.config import (
     vision_assistant_settings,
 )
 from cutpoint.pano import project as pano_project
-from cutpoint.ui.analysis import _analysis_inputs, _color_after, _color_state, _flag, _seconds
+from cutpoint.ui.analysis import ProjectStyle, _color_after, _color_state, _flag, _seconds
 from cutpoint.ui.common import EVENT_TAILS, MAX_EXTEND_S, MAX_TIMING_S, REVERT, UI_DIR, bad
 from cutpoint.ui.files import _highlights, _inside, _load, _own, _ui_folder, read_meta
 from cutpoint.ui.projects import chat_files, project_dir, validate_segments
@@ -229,7 +229,8 @@ def start_turn(request: Request, pid: str, body: dict[str, Any]):
     meta, hl = read_meta(p), _highlights(p)
     ranking = None
     if hl and meta.get("kind") != "360" and not (p / pano_project.PANO_FILE).is_file():
-        current = hl.get("style") or _analysis_inputs(meta, hl)[1] or ""
+        ps = ProjectStyle.of(meta, hl)
+        current = ps.recorded or ps.chosen or ""
         ranking = RankingHook(p, str(current))
     project = ai_session.Project(
         moments,
