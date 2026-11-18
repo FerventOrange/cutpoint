@@ -538,7 +538,7 @@ def test_the_analysis_files_are_parsed_once_while_they_are_unchanged(
     cache.save_json(tmp_path / "events.json", {"events": [{**ev, "start": 43.0}]})
     planner.plan([{**SEQ[0], "end": 52.0}, *SEQ[1:]])
     assert sorted(read) == ["events.json", "events.json", "highlights.json"]
-    assert len(grouped) == 2 and [e["start"] for e in events()[A]] == [43.0]
+    assert len(grouped) == 2 and [e["start"] for e in events()[str(Path(A))]] == [43.0]
 
     resolve = edges.eventtypes.resolve
     monkeypatch.setattr(edges.eventtypes, "resolve", lambda p, d: {A: ()})
@@ -554,7 +554,7 @@ def test_the_analysis_files_are_parsed_once_while_they_are_unchanged(
     with cache.hold_outputs(tmp_path, ["events.json"]):  # analyze holds its results back
         cache.save_json(tmp_path / "events.json", {"events": [{**ev, "start": 47.0}]})
         planner.plan([{**SEQ[0], "end": 55.0}, *SEQ[1:]])
-        assert [e["start"] for e in events()[A]] == [47.0]
+        assert [e["start"] for e in events()[str(Path(A))]] == [47.0]
 
 
 def test_a_sequence_that_cannot_be_planned_keeps_its_raw_ranges(
