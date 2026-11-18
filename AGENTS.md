@@ -36,9 +36,10 @@ what the footage is, pass their words with `--context "<the user's words>"` on `
 | Footage category detection: `cutpoint detect`, and `--style auto`, the default of `analyze` and `edit` (an explicit `--style NAME` wins; unsure footage, and camera footage without telemetry, is shown to the vision model unless `--no-vision`, and if it is still unsure Auto uses `gaming` when it leans to gameplay, else `action`; `detect` shows `decided_by`). `--vision-detect-all` on `analyze`, `edit` and `detect` (off by default; `"vision_detect_all": true` in `config.json`) shows every source to the vision model, about one call per source; it only settles sources: a sure gameplay source becomes unsure when the vision answer and the HUD text both see no game | |
 | Frame index for the AI Chat's visual search: `--visual-index` on `analyze` and `edit` (off by default; `"visual_index": true` in `config.json`) also writes the CLIP frame embeddings for `gaming`, `funny` and `commentary` footage; `action`, `sport` and `action-cam` always have them. Without a CUDA GPU (full install, CLIP weights present) `analyze`'s keyframes step writes a light index for the chat only instead (CLIP on the CPU, one frame every ~10 s plus a few per moment; same footage rule; `--skip keyframes` skips it); it ranks nothing, and a later GPU index replaces it. An out-of-memory stop is a WARNING and a `step_failed` warning, and `analyze` continues | |
 | VLM layer of `cutpoint events` through the shared vision model: Ollama with `qwen3.5:9b`, or a hosted Vision model the user allowed in the Models tab of `cutpoint ui` | |
-| `--json` result envelope on stdout: `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `rerank`, `360 ...` | |
+| `--json` result envelope on stdout: `paths`, `cache`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `crashes`, `profile`, `style ...`, `events`, `resume`, `rerank`, `360 ...` | |
 | Custom styles: `cutpoint style list\|show\|create\|validate\|delete\|features` (weights over a built-in style, used with `--style NAME`; `applies_to` is stored only, `--style auto` ignores it) | |
 | Agent skill: `cutpoint skill install` (Claude Code), `cutpoint skill print` | |
+| Cache cleanup: `cutpoint cache --prune DAYS` removes source cache folders not used for DAYS days (`--all` also those of projects, `--dry-run` lists them); `cutpoint paths` shows the cache size | |
 | Color grade with a 3D LUT the user supplies: `--lut FILE` and `--lut-strength` on `clips` and `edit` | Color matching between clips |
 | Automatic color correction per clip: `--color auto\|underwater` and `--color-strength` on `clips` and `edit` (not with `--lut`) | |
 | Output format on `assemble` and `edit`: `--format mp4` (default: the final video, no timelines) or `--format fcpxml\|otio` (only that timeline, referencing the kept clips, no encode) | |
@@ -319,6 +320,8 @@ command for theirs:
   NVIDIA GPU), `cutpoint stage` (copies footage to local disk), `clips --force` or `edit --force`
   over an existing folder or `cutpoint skill install` (writes to their Claude Code settings
   folder).
+- Ask the user before running `cutpoint cache --prune` (rebuilding the caches costs minutes to
+  hours of analysis); `cache --prune DAYS --dry-run` needs no OK.
 - Do not paste Insta360 SDK files, documentation or output into any file or message, other than
   `error:` lines.
 - Do not invent options. Check `--help`.

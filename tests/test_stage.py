@@ -6,12 +6,13 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from conftest import remap, set_config, write
-from cutpoint import config, projectdelete, stage
+from cutpoint import config, paths, projectdelete, stage
 from cutpoint.config import remap_source
 from cutpoint.errors import FolderBusyError
 from cutpoint.stage import clear_stage, reload_stage_index, stage_sources, staged_path
@@ -381,6 +382,21 @@ def test_a_timeline_index_entry_outside_the_cache_is_not_read(home, tmp_path, mo
     stage._TIMELINE.clear()
     monkeypatch.setattr(stage, "_timeline_stamp", lambda: stamp)
     assert set(stage.timeline_index(stamp)) == {"k1"}
+
+
+def test_a_timeline_copy_read_marks_its_cache_folder_used(home, tmp_path):
+    """``cutpoint cache --prune`` must see a folder whose timeline copy is read as in use."""
+    src = write(tmp_path / "src" / "x.ts", "xx")
+    st = src.stat()
+    folder = paths.cache_dir() / "x-0123456789abcdef"
+    copy = write(folder / "timeline.mkv", "copy")
+    entry = {"file": f"{folder.name}/timeline.mkv", "size": 2, "mtime_ns": st.st_mtime_ns}
+    index = {stage.stage_key(str(src)): {**entry, "copy_size": 4}}
+    write(paths.cache_dir() / stage.TIMELINE_INDEX, json.dumps(index))
+    old = time.time() - 40 * 86400
+    os.utime(folder, (old, old))
+    assert staged_path(str(src)) == str(copy)
+    assert time.time() - folder.stat().st_mtime < 60
 
 
 # -- #1085: stage safety (A246-A249, A257) ----------------------------------------------------

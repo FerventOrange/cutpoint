@@ -29,13 +29,13 @@ prints tracebacks of errors.
 | [`profile`](#profile) | Pick or discover the project's activity profile; list, show, create, validate and delete the profiles of your library |
 | [`style`](#style) | List, show, create, validate and delete your own scoring styles |
 | [`360 ...`](workflows/360.md) | Insta360 X3 module |
-| [`setup`](#setup), [`paths`](#paths), [`guide`](#guide), [`skill`](#skill) | Setup, data, the agent guide and skill |
+| [`setup`](#setup), [`paths`](#paths), [`cache`](#cache), [`guide`](#guide), [`skill`](#skill) | Setup, data, the cache, the agent guide and skill |
 | [`proxy`](#proxy), [`login`, `logout`](#login) | Subscription logins for the hosted models of `cutpoint ui` |
 
 ## JSON output
 
 `--json` makes a command write its result as exactly one JSON object on stdout. It is available
-on `paths`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
+on `paths`, `cache`, `analyze`, `detect`, `clips`, `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`,
 `setup`, `events`, `crashes`, `profile`, `style` (every verb), `resume`, `rerank` and every `360` subcommand (`scan`, `analyze`, `status`,
 `director`, `stitch`, `qa`, `repair`). `ui`, `guide`, `skill`, `proxy`, `login` and
 `logout` have no `--json`. Logs and errors stay on stderr, and
@@ -54,7 +54,7 @@ codes are unchanged.
 | `ok` | `true` unless the command failed |
 | `command` | The command as typed, such as `analyze` or `360 qa` (`resume`: the command it replays, see [resume](#resume)) |
 | `schema` | `1` |
-| `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `capabilities`, `setup`, `stage`, and `360 status` without a project) |
+| `project` | Absolute path of the project folder, or `null` when the command has none (`paths`, `cache`, `capabilities`, `setup`, `stage`, and `360 status` without a project) |
 | `outputs` | Object: the files written (absolute path strings) and key facts. The keys per command are below |
 | `warnings` | List of `{"code", "message", "files"}`; `files` is a list of absolute paths and may be empty |
 | `error` | `null`, or `{"code", "message"}`. `message` is the `ERROR` line printed on stderr |
@@ -93,6 +93,7 @@ So do these combinations:
 | `kept_sources` | `clips`, `extend` | A file the run reads, or the clips were cut from, was not replaced |
 | `join_unmatched` | `assemble` with `--joins` | A pair in the joins file is not two clips next to each other in this order; `files` names the two clips. That join uses `--transition` |
 | `join_no_room` | `assemble` with `--joins` | A Fade join has no room for one frame next to a clip (more than 45% of the shorter clip); `files` names the two clips. It becomes a cut |
+| `cache_remove_failed` | `cache` | A cache folder could not be removed: a file in it is open in another program (Windows), or permission was denied. `files` names it. If it was renamed already, the next `cache --prune` removes the rest |
 | `temporary_clips` | `assemble <project>`, `edit --no-keep-clips` | The clips were exported into a temporary folder and removed after the join; `outputs` lists no clips. Export them with `clips` to keep them |
 | `temporary_clips_left` | `assemble <project>`, `edit --no-keep-clips` | A temporary clips folder could not be removed (a file in it is open in another program); `files` names it. Delete it, or the next such run in the project removes it |
 | `skipped_clips` | `extend` | Files without a manifest entry were not re-exported; the message says why for each (a source, renamed during review, or added by hand) |
@@ -142,7 +143,8 @@ So do these combinations:
 
 | Command | `outputs` |
 |---|---|
-| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`) and `missing`, the keys whose path does not exist |
+| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`), `missing`, the keys whose path does not exist, and `cache_bytes`, the size of the cache folder (`null` when it is missing) |
+| `cache` | `cache` (the cache folder), `days`, `all`, `dry_run`, `removed` (least recently used first, each `path`, `bytes`, `last_used`: a local ISO time), `count`, `freed_bytes` (with `--dry-run`: what would be freed), `kept` (counts of the folders kept: `recent`, `project`, `in_use`), `failed` (the folders that could not be removed) and `cache_bytes` (the size of the cache folder before; `null` when it is missing) |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
 | `rerank` | `highlights`, `backup` (`highlights.before-rerank.json` when saved, else `null`), `saved`, `analyzed` (`--analyze` ran analyze), `style`, `from` (the style before), `candidates` (count), `suggested_top`, `top` and `before` (the first `--top` moments after and before: each `rank`, `id`, `source`, `start`, `end`, `score`, `label`; `top` also `was`, the moment's rank before or `null` for a new span), `new_ids`, `dropped_ids`, `notes`, `seconds`. With `needs_analyze`: `missing` (each `feature`, `detail`, `source`) and `analyze_command` |
 | `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; unless `--style` names a style, `detection` (the `highlights.json` block, see [detect](#detect)) |
@@ -2500,7 +2502,36 @@ cutpoint paths [--json]
 ```
 
 Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools,
-stage, styles, HUD presets, activity profiles and projects. `--json` writes them as one [JSON envelope](#json-output).
+stage, styles, HUD presets, activity profiles and projects. The cache line also shows the size of
+the cache folder. `--json` writes them as one [JSON envelope](#json-output).
+
+## cache
+
+```text
+cutpoint cache --prune DAYS [--all] [--dry-run] [--json]
+```
+
+Removes the cache folders of sources not used for `DAYS` days (1 or more), least recently used
+first. Each source analysed gets one folder in the cache (see [paths](#paths)) with its audio,
+transcript and other results. A removed folder is made again when the source is analysed again,
+which can take minutes to hours.
+
+- A folder counts as used when a run reads or writes it. Folders from before this version count
+  from their last write.
+- Folders of the projects in the projects folder stay. A project's folders are those of the
+  sources its `highlights.json`, `progress.json`, `pano.json`, `ui/meta.json` or a clips
+  `manifest.json` names. For a source that is offline, every folder named after it stays. `--all`
+  removes them too.
+- A folder in use always stays, also with `--all`: its project's run lock is held, a lock in the
+  folder is held, it cannot be read in full, or it was used since the prune started. On Windows a
+  folder with an open file stays too.
+- Only source cache folders are removed. The profile discovery cache, the 360 check cache, the
+  timeline index and any other file stay. Symlinks are never followed.
+- `--dry-run` lists what would be removed and removes nothing.
+
+A folder that cannot be removed is a `WARNING` (`cache_remove_failed` with `--json`), and the run
+goes on. One prune runs at a time (lock file `.prune.cutpoint-lock` in the cache folder); a second
+gets `folder_busy`. `--json` writes the result as one [JSON envelope](#json-output).
 
 ## guide
 

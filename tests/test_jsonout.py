@@ -161,9 +161,10 @@ def test_paths_json(home, capsys):
     outputs = doc["outputs"]
     assert outputs["home"] == str(home)
     keys = ["home", "config", "cache", "models", "tools", "stage", "styles"]
-    keys += ["presets", "profiles", "projects", "missing"]
+    keys += ["presets", "profiles", "projects", "missing", "cache_bytes"]
     assert list(outputs) == keys
-    assert all(Path(outputs[k]).is_absolute() for k in keys[:-1])
+    assert all(Path(outputs[k]).is_absolute() for k in keys[:-2])
+    assert outputs["cache_bytes"] is None  # no cache folder
     assert "home" in outputs["missing"]
     assert not home.exists()  # creates nothing, as without --json
 

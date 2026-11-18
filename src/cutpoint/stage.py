@@ -404,6 +404,7 @@ def _timeline_path(path: str) -> tuple[str, int] | None:
     except (OSError, KeyError, TypeError):
         return None
     logger.debug("timeline copy read %s -> %s", path, copy)
+    cache.mark_used(copy.parent)  # read without source_dir: in use for cutpoint cache --prune
     return str(copy), entry["copy_size"]
 
 
