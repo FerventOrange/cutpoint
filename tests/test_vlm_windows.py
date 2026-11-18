@@ -88,9 +88,8 @@ def test_gp_project_copy_compared_to_user_preset(tmp_path, home):
     assert "gp" in _gp("verbfeed", load_preset("verbfeed", proj))
 
 
-def test_gp_reference_is_bundled_without_user_preset(tmp_path, home, monkeypatch):
-    monkeypatch.setattr(paths, "PRESETS_DIR", tmp_path / "bundled")
-    write_preset(paths.PRESETS_DIR, verbfeed())
+def test_gp_reference_is_the_user_preset(tmp_path, home):
+    write_preset(paths.presets_dir(), verbfeed())
     proj = tmp_path / "proj"
     write_preset(proj / "hud_presets", verbfeed())
     assert "gp" not in _gp("verbfeed", load_preset("verbfeed", proj))

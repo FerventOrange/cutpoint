@@ -40,8 +40,7 @@ def isolated_kwargs() -> dict[str, Any]:
 # Isolated children also go in a Windows job object (:func:`kill_with_parent`):
 # out of the console's group, a ``taskkill /F`` of Python would leave ffmpeg running until its
 # next write to the closed pipe; the job (KILL_ON_JOB_CLOSE) ends it at once. POSIX does nothing:
-# the pipe closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first);
-# either way the next run's sweep removes the spool and the tmp proxy.
+# the pipe closes with the parent and ffmpeg 7+ exits on EPIPE (6.x finishes its pass first).
 
 
 def nice_prefix(args: list[str]) -> list[str]:

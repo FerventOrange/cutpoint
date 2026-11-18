@@ -8,7 +8,6 @@ import pytest
 
 from cutpoint import paths
 from cutpoint.events import regions
-from cutpoint.events.killfeed import OcrParams
 from hud_fixtures import boxfeed, write_preset
 
 
@@ -65,11 +64,9 @@ def test_nothing_is_created(home):
     assert not home.exists()
 
 
-# -- preset lookup order: project -> user -> bundled -------------------------
+# -- preset lookup order: project -> user -------------------------
 @pytest.fixture
-def preset_env(tmp_path, home, monkeypatch):
-    bundled = tmp_path / "bundled"
-    monkeypatch.setattr(paths, "PRESETS_DIR", bundled)
+def preset_env(tmp_path, home):
     project = tmp_path / "proj"
 
     def put(folder: Path, tag: str, game: str = "foo") -> Path:
@@ -80,28 +77,25 @@ def preset_env(tmp_path, home, monkeypatch):
         )
         return f
 
-    return put, project, project / "hud_presets", paths.presets_dir(), bundled
+    return put, project, project / "hud_presets", paths.presets_dir()
 
 
 def test_preset_lookup_order(preset_env):
-    put, project, proj_dir, user_dir, bundled_dir = preset_env
-    pb = put(bundled_dir, "bundled")
+    put, project, proj_dir, user_dir = preset_env
     pu = put(user_dir, "user")
     pp = put(proj_dir, "project")
-    assert regions.preset_files(project) == [pp, pu, pb]
-    assert regions.preset_files() == [pu, pb]
+    assert regions.preset_files(project) == [pp, pu]
+    assert regions.preset_files() == [pu]
     assert regions.load_preset("foo", project).player_tags == ("project",)
     assert regions.load_preset("foo").player_tags == ("user",)
     pp.unlink()
     assert regions.load_preset("foo", project).player_tags == ("user",)
     pu.unlink()
-    assert regions.load_preset("foo", project).player_tags == ("bundled",)
-    pb.unlink()
     assert regions.load_preset("foo", project) is None
 
 
 def test_load_preset_matches_game_key_not_file_name(preset_env):
-    _, _, _, user_dir, _ = preset_env
+    _, _, _, user_dir = preset_env
     user_dir.mkdir(parents=True)
     (user_dir / "whatever.json").write_text(
         json.dumps({"game": "bar", "regions": []}), encoding="utf-8"
@@ -112,19 +106,14 @@ def test_load_preset_matches_game_key_not_file_name(preset_env):
 
 
 def test_invalid_preset_file_ignored(preset_env):
-    _, _, _, user_dir, _ = preset_env
+    _, _, _, user_dir = preset_env
     user_dir.mkdir(parents=True)
     (user_dir / "foo.json").write_text("[1, 2]", encoding="utf-8")
     assert regions.load_preset("foo") is None
 
 
-# -- no bundled game presets: lookups must cope with an empty or missing bundled folder
-@pytest.mark.parametrize("bundled", ["missing", "empty"])
-def test_lookups_without_bundled_presets(tmp_path, home, monkeypatch, bundled):
-    folder = tmp_path / "bundled"
-    if bundled == "empty":
-        folder.mkdir()
-    monkeypatch.setattr(paths, "PRESETS_DIR", folder)
+# -- no game presets ship: lookups must cope with no preset folders at all
+def test_lookups_without_presets(tmp_path, home):
     proj = tmp_path / "proj"
     assert regions.preset_files() == []
     assert regions.load_preset("boxfeed", proj) is None
@@ -136,7 +125,7 @@ def test_lookups_without_bundled_presets(tmp_path, home, monkeypatch, bundled):
 
 def test_old_builtin_flag_is_ignored(preset_env, caplog):
     """``"builtin": true`` (older presets) is an unknown key: a normal preset, no warning."""
-    _, _, _, user_dir, _ = preset_env
+    _, _, _, user_dir = preset_env
     f = write_preset(user_dir, boxfeed(builtin=True))
     with caplog.at_level("WARNING"):
         p = regions.load_preset("boxfeed")
@@ -146,37 +135,23 @@ def test_old_builtin_flag_is_ignored(preset_env, caplog):
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 
-def test_user_preset_ocr_key_equals_bundled_one(preset_env):
-    """A preset in the user folder has the OCR key of the same file in the bundled folder."""
-    _, _, _, user_dir, bundled_dir = preset_env
-    user_file = write_preset(user_dir, boxfeed())
-    user = regions.load_preset("boxfeed")
-    bundled_dir.mkdir()
-    user_file.rename(bundled_dir / user_file.name)
-    bundled = regions.load_preset("boxfeed")
-    assert OcrParams().key("boxfeed", user) == OcrParams().key("boxfeed", bundled)
-    assert "preset" in OcrParams().key("boxfeed", user)
-
-
 @pytest.mark.parametrize("path", ["D:/Box Feed 2025.mp4", "/x/BOXES/match.mp4"])
 def test_preset_for_path_uses_match_hints_case_insensitively(preset_env, path):
-    _, _, _, user_dir, _ = preset_env
+    _, _, _, user_dir = preset_env
     write_preset(user_dir, boxfeed(match=["box feed", "boxes"]))
     assert regions.preset_for_path(path) == "boxfeed"
     assert regions.preset_for_path("/x/other.mp4") is None
 
 
 def test_preset_for_path_override(preset_env):
-    _, _, _, user_dir, _ = preset_env
+    _, _, _, user_dir = preset_env
     write_preset(user_dir, boxfeed(match=["box"]))
     assert regions.preset_for_path("/x/box.mp4", override="mine") == "mine"
     assert regions.preset_for_path("/x/box.mp4", override="auto") == "boxfeed"
 
 
-def test_preset_for_path_order_project_user_bundled(preset_env):
-    _, project, proj_dir, user_dir, bundled_dir = preset_env
-    write_preset(bundled_dir, boxfeed(game="from-bundled", match=["clip"]))
-    assert regions.preset_for_path("/x/clip.mp4", project=project) == "from-bundled"
+def test_preset_for_path_order_project_user(preset_env):
+    _, project, proj_dir, user_dir = preset_env
     write_preset(user_dir, boxfeed(game="from-user", match=["clip"]))
     assert regions.preset_for_path("/x/clip.mp4", project=project) == "from-user"
     write_preset(proj_dir, boxfeed(game="from-project", match=["clip"]))
@@ -185,7 +160,7 @@ def test_preset_for_path_order_project_user_bundled(preset_env):
 
 
 def test_preset_for_path_sorted_within_folder(preset_env):
-    _, _, _, user_dir, _ = preset_env
+    _, _, _, user_dir = preset_env
     for game in ("zeta", "alpha", "mid"):  # written out of order
         write_preset(user_dir, boxfeed(game=game, match=["clip"]))
     assert regions.preset_for_path("/x/clip.mp4") == "alpha"

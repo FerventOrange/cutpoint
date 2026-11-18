@@ -1950,8 +1950,6 @@ class FakePrefetch:
         self.closed_with_folder: bool | None = None
         self.closed_early: bool | None = None
         self.probe = lambda: None
-        self.mode = None  # CUTPOINT_ANALYZE_SHARED_DECODE off
-        self.scenes: list[object] = []
         self.waits: dict[str, float] = {}
 
     def __enter__(self):
@@ -1962,9 +1960,8 @@ class FakePrefetch:
             self.closed_with_folder = self.proj.is_dir()
             self.closed_early = self.probe()
 
-    def offer(self, src, duration, ok, scene=None):
+    def offer(self, src, duration, ok):
         self.offers.append((Path(src).name, duration, ok))
-        self.scenes.append(scene)
 
 
 @pytest.fixture
@@ -2004,25 +2001,11 @@ def test_sources_are_offered_to_the_ocr_prefetch(prefetched, device, read_error,
     assert prefetched.pre.closed_early  # stopped once the layers are done
 
 
-@pytest.mark.parametrize(("device", "mode", "planned"), [("cuda", "split", True),
-                         ("cpu", "split", False), ("cuda", None, False)])  # fmt: skip
-def test_a_shared_decode_mode_offers_the_scene_plan(prefetched, monkeypatch, device, mode, planned):
-    prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
-    prefetched.device, prefetched.pre.mode = device, mode
-    monkeypatch.setattr(analyze, "_scene_plan", lambda src, duration: ("plan", src.name, duration))
-    prefetched.go("gaming", use_scenes=True)
-    assert prefetched.pre.scenes == [("plan", "a.mp4", 60.0) if planned else None]
-
-
-def test_a_style_without_scenes_turns_them_off_for_the_source_and_the_prefetch(
-    prefetched, monkeypatch
-):
+def test_a_style_without_scenes_turns_them_off_for_the_source(prefetched, monkeypatch):
     """The style's own ``use_scenes`` is applied before the sources are transcribed."""
     from dataclasses import replace  # noqa: PLC0415
 
     prefetched.plan = plan(reactions=("audio",), keyframes=("ocr",))
-    prefetched.pre.mode = "split"
-    monkeypatch.setattr(analyze, "_scene_plan", lambda src, duration: ("plan", src.name, duration))
     seen = []
     inner = analyze.analyze_source
 
@@ -2033,7 +2016,6 @@ def test_a_style_without_scenes_turns_them_off_for_the_source_and_the_prefetch(
     monkeypatch.setattr(analyze, "analyze_source", source)
     prefetched.go(replace(get_style("gaming"), use_scenes=False), use_scenes=True)
     assert seen == [False]
-    assert prefetched.pre.scenes == [None]  # no scene plan offered
     assert _hl(prefetched)["settings"]["scenes"] is False
 
 

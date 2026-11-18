@@ -63,7 +63,7 @@ PANNS_CKPT_MIRRORS: tuple[str, ...] = (
 PANNS_CKPT_SIZE = 327428481
 PANNS_CKPT_SHA256 = "dd3b4043a87d4ec13df8082c0fcfee3fb5084151808e47e060987a95eabdd142"
 # LAION improved-aesthetic-predictor head (Apache-2.0), converted from the upstream pickled
-# .pth to .npz by scripts/convert_aesthetic_head.py (float32 values unchanged); tried in order.
+# .pth to .npz (float32 values unchanged; recipe in CONTRIBUTING.md); tried in order.
 AESTHETIC_MIRRORS: tuple[str, ...] = (
     "https://huggingface.co/FerventOrange/cutpoint-models/resolve/main/aesthetic/"
     "sac%2Blogos%2Bava1-l14-linearMSE.npz",

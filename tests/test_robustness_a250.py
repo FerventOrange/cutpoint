@@ -275,20 +275,6 @@ def test_watch_extract_ignores_a_foreign_temp(
     assert got == []
 
 
-def test_sweep_of_the_prefetch_keeps_a_live_runs_proxy(tmp_path: Path) -> None:
-    from cutpoint.events import ocr_prefetch  # noqa: PLC0415
-
-    live = ffmpeg_utils.unique_tmp(tmp_path / "proxy.mp4")
-    dead = tmp_path / f"proxy.{_dead_pid()}.{_host()}.deadbeef.tmp.mp4"
-    old = tmp_path / "proxy.tmp.mp4"  # the fixed name of older versions
-    for p in (live, dead, old):
-        p.write_bytes(b"x")
-    ocr_prefetch.sweep(tmp_path)
-    assert live.exists()
-    assert not dead.exists()
-    assert not old.exists()
-
-
 # -- F4: a missing ffmpeg is not swallowed by the probes
 def test_read_probes_let_a_missing_ffmpeg_through(monkeypatch: pytest.MonkeyPatch) -> None:
     def missing(*_a: object) -> object:

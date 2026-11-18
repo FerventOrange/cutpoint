@@ -337,7 +337,13 @@ def exports(monkeypatch) -> list[tuple]:
 def _graded_clips(tmp_path: Path, lut: Path | None, **grade) -> Path:
     clips = tmp_path / "proj" / "clips"
     write(clips / "001_a.mp4")
-    e = {"file": "001_a.mp4", "source": str(write(tmp_path / "a.mp4")), "start": 10.0, "end": 20.0}
+    e = {
+        "file": "001_a.mp4",
+        "source": str(write(tmp_path / "a.mp4")),
+        "start": 10.0,
+        "end": 20.0,
+        "pick": {"start": 10.0, "end": 20.0},
+    }
     e |= ({"lut": str(lut)} if lut else {}) | grade
     write(clips / "manifest.json", json.dumps({"format": FMT, "clips": [e]}))
     return clips
@@ -367,7 +373,14 @@ def test_extend_stops_before_any_export_when_the_recorded_lut_is_gone(tmp_path, 
 
 
 def test_extend_reuse_needs_the_same_grade():
-    old = {"source": "a.mp4", "start": 1.0, "end": 2.0, "lut": "/l/a.cube", "lut_strength": 1.0}
+    old = {
+        "source": "a.mp4",
+        "start": 1.0,
+        "end": 2.0,
+        "audio_fade": 0.25,
+        "lut": "/l/a.cube",
+        "lut_strength": 1.0,
+    }
     assert extend._reusable(old, dict(old), True, 0.25)
     assert not extend._reusable(old, old | {"lut_strength": 0.5}, True, 0.25)
     assert not extend._reusable({k: v for k, v in old.items() if k[:3] != "lut"}, old, True, 0.25)
@@ -521,7 +534,7 @@ def _auto_entry(**over) -> dict:
 
 
 def test_extend_reuse_needs_the_same_automatic_grade():
-    old = {"source": "a.mp4", "start": 1.0, "end": 2.0} | _auto_entry()
+    old = {"source": "a.mp4", "start": 1.0, "end": 2.0, "audio_fade": 0.25} | _auto_entry()
     assert extend._reusable(old, dict(old), True, 0.25)
     assert not extend._reusable(old, old | _auto_entry(strength=0.5), True, 0.25)
     assert not extend._reusable(old, {k: v for k, v in old.items() if k != "color"}, True, 0.25)

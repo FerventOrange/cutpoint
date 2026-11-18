@@ -33,7 +33,8 @@ def reads(monkeypatch) -> list[Path]:
 def _clips_dir(tmp_path: Path, **entry) -> Path:
     clips = tmp_path / "proj" / "clips"
     write(clips / "001_a.mp4")
-    e = {"file": "001_a.mp4", "start": 10.0, "end": 20.0} | entry
+    e = {"file": "001_a.mp4", "start": 10.0, "end": 20.0, "pick": {"start": 10.0, "end": 20.0}}
+    e |= entry
     write(clips / "manifest.json", json.dumps({"format": FMT, "clips": [e]}))
     return clips
 
@@ -74,6 +75,7 @@ def test_extend_reuse_copies_unchanged_clips_when_only_the_file_read_differs(tmp
     prior = tmp_path / "proj" / "earlier"
     write(prior / "001_a.mp4", "earlier")
     entry = {"file": "001_a.mp4", "source": str(orig), "start": 9.0, "end": 21.0}
+    entry["pick"] = {"start": 10.0, "end": 20.0}
     entry |= {"read_from": str(tmp_path / "copy.mp4"), "audio_fade": 0.25}
     write(prior / "manifest.json", json.dumps({"format": FMT, "clips": [entry]}))
 
@@ -110,7 +112,8 @@ def _srt_clips(tmp_path: Path, srt_file: str | None = "001_a.srt") -> Path:
     write(clips / "001_a.mp4")
     write(clips / "001_a.srt", srt.format_srt([(0.0, 1.0, "stale")]))
     e = {"file": "001_a.mp4", "source": str(write(tmp_path / "a.mp4")), "start": 10.0}
-    e |= {"end": 20.0} | ({"srt": srt_file} if srt_file else {})
+    e |= {"end": 20.0, "pick": {"start": 10.0, "end": 20.0}}
+    e |= {"srt": srt_file} if srt_file else {}
     write(clips / "manifest.json", json.dumps({"format": FMT, "clips": [e]}))
     return clips
 
@@ -163,8 +166,22 @@ def test_extend_removes_the_listed_srt_of_a_clip_deleted_during_review(
     write(out / "002_b.srt", "old")
     write(out / "notes.srt", "mine")  # not listed: made by hand
     entries = [
-        {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "srt": "001_a.srt"},
-        {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
+        {
+            "file": "001_a.mp4",
+            "source": src,
+            "start": 10.0,
+            "end": 20.0,
+            "pick": {"start": 10.0, "end": 20.0},
+            "srt": "001_a.srt",
+        },
+        {
+            "file": "002_b.mp4",
+            "source": src,
+            "start": 30.0,
+            "end": 40.0,
+            "pick": {"start": 30.0, "end": 40.0},
+            "srt": "002_b.srt",
+        },
     ]
     write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
@@ -191,8 +208,22 @@ def test_extend_out_force_removes_a_listed_clip_it_does_not_re_export_and_its_sr
     write(out / "009_mine.mp4", "mine")  # not listed: added by hand
     write(out / ".001_x.part.mp4", "partial")  # left by a killed run
     entries = [
-        {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "srt": "001_a.srt"},
-        {"file": "002_b.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_b.srt"},
+        {
+            "file": "001_a.mp4",
+            "source": src,
+            "start": 10.0,
+            "end": 20.0,
+            "pick": {"start": 10.0, "end": 20.0},
+            "srt": "001_a.srt",
+        },
+        {
+            "file": "002_b.mp4",
+            "source": src,
+            "start": 30.0,
+            "end": 40.0,
+            "pick": {"start": 30.0, "end": 40.0},
+            "srt": "002_b.srt",
+        },
     ]
     write(out / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
@@ -255,7 +286,14 @@ def test_extend_in_place_keeps_a_clip_renamed_in_case_only_and_its_srt(
     data = json.loads((clips / "manifest.json").read_text(encoding="utf-8"))
     src = data["clips"][0]["source"]
     data["clips"].append(
-        {"file": "002_Joke.mp4", "source": src, "start": 30.0, "end": 40.0, "srt": "002_Joke.srt"}
+        {
+            "file": "002_Joke.mp4",
+            "source": src,
+            "start": 30.0,
+            "end": 40.0,
+            "pick": {"start": 30.0, "end": 40.0},
+            "srt": "002_Joke.srt",
+        }
     )
     write(clips / "manifest.json", json.dumps(data))
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
@@ -303,8 +341,22 @@ def test_extend_keeps_an_exact_clip_at_its_own_edges_and_short_fade(tmp_path, mo
     write(clips / "001_a.mp4")
     write(clips / "002_word.mp4")
     entries = [
-        {"file": "001_a.mp4", "source": src, "start": 10.0, "end": 20.0, "audio_fade": 0.25},
-        {"file": "002_word.mp4", "source": src, "start": 30.0, "end": 30.12, "exact": True}
+        {
+            "file": "001_a.mp4",
+            "source": src,
+            "start": 10.0,
+            "end": 20.0,
+            "pick": {"start": 10.0, "end": 20.0},
+            "audio_fade": 0.25,
+        },
+        {
+            "file": "002_word.mp4",
+            "source": src,
+            "start": 30.0,
+            "end": 30.12,
+            "pick": {"start": 30.0, "end": 30.12},
+            "exact": True,
+        }
         | {"audio_fade": 0.01, "speech_aware": False, "smart_tail": False},
     ]
     write(clips / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
@@ -352,3 +404,13 @@ def test_extend_reuse_manifest_entry_without_start_is_not_reused(home, tmp_path,
         clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False), reuse_dir=reuse
     )
     assert (out / "001_a.mp4").exists()
+
+
+def test_extend_refuses_a_manifest_entry_without_a_pick(reads, tmp_path) -> None:
+    clips = _clips_dir(tmp_path, source=str(write(tmp_path / "a.mp4")))
+    doc = json.loads((clips / "manifest.json").read_text(encoding="utf-8"))
+    del doc["clips"][0]["pick"]
+    write(clips / "manifest.json", json.dumps(doc))
+    with pytest.raises(ValueError, match=r"no pick.*export the clips again"):
+        extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+    assert reads == []

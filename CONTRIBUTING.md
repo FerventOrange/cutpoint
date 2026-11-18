@@ -141,6 +141,23 @@ workflow artifact only, not to a release. One-time setup first: add a pending tr
 project `cutpoint` (owner `FerventOrange`, repository `cutpoint`, workflow `release.yml`,
 environment `testpypi`), and create a `testpypi` environment in the repository settings.
 
+## The aesthetic head file
+
+`cutpoint setup --only visual` downloads the LAION improved-aesthetic-predictor head
+(`sac+logos+ava1-l14-linearMSE`, Apache-2.0) as a numpy `.npz`, pinned by `AESTHETIC_SIZE` and
+`AESTHETIC_SHA256` in `src/cutpoint/events/setup.py`. The upstream file is a pickled `.pth`
+(`torch.save` zip). To make the `.npz` again:
+
+1. Read the `.pth` without torch, with a restricted unpickler that allows only
+   `collections.OrderedDict` and torch's `_rebuild_tensor_v2` / `_rebuild_parameter`, and
+   `torch.load(path, weights_only=True)` as well when torch is installed. Both must give the same
+   float32 arrays (a few `layers.N.weight` / `layers.N.bias` tensors).
+2. Save them with `np.savez(dst, **state_dict)`, keys and values unchanged, then load the `.npz`
+   with `allow_pickle=False` and check every array is equal.
+3. Pin the size and sha256 of that exact file. `np.savez` output differs byte for byte on every
+   run (zip timestamps), so convert once, upload that file to the mirrors listed in
+   `AESTHETIC_MIRRORS`, and pin its digest.
+
 ## Layout
 
 See [docs/architecture.md](docs/architecture.md).

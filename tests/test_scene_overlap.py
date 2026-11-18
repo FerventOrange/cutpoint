@@ -86,9 +86,7 @@ def world(home, tmp_path, monkeypatch):
     w.scene_calls, w.scene_threads, w.scene_error = [], [], None
     w.started = threading.Event()  # the fake scene work has begun
 
-    def scene(
-        src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None, cpu_free=False
-    ):
+    def scene(src_, cdir, duration, offset=0.0, limit=None, cancel=None, cpu_free=False):
         w.scene_calls.append(cancel)
         w.scene_threads.append(threading.current_thread())
         w.started.set()
@@ -375,22 +373,6 @@ def test_a_low_memory_load_starts_no_scene_thread(world, monkeypatch):
     assert caught.value is err
     assert world.scene_calls == [] and FakeTr.calls == 0 and not scene_threads()
     assert not (world.cdir / analyze.SCENES_FILE).exists()
-
-
-def test_a_shared_decode_uses_the_serial_path(world, monkeypatch):
-    """F2: a scene share (shared-decode mode) replaces the decode; no overlap thread then."""
-    monkeypatch.setenv(ENV, "1")
-    share = types.SimpleNamespace(mode="split", summary=lambda: "stub")
-    monkeypatch.setattr(analyze, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
-    seen = []
-    scene = analyze.scene_cuts
-    monkeypatch.setattr(
-        analyze, "scene_cuts", lambda *a, **k: seen.append(k.get("shared")) or scene(*a, **k)
-    )
-    res = world.source_with(read_checked=lambda info, rec: share)
-    assert seen == [share]
-    assert world.scene_threads == [threading.current_thread()] and world.scene_calls == [None]
-    assert "overlap" not in res.stages and res.signals.cuts == CUTS
 
 
 def hw_ffmpeg(monkeypatch, *, cancels, calls):

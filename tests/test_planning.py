@@ -178,7 +178,6 @@ def test_pad_applies_and_records(readable):
     assert rec == {
         "requested": {"start": 2.0, "end": 3.0},
         "applied": {"start": 2.0, "end": 3.0},
-        "pre_pad": {"start": 10.0, "end": 20.0},
     }
 
 
@@ -379,7 +378,6 @@ def test_plan_clips_names_tails_padding_and_crop(plan_env):
     first, fixed, last = plans
     assert first.tail.reason == "smart tail off" and first.keep == (30.0, 40.0)
     assert (first.start, first.end) == (29.0, 41.0)  # padded after the tail
-    assert first.pad_rec["pre_pad"] == {"start": 30.0, "end": 40.0}
     assert fixed.tail.reason == "fixed tail 3s" and fixed.keep == (41.0, 48.0)
     assert last.keep == (20.0, 50.0) and last.end == 50.0  # clamped to the source
     assert str(first.crop) == "640:480:0:0" and first.crop_source == "cli"

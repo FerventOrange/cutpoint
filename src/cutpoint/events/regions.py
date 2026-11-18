@@ -1,16 +1,12 @@
 """Per-game HUD regions for OCR, in 1920x1080 reference pixels.
 
 Games use JSON presets, looked up in this order: the project's
-``<project>/hud_presets/<game>.json``, the user presets in
-``<CUTPOINT_HOME>/presets`` (where region discovery writes by default), then
-the presets bundled with the package (``cutpoint/events/presets``). They are
+``<project>/hud_presets/<game>.json``, then the user presets in
+``<CUTPOINT_HOME>/presets`` (where region discovery writes by default). They are
 written by region discovery (:mod:`cutpoint.events.discover`) and calibrated
-by hand. No game presets ship with the package; the bundled folder is kept
-for generic ones.
+by hand. No game presets ship with the package.
 
-The user and bundled folders are the installed, trusted tiers: a preset copied
-into ``<CUTPOINT_HOME>/presets`` behaves exactly like the same file bundled with
-the package (same OCR and VLM cache keys). Project presets are per-project
+The user folder is the installed, trusted tier. Project presets are per-project
 overrides and are never trusted.
 
 Preset JSON::
@@ -306,8 +302,8 @@ def bigtext_region() -> Region:
 
 
 def preset_files(project: Path | None = None) -> list[Path]:
-    """JSON preset files: project-local first, then user presets, then bundled ones."""
-    dirs = ([project / "hud_presets"] if project else []) + [paths.presets_dir(), paths.PRESETS_DIR]
+    """JSON preset files: project-local first, then user presets."""
+    dirs = ([project / "hud_presets"] if project else []) + [paths.presets_dir()]
     return [p for d in dirs if d.is_dir() for p in sorted(d.glob("*.json"))]
 
 
@@ -326,10 +322,9 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def is_installed_path(path: Path | None) -> bool:
-    """Whether a preset at ``path`` is installed: bundled (``path`` None, or in
-    :data:`~cutpoint.paths.PRESETS_DIR`) or a user preset (in
-    :func:`~cutpoint.paths.presets_dir`), not a project one."""
-    return path is None or path.parent in (paths.PRESETS_DIR, paths.presets_dir())
+    """Whether a preset at ``path`` is installed: built in (``path`` None) or a user preset
+    (in :func:`~cutpoint.paths.presets_dir`), not a project one."""
+    return path is None or path.parent == paths.presets_dir()
 
 
 def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPreset:
@@ -390,7 +385,7 @@ def stale_mapping(data: dict[str, Any]) -> bool:
 def load_preset(game: str | None, project: Path | None = None) -> HudPreset | None:
     """The HUD preset for ``game``.
 
-    Lookup order: project, user (``<CUTPOINT_HOME>/presets``), then bundled. A discovered
+    Lookup order: project, then user (``<CUTPOINT_HOME>/presets``). A discovered
     preset of footage that is not 16:9 from before the height fix is skipped
     (:func:`stale_mapping`), so discovery makes it again.
 
@@ -416,7 +411,7 @@ def preset_for_path(
 ) -> str | None:
     """Game key for ``path`` (or ``override`` when not "auto").
 
-    The ``match`` hints of JSON presets, in lookup order (project, user, bundled).
+    The ``match`` hints of JSON presets, in lookup order (project, user).
     Returns None when nothing matches (see :func:`game_key_for_path`).
     """
     if override and override != "auto":

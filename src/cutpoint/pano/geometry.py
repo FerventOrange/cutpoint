@@ -691,7 +691,6 @@ def project_box_visible(
     box_h: float,
     steps: int = 9,
     polar_shift: float = 0.5,
-    grid: bool = True,
 ) -> tuple[tuple[float, float, float, float], float] | None:
     """Where a display-frame box lands in a rendered flat view (fractions of the frame).
 
@@ -719,8 +718,7 @@ def project_box_visible(
     points with ``|y| <= 1`` too, or moving an off-frame yaw line into the
     frame, tracked the rendered QA worse: score r 0.80 vs 0.86). A box with a
     share below :data:`SLIVER_SHARE` is the part in view instead
-    (:func:`sliver_box`; the share stays the cross's), unless ``grid`` is False
-    (the version 4 box, for the legacy edge rule).
+    (:func:`sliver_box`; the share stays the cross's).
 
     The share of the box inside the frame (0-1) is the clipped box's area over
     the box's projected extent (both in frame units, the extent clamped to 2
@@ -773,7 +771,7 @@ def project_box_visible(
     vis = np.clip([xs.min(), ys.min(), xs.max(), ys.max()], -1.0, 1.0)
     vis_area = max(0.0, vis[2] - vis[0]) * max(0.0, vis[3] - vis[1])
     share = float(vis_area / full_area) if full_area > 0 else 0.0
-    if grid and share < SLIVER_SHARE:
+    if share < SLIVER_SHARE:
         box = sliver_box(r, tx, ty, box_yaw, box_pitch, box_w, box_h) or box
     return box, share
 

@@ -296,7 +296,16 @@ def _setup(home: Path, monkeypatch) -> Path:
         ),
         encoding="utf-8",
     )  # fmt: skip
-    entries = [{"file": n, "source": str(src), "start": 10.0, "end": 20.0} for n in NAMES]
+    entries = [
+        {
+            "file": n,
+            "source": str(src),
+            "start": 10.0,
+            "end": 20.0,
+            "pick": {"start": 10.0, "end": 20.0},
+        }
+        for n in NAMES
+    ]
     fmt = {"width": 1920, "height": 1080, "fps": 30, "vertical": False}
     for n in NAMES:
         (clips_dir / n).write_bytes(b"old " + n.encode())

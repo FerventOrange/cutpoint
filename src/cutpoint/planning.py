@@ -273,8 +273,8 @@ def pad(
 
     Returns:
         ``(new_start, new_end, record)``. ``record`` (for manifest.json) has
-        the requested and applied padding, the pre-pad in/out points and
-        ``clamped`` when a side got less than requested.
+        the requested and applied padding and ``clamped`` when a side got
+        less than requested.
     """
     lo, hi = _readable_bounds(src, info, start)
     b = entry or {}
@@ -290,7 +290,6 @@ def pad(
     record = {
         "requested": {"start": padding.start, "end": padding.end},
         "applied": {"start": applied_s, "end": max(0.0, applied_e)},
-        "pre_pad": {"start": round(start, 3), "end": round(end, 3)},
     }
     if clamped:
         record["clamped"] = clamped

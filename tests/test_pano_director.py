@@ -28,84 +28,6 @@ FWD_V = [0.0, -1.0, 0.0]  # camera ray far from the wearer cone
 N = 12  # view frames, every 1.2 s
 
 
-def legacy_params() -> D.DirectorParams:
-    """The settings every path used before the direction-quality work (A/B baseline).
-
-    Pinned here, not taken from the defaults, so it stays the same when they change (the
-    ``legacy`` edge rule, ``framing="bin"`` and ``people_size="close"`` stay reachable through
-    ``--param`` / ``pano.director``). It covers the parameters only: the ``follow`` kind tweak (:data:`KIND_TWEAKS`,
-    added with the penalties) did not exist before, so a ``follow`` moment gets
-    w_people 1.2 / w_forward 0.5 / no selfie even with these settings (older
-    paths treated it as an unknown kind, no tweak). ``framing="bin"`` keeps the
-    bin-centre path (no subject tracking, fitted FOV, safe-area pass or
-    segment-edge shot rule).
-    """
-    return D.DirectorParams(
-        dt=0.5,
-        n_bins=36,
-        w_people=1.0,
-        w_group=0.35,
-        w_beauty=0.3,
-        w_forward=0.25,
-        forward_width_deg=50.0,
-        w_selfie_talk=0.55,
-        w_selfie_group=0.25,
-        selfie_base=0.05,
-        selfie_mode="auto",
-        selfie_ok_min=0.0,
-        w_occlude=0.0,
-        w_wearer=0.0,
-        wearer_clear_deg=20.0,
-        vertical_wearer_cone_deg=73.821,
-        people_size="close",
-        max_speed=45.0,
-        max_accel=60.0,
-        move_cost=0.12,
-        cut_cost=1.6,
-        min_hold_s=2.5,
-        smooth_s=1.0,
-        upright_hold_s=0.0,
-        pitch_default=-8.0,
-        pitch_min=-25.0,
-        pitch_max=5.0,
-        fov_wide=100.0,
-        fov_friend=86.0,
-        fov_selfie=110.0,
-        selfie_pitch_up=12.0,
-        vertical_fov_wide=62.0,
-        vertical_fov_friend=56.0,
-        vertical_fov_selfie=75.0,
-        vertical_occlude_fov=86.0,
-        framing="bin",
-        subject_max_vfrac=0.62,
-        subject_max_wfrac=0.5,
-        safe_margin=0.05,
-        fov_min=72.0,
-        fov_max=110.0,
-        vertical_fov_min=72.0 * 56 / 86,
-        vertical_fov_max=110.0 * 56 / 86,
-        fov_rate=12.0,
-        dead_zone=0.2,
-        headroom=0.10,
-        edge_rule="legacy",
-        w_shift=1.0,
-        w_widen=0.8,
-        include_margin=0.03,
-        include_pad_deg=0.0,
-        include_check_pad_deg=0.0,
-        near_soft_as_hard=False,
-        exclude_clear_deg=3.0,
-        include_max_shift=0.35,
-        include_min_subject_h=0.19,
-        include_bridge_s=2.0,
-        near_min_h_deg=15.0,
-        near_box_scale=1.0,
-        near_min_score=0.6,
-        cut_min_gain_s=1.0,
-        cut_min_gap_s=4.0,
-    )
-
-
 def make_views(boxes: dict[int, list[tuple]], source: str) -> VW.PanoViews:
     return helpers.make_views(boxes, source, n=N)
 
@@ -193,19 +115,13 @@ def test_huge_friend_scores_negative_and_occludes(stub_scores: dict) -> None:
     assert ds["occlude"][3, b90] == 1.0 and ds["occlude"][3, b270] == 0.0
     assert ds["subject"][3, b270].tolist() == pytest.approx([270.0, -8.0, 10.0, 25.0])
     assert np.isnan(ds["subject"][3, b90]).all()
-    legacy = VW.direction_scores(pv, people_size="close")  # old rule: >70 deg is the wearer
-    assert legacy["people"][3, b90] == pytest.approx(0.0, abs=1e-3)
 
 
 def test_huge_box_at_yaw_90_is_avoided(stub_scores: dict) -> None:
     huge = (0.99, 90.0, -10.0, 80.0, 85.0, FWD_V)
     stub_scores["beauty"][:, 2] = 1.0  # a vista behind the occluder (view yaw 90)
     pv = make_views({f: [huge] for f in range(N)}, "avoid.lrv")
-    new = path_of(pv)
-    old = path_of(pv, legacy_params())
-    assert mean_abs_yaw(old, 90.0) < 15.0  # the old director looked into it
-    assert mean_abs_yaw(new, 90.0) > 45.0
-    assert new["quality"]["too_close"] < old["quality"]["too_close"]
+    assert mean_abs_yaw(path_of(pv), 90.0) > 45.0
 
 
 def test_wearer_in_view_is_penalised(stub_scores: dict) -> None:
@@ -325,48 +241,8 @@ def safe_ctx(n: int, subj_yaw: float, fov: float) -> dict:
     }
 
 
-LEGACY_EDGES = D.with_params(D.DirectorParams(), {"edge_rule": "legacy"})  # the v4 edge rule
-
-
-@pytest.mark.slow
-def test_safe_area_pass_widens_then_cuts() -> None:
-    p = LEGACY_EDGES
-    n = 30
-    ctx = safe_ctx(n, 36.0, 80.0)  # at the edge of an 80 deg view, inside a 100 deg one
-    shots = D._safe_area_pass(ctx, [(0, n)], (0, n), p)
-    assert shots == [(0, n)]
-    assert ctx["fov"].min() > 80.0 and ctx["fov"].max() <= 110.0
-    ctx = safe_ctx(n, 62.0, 80.0)  # beyond half of fov_max: a yaw shift reframes it
-    assert D._safe_area_pass(ctx, [(0, n)], (0, n), p) == [(0, n)]
-    assert set(ctx["target"]) == {"friend"} and ctx["yaw"].max() > 5.0
-    ctx = safe_ctx(n, 90.0, 80.0)  # out of reach: only a cut helps
-    ctx["yaw_score"][:, 18] = 0.5  # the forward bin scores best
-    shots = D._safe_area_pass(ctx, [(0, n)], (0, n), p)
-    assert set(ctx["target"]) == {"forward"}
-    assert ctx["yaw"] == pytest.approx(180.0) and np.isnan(ctx["subj"]).all()
-    assert shots == [(0, n)]
-    ctx = safe_ctx(n, 90.0, 80.0)
-    ctx["subj"][:10, 0] = 0.0  # well framed for the first 5 s: cut later
-    ctx["yaw_score"][:, 27] = 1.0  # a vista at 270
-    shots = D._safe_area_pass(ctx, [(0, n)], (0, n), p)
-    assert shots[0] == (0, 10) and len(shots) == 2
-    assert ctx["yaw"][10:] == pytest.approx(-90.0) and ctx["target"][10] == "view"
-    ctx = safe_ctx(60, 0.0, 80.0)  # two bad stretches in one shot: two cuts
-    ctx["subj"][10:20, 0] = ctx["subj"][35:45, 0] = 90.0
-    ctx["yaw_score"][:, 27] = 1.0
-    shots = D._safe_area_pass(ctx, [(0, 60)], (0, 60), p)
-    assert shots[0][0] == 0 and shots[-1][1] == 60 and len(shots) == 5
-    assert all(x[1] == y[0] for x, y in pairwise(shots))
-    assert ctx["target"][12] == ctx["target"][40] == "view" and ctx["target"][27] == "friend"
-    ctx = safe_ctx(60, 0.0, 80.0)  # less than min_hold_s apart: one cut-away
-    ctx["subj"][10:14, 0] = ctx["subj"][16:20, 0] = 90.0
-    ctx["yaw_score"][:, 27] = 1.0
-    shots = D._safe_area_pass(ctx, [(0, 60)], (0, 60), p)
-    assert len(shots) == 3 and shots[0] == (0, 10) and shots[-1][1] == 60
-
-
 def test_safe_area_pass_flags_an_edge_intruder() -> None:
-    p = LEGACY_EDGES
+    p = D.DirectorParams()
     n = 10
     ctx = safe_ctx(n, 0.0, 86.0)
     big = np.array([[40.0, -15.0, 30.0, 60.0]])  # a big friend cut by the right edge
@@ -375,24 +251,8 @@ def test_safe_area_pass_flags_an_edge_intruder() -> None:
     assert ctx["fov"].min() > 86.0 or set(ctx["target"]) != {"friend"}
 
 
-def test_close_person_mostly_outside_the_view_is_an_edge_intruder() -> None:
-    p = LEGACY_EDGES
-    size = (1920, 1080)
-    close = np.array([70.0, -10.0, 80.0, 60.0])  # inches away: only its left part is in view
-    assert D.close_edge_share(0.0, -10.0, 86.0, size, close) > D.CLOSE_MIN_SHARE
-    assert D.close_edge_share(0.0, -10.0, 86.0, size, np.array([0.0, -10.0, 60.0, 60.0])) == 0
-    assert D.close_edge_share(180.0, -10.0, 86.0, size, close) == 0.0
-    r = G.project_box_visible(0.0, -10.0, 86.0, *size, *close)
-    assert r is None or r[1] < 0.25  # the projected-box rule alone does not see it
-    ctx = safe_ctx(10, 0.0, 86.0)
-    ctx["near"] = [close[None, :]] * 10
-    assert D._framing_checks(ctx, (0, 10), p).bad(0)
-    ctx["target"] = ["selfie"] * 10  # the wearer framed on purpose: no intruders
-    assert not D._framing_checks(ctx, (0, 10), p).bad(0)
-
-
 def test_wearer_coming_in_from_the_bottom_is_no_intruder() -> None:
-    p = LEGACY_EDGES
+    p = D.DirectorParams()
     n = 10
     ctx = safe_ctx(n, 0.0, 96.0)
     arms = np.array([[0.0, -80.0, 100.0, 90.0, 1.0]])  # the wearer's arms / skis below
@@ -400,15 +260,13 @@ def test_wearer_coming_in_from_the_bottom_is_no_intruder() -> None:
     assert not D._framing_checks(ctx, (0, n), p).bad(0)
     assert D._safe_area_pass(ctx, [(0, n)], (0, n), p) == [(0, n)]
     assert set(ctx["target"]) == {"friend"} and ctx["fov"] == pytest.approx(96.0)
-    ctx["near"] = [np.array([[20.0, -80.0, 100.0, 90.0, 0.0]])] * n  # anyone else: intruder
-    assert D._framing_checks(ctx, (0, n), p).bad(0)
     ctx["near"] = [np.array([[0.0, -10.0, 60.0, 60.0, 1.0]])] * n  # the wearer mid-frame
     assert D._framing_checks(ctx, (0, n), p).bad(0)
 
 
 @pytest.mark.slow
 def test_cut_away_only_where_it_helps_and_lasts_within_the_segment() -> None:
-    p = LEGACY_EDGES
+    p = D.DirectorParams()
     n = 30
     ctx = safe_ctx(n, 0.0, 80.0)
     ring = np.array([[y, -10.0, 60.0, 60.0] for y in range(0, 360, 45)])  # close all around
@@ -431,7 +289,6 @@ def test_subject_paths_have_subj_keys_and_evaluate_like_v1(stub_scores: dict) ->
     subj = [k for k in new["keys"] if "subj" in k]
     assert subj and subj[0]["subj"] == pytest.approx([40.0, -10.0, 10.0, 30.0])
     assert all(k["fov"] != 96.0 for k in subj if k["target"] == "friend")  # fitted
-    assert not any("subj" in k for k in path_of(pv, legacy_params())["keys"])
     v1 = {
         **new,
         "version": 1,
@@ -611,7 +468,6 @@ def test_held_frame_only_for_upright_clips() -> None:
     # held yaw 0 = the heading low-passed: the offset is the part of the turn not followed
     assert off is not None and off.shape == t.shape
     assert np.abs(off).max() > 30.0 and abs(off[150]) < 5.0  # a steady turn: followed mid-way
-    assert legacy_params().upright_hold_s == 0.0
     with pytest.raises(ValueError):
         D.with_params(p, {"upright_hold_s": -1})
 
@@ -1140,17 +996,12 @@ def test_a_margin_only_violation_is_fixed_and_the_segment_holds() -> None:
         ctx = safe_ctx(n, 0.0, 80.0)
         block(ctx, lost)
         ctx["yaw_score"][:, 27] = 1.0
-        if cut_at == 0:  # the v4 rule fixes the segment only
-            assert D._safe_area_pass(ctx, [(0, n)], (10, 30), LEGACY_EDGES) == [(0, n)]
-            assert set(ctx["target"]) == {"friend"}
 
 
 def test_a_one_step_violation_is_fixed() -> None:
     n = 20
     ctx = safe_ctx(n, 0.0, 80.0)
     ctx["subj"][8, 0] = 36.0  # at the edge for one step
-    D._safe_area_pass(ctx, [(0, n)], (0, n), LEGACY_EDGES)
-    assert ctx["yaw"] == pytest.approx(0.0) and ctx["fov"] == pytest.approx(80.0)
     D._safe_area_pass(ctx, [(0, n)], (0, n), D.DirectorParams())
     assert all_fine(ctx, D.DirectorParams()) and set(ctx["target"]) == {"friend"}
 
@@ -1165,7 +1016,6 @@ def test_a_bad_midpoint_is_fixed() -> None:
     p = D.DirectorParams()
     chk = D._framing_checks(ctx, (0, n), p)
     assert chk.bad(8) and chk.bad(9) and not chk.bad(7)
-    assert not D._framing_checks(ctx, (0, n), LEGACY_EDGES).bad(8)
     D._safe_area_pass(ctx, [(0, n)], (0, n), p)
     assert all_fine(ctx, p)
 
@@ -1344,8 +1194,6 @@ def test_keys_fall_on_the_segment_grid(stub_scores: dict) -> None:
     assert path["fixed"] == path["planned"]
     clip = SimpleNamespace(duration=100.0)
     assert D.planned_span(clip, 12.0, 13.0) == (2.0, 23.0)  # the full margin: unchanged
-    legacy = path_of(pv, LEGACY_EDGES, span=(3.27, 9.0, 10.0))
-    assert legacy["fixed"] == {"start": 3.27, "end": 9.0}
 
 
 def test_the_qa_subject_at_the_edge_is_bad_and_fixed(stub_scores: dict) -> None:
@@ -1358,7 +1206,6 @@ def test_the_qa_subject_at_the_edge_is_bad_and_fixed(stub_scores: dict) -> None:
     ctx["subj"][:] = np.nan
     ctx["near"] = [stranger] * 10
     assert D._framing_checks(ctx, (0, 10), D.DirectorParams()).bad(0)  # the QA's subject
-    assert not D._framing_checks(ctx, (0, 10), LEGACY_EDGES).bad(0)
     pv = make_views({f: [(0.9, 41.0, -8.0, 8.0, 12.0, FWD_V)] for f in range(N)}, "qa.lrv")
     over = {"fov_wide": 86.0, "w_people": 0.0}  # forward steps at 86 deg
     th = QAThresholds()
@@ -1370,15 +1217,16 @@ def test_the_qa_subject_at_the_edge_is_bad_and_fixed(stub_scores: dict) -> None:
         assert {k["target"] for k in path["keys"]} == {"forward"}
         return sum("edge_cut" in r["flags"] for r in recs)
 
-    assert edge_keys(LEGACY_EDGES) > 0
     assert edge_keys(D.DirectorParams()) == 0
 
 
 def test_new_params_are_validated() -> None:
     base = D.DirectorParams()
-    assert base.edge_rule == "include_exclude" and legacy_params().edge_rule == "legacy"
+    for gone in ("edge_rule", "framing", "people_size"):
+        for value in ("legacy", "bin", "close", "include_exclude"):
+            with pytest.raises(ValueError, match="unknown director param"):
+                D.with_params(base, {gone: value})
     for bad in (
-        {"edge_rule": "both"},
         {"w_shift": -1},
         {"near_box_scale": 0},
         {"include_margin": 0.5},
@@ -1388,10 +1236,8 @@ def test_new_params_are_validated() -> None:
     ):
         with pytest.raises(ValueError, match="director param"):
             D.with_params(base, bad)
-    p = D.with_params(
-        base, D.parse_param_args(["edge_rule=legacy", "w_widen=0", "near_box_scale=1.2"])
-    )
-    assert (p.edge_rule, p.w_widen, p.near_box_scale) == ("legacy", 0.0, 1.2)
+    p = D.with_params(base, D.parse_param_args(["w_widen=0", "near_box_scale=1.2"]))
+    assert (p.w_widen, p.near_box_scale) == (0.0, 1.2)
 
 
 def test_path_for_reuses_by_the_fixed_span(
@@ -1596,14 +1442,12 @@ def test_the_framing_check_counts_a_side_cut_from_the_paths_floor() -> None:
     assert chk.bad(0) and not chk.qa_bad(0)
     ctx = safe_ctx(n, 55.0, 86.0)
     ctx["subj"][:] = sliver
-    for rule in ("include_exclude", "legacy"):
-        q = D.with_params(p, {"safe_margin": 0.0, "edge_rule": rule})
-        assert D._framing_checks(ctx, (0, n), q).bad(0)
+    q = D.with_params(p, {"safe_margin": 0.0})
+    assert D._framing_checks(ctx, (0, n), q).bad(0)
 
 
-def test_the_legacy_rule_keeps_the_version_4_sliver_boxes() -> None:
-    """A wearer sliver (share under 0.25): the legacy rule judges the cross's box as in
-    version 4 (allowed), the include / exclude rule the part in view from the grid."""
+def test_a_wearer_sliver_is_judged_by_the_part_in_view() -> None:
+    """A wearer sliver (share under 0.25) is judged by the part in view from the grid."""
     n = 2
     ctx = safe_ctx(n, 0.0, 89.32)
     ctx["yaw"][:], ctx["pitch"][:] = 119.05, -23.08
@@ -1613,7 +1457,6 @@ def test_the_legacy_rule_keeps_the_version_4_sliver_boxes() -> None:
         G.project_box_visible(119.05, -23.08, 89.32, 1920, 1080, 174.0, -47.33, 131.17, 64.42)[1]
         < G.SLIVER_SHARE
     )
-    assert not D._framing_checks(ctx, (0, n), LEGACY_EDGES).bad(0)
     assert D._framing_checks(ctx, (0, n), D.DirectorParams()).bad(0)
 
 
@@ -1639,8 +1482,8 @@ def test_an_included_person_keeps_the_pad_inside_the_margin(near_yaw: float) -> 
     ctx = safe_ctx(n, 0.0, 86.0)
     ctx["near"] = ctx["persons"] = [near] * n
     p = D.DirectorParams()
-    assert p.include_pad_deg == 5.0 and legacy_params().include_pad_deg == 0.0
-    assert p.include_check_pad_deg == 1.5 and legacy_params().include_check_pad_deg == 0
+    assert p.include_pad_deg == 5.0
+    assert p.include_check_pad_deg == 1.5
     D._safe_area_pass(ctx, [(0, n)], (0, n), p)
     assert set(ctx["target"]) == {"friend"}
     y, f = float(ctx["yaw"][10]), float(ctx["fov"][10])
@@ -1690,7 +1533,6 @@ def test_a_near_person_close_to_the_side_is_hard_only_with_near_soft_as_hard() -
     ctx = safe_ctx(n, 0.0, 86.0)
     on = D.DirectorParams(near_soft_as_hard=True)
     assert not D.DirectorParams().near_soft_as_hard
-    assert not legacy_params().near_soft_as_hard
     for near_yaw, hard in ((-36.5, True), (-35.3, False)):
         ctx["near"] = ctx["persons"] = [np.array([[near_yaw, -10.0, 13.0, 28.0, 0.0, 0.9]])] * n
         off = D._framing_checks(ctx, (0, n), D.DirectorParams())

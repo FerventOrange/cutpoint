@@ -141,7 +141,7 @@ MAX_TRANSCRIPT_CHARS = 600
 # "other" for the rest (analyze.prior_group). Every model uses the same numbers. The first fit
 # (2026-11-10, qwen3.5:9b, top 60 moments of 8 footage: frames n=30, bimodal, speech n=205)
 # gave 5.6 and 4.1. The per-group values were measured 2026-11-11 with
-# scripts/vision_prior_eval.py on 25 #900 projects (qwen3.5:9b, default --vision-top, about 2
+# a since-removed script (#1085) on 25 #900 projects (qwen3.5:9b, default --vision-top, about 2
 # rated moments per project). A (group, kind) cell gets its own prior only when it has n >= 15
 # ratings and |mean - today's constant| >= 0.5. Only action/frames passed: n=17, mean 5.06,
 # delta -0.54, so 5.1. The others keep their values: action/speech n=3 (-0.69), other/frames

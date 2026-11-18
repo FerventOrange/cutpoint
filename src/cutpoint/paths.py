@@ -44,7 +44,6 @@ from pathlib import Path
 
 APP_NAME = "cutpoint"
 PACKAGE_DIR = Path(__file__).resolve().parent
-PRESETS_DIR = PACKAGE_DIR / "events" / "presets"  # bundled HUD presets (read-only data)
 
 
 def absolute(value: str | os.PathLike[str]) -> Path:
@@ -121,8 +120,7 @@ def styles_dir() -> Path:
 def presets_dir() -> Path:
     """User HUD presets (written by region discovery): ``<home>/presets``.
 
-    Lookup order for a game's preset: ``<project>/hud_presets``, then this
-    folder, then the bundled :data:`PRESETS_DIR`.
+    Lookup order for a game's preset: ``<project>/hud_presets``, then this folder.
     """
     return home() / "presets"
 

@@ -598,14 +598,6 @@ def ocr_vf(fps: float, rect: tuple[int, int, int, int]) -> str:
     return f"fps={fps},crop={w}:{h}:{x}:{y}"
 
 
-# The decode hook of detect_ocr_events (a shared decode, #375): (rect, chain, stderr lines,
-# exit codes) -> the frames as iter_frames yields them, or None to decode as usual.
-DecodeHook = Callable[
-    [tuple[int, int, int, int], str, list[str], list[int]],
-    Iterator[tuple[float, np.ndarray]] | None,
-]
-
-
 def iter_frames(
     path: Path,
     fps: float,
@@ -3590,7 +3582,6 @@ def detect_ocr_events(
     on_progress: Callable[[float], None] | None = None,
     make_engine: Callable[[], OcrEngine] | None = None,
     cancel: threading.Event | None = None,
-    decode: DecodeHook | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """OCR HUD events for one source (cached per source + parameters).
 
@@ -3638,9 +3629,6 @@ def detect_ocr_events(
             Ctrl+Break reaches every process group) and a failed GPU pass also raise
             :class:`OcrCancelled`, without committing the pass: the caller reads the
             source itself then, resuming from the raw chunks, as a serial run would.
-        decode: With ``cancel``: gives the frames of a fresh GPU read of the whole source
-            instead of :func:`iter_frames` (the shared decode of
-            :mod:`cutpoint.events.ocr_prefetch`), the same frames; asked once at most.
 
     Returns:
         (events, stats).
@@ -3810,17 +3798,11 @@ def detect_ocr_events(
                 errors.clear()
                 exits: list[int] = []  # background: an ffmpeg exit it did not cause
                 k = k0
-                frames = None
                 # "auto" decodes on the CPU when no GPU decoder fits this source: a failed CPU
                 # pass is no GPU failure, and a plain retry would only repeat it
                 gpu = hw and decoder_for(src.io_path) is not None
-                fresh = si == 0 and not k0 and len(segments) == 1 and seg_b >= duration
-                if decode is not None and cancel is not None and hw and fresh and not start:
-                    frames = decode(union, ocr_vf(params.fps, union), errors, exits)
-                    decode = None  # asked once: a retry decodes as usual
-                shared = frames is not None  # its split pass failing is retried by a plain decode
                 try:
-                    for t, frame in frames or iter_frames(
+                    for t, frame in iter_frames(
                         src.io_path,
                         params.fps,
                         union,
@@ -3853,7 +3835,7 @@ def detect_ocr_events(
                 except RuntimeError as err:
                     if is_out_of_memory(err) and not isinstance(err, FFmpegError):
                         raise  # an OCR call short of memory is no failed decode (see above)
-                    if cancel is not None and (cancel.is_set() or exits or gpu or shared):
+                    if cancel is not None and (cancel.is_set() or exits or gpu):
                         # cancelled or stopped from outside, or a failed GPU pass: the read in
                         # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a
                         # serial run would
@@ -3862,7 +3844,7 @@ def detect_ocr_events(
                         # resumed at the very end of the segment: nothing was left
                         logger.debug("%s: nothing left after %.1fs: %s", src.name, start, err)
                         break
-                    if gpu or shared:
+                    if gpu:
                         logger.warning(
                             "%s: hwaccel decode failed (%s); retrying on CPU", src.name, err
                         )
