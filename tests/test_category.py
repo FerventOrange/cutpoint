@@ -17,6 +17,7 @@ from conftest import envelope, needs_ffmpeg
 from cutpoint import category, cli, paths, styles
 from cutpoint.category import ACTION, ACTION_CAM, GAMEPLAY, GENERAL, TALK, SourceProbe
 from cutpoint.events import ocr_raw
+from overlap import Overlap
 
 RNG = np.random.default_rng(7)
 H, W = category.GRID[1], category.GRID[0]
@@ -1384,39 +1385,20 @@ def test_a_camera_tagged_source_without_telemetry_is_shown_to_the_vision_model(
 
 
 # --------------------------------------------------------------------------- parallel grabs (#946)
-class _Live:
-    """Counts the calls in flight; ``hit()`` holds each a moment so overlapping ones show."""
-
-    def __init__(self) -> None:
-        import threading  # noqa: PLC0415
-
-        self.lock, self.now, self.max = threading.Lock(), 0, 0
-
-    def hit(self) -> None:
-        import time  # noqa: PLC0415
-
-        with self.lock:
-            self.now += 1
-            self.max = max(self.max, self.now)
-        time.sleep(0.05)
-        with self.lock:
-            self.now -= 1
-
-
 def _both_worker_counts(monkeypatch, run, live):
-    """``run()`` with one worker and with GRAB_WORKERS: ``{workers: (result, max in flight)}``."""
+    """``run()`` with one worker and with GRAB_WORKERS: ``{workers: (result, max in flight, why)}``."""
     out = {}
     for workers in (1, category.GRAB_WORKERS):
         monkeypatch.setattr(category, "GRAB_WORKERS", workers)
-        live.now = live.max = 0
-        out[workers] = (run(), live.max)
+        live.reset(expect=workers > 1)
+        out[workers] = (run(), live.max, live.why())
     return out
 
 
 def test_frame_probe_grabs_in_parallel_with_the_sequential_result(monkeypatch):
     from cutpoint import ffmpeg_utils  # noqa: PLC0415
 
-    live = _Live()
+    live = Overlap()
 
     def decode_raw(io, size, vf, start, **kw):
         live.hit()
@@ -1434,7 +1416,8 @@ def test_frame_probe_grabs_in_parallel_with_the_sequential_result(monkeypatch):
         return [float(f.mean()) for f in seen["s"]]
 
     runs = _both_worker_counts(monkeypatch, run, live)
-    assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1
+    assert runs[1][1] == 1, runs[1][2]
+    assert runs[category.GRAB_WORKERS][1] > 1, runs[category.GRAB_WORKERS][2]
     assert runs[1][0] == runs[category.GRAB_WORKERS][0]
     assert 0 < len(runs[1][0]) < category.SPREAD  # the failed grabs were left out
 
@@ -1442,7 +1425,7 @@ def test_frame_probe_grabs_in_parallel_with_the_sequential_result(monkeypatch):
 def test_text_and_vision_frames_grab_in_parallel_with_the_sequential_result(monkeypatch):
     from cutpoint import ffmpeg_utils  # noqa: PLC0415
 
-    live = _Live()
+    live = Overlap()
 
     def decode_raw(io, size, start, **kw):
         live.hit()
@@ -1467,7 +1450,8 @@ def test_text_and_vision_frames_grab_in_parallel_with_the_sequential_result(monk
         ("vision", lambda: category.vision_frames(Path("v"), 100.0), 5),
     ):
         runs = _both_worker_counts(monkeypatch, run, live)
-        assert runs[1][1] == 1 and runs[category.GRAB_WORKERS][1] > 1, name
+        assert runs[1][1] == 1, (name, runs[1][2])
+        assert runs[category.GRAB_WORKERS][1] > 1, (name, runs[category.GRAB_WORKERS][2])
         assert runs[1][0] == runs[category.GRAB_WORKERS][0], name
         assert len(runs[1][0]) == count, name  # one failed grab each
 

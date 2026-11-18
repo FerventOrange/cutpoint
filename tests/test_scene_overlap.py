@@ -556,8 +556,12 @@ def test_the_cancel_watcher_thread_is_gone_after_the_scan(tmp_path, monkeypatch,
 
 
 @needs_ffmpeg
-def test_a_cancel_stops_a_real_scan_long_before_it_would_finish(tmp_path):
-    """The real scenedetect (no per-frame callback at a cut-free clip) stops within the poll time."""
+def test_a_cancel_stops_a_real_scan_long_before_it_would_finish(tmp_path, monkeypatch):
+    """The real scenedetect (no per-frame callback at a cut-free clip) stops once a cancel
+    comes: counted in frames, not seconds. The cancel comes at frame ``AT``; the frames after it
+    wait (bounded) for the stop it asks for, so a fast machine cannot finish the clip first."""
+    from scenedetect import AdaptiveDetector, SceneManager  # noqa: PLC0415
+
     clip = tmp_path / "gray.mp4"
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-f", "lavfi", "-i",
@@ -565,24 +569,31 @@ def test_a_cancel_stops_a_real_scan_long_before_it_would_finish(tmp_path):
          str(clip)],
         check=True,
     )  # fmt: skip
-    full_dir = tmp_path / "full"
-    start = time.monotonic()
-    analyze._detect(proxy_of(clip, full_dir), full_dir / analyze.SCENES_FILE)
-    full_s = time.monotonic() - start
+    total, at = 120 * 30, 10
+    ev, stopped = threading.Event(), threading.Event()
+    seen = {"frames": 0, "late": False}
+    real_frame, real_stop = AdaptiveDetector.process_frame, SceneManager.stop
 
+    def process_frame(self, timecode, frame_img):
+        seen["frames"] += 1
+        if seen["frames"] == at:
+            ev.set()
+        elif ev.is_set() and not seen["late"] and not stopped.wait(10):
+            seen["late"] = True  # no stop asked within 10 s: run free, the count fails below
+        return real_frame(self, timecode, frame_img)
+
+    def stop(self):
+        stopped.set()
+        real_stop(self)
+
+    monkeypatch.setattr(AdaptiveDetector, "process_frame", process_frame)
+    monkeypatch.setattr(SceneManager, "stop", stop)
     proxy = proxy_of(clip, tmp_path / "cdir")
     path = proxy.parent / analyze.SCENES_FILE
-    ev = threading.Event()
-    timer = threading.Timer(0.2, ev.set)
-    timer.start()
-    start = time.monotonic()
-    try:
-        with pytest.raises(RunCancelled):
-            analyze._detect(proxy, path, ev)
-    finally:
-        timer.cancel()
-    cancelled_s = time.monotonic() - start
-    assert cancelled_s < max(full_s * 0.6, 1.0), (cancelled_s, full_s)
+    with pytest.raises(RunCancelled):
+        analyze._detect(proxy, path, ev)
+    assert stopped.is_set() and not seen["late"], seen
+    assert seen["frames"] < total // 10, seen  # a few frames past the cancel, not the clip
     assert not proxy.exists() and not path.exists()
     assert scene_cancel_threads() == []
 

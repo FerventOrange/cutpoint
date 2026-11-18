@@ -101,6 +101,14 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         state.pre.close()
 
 
+def _wait_idle(pre: ocr_prefetch.OcrPrefetch, timeout: float = 30) -> None:
+    """Until the worker has finished every offered source (its records held for take())."""
+    deadline = time.monotonic() + timeout
+    while pre.busy:
+        assert time.monotonic() < deadline, f"the background reads did not finish in {timeout} s"
+        time.sleep(0.01)
+
+
 # ----------------------------------------------------------------- taking results
 def test_results_are_taken_in_turn_with_their_progress_and_logs(fake, records) -> None:
     pre = fake.make()
@@ -108,11 +116,9 @@ def test_results_are_taken_in_turn_with_their_progress_and_logs(fake, records) -
     log.info("before")
     pre.offer(fake.paths[0], 60.0, True)
     pre.offer(fake.paths[1], 60.0, True)
-    deadline = time.monotonic() + 5
-    while fake.reads != ["a.mp4", "b.mp4"] and time.monotonic() < deadline:
-        time.sleep(0.01)
-    time.sleep(0.05)
-    log.info("between")  # the main thread goes on while the worker reads
+    _wait_idle(pre)  # both read: the worker has logged every line of theirs
+    assert fake.reads == ["a.mp4", "b.mp4"]
+    log.info("between")  # the main thread logs on; the worker's lines wait for take()
     shares: list[float] = []
     evs, st = pre.take(fake.source(0), fake.params(), shares.append)
     assert evs == [{"t": 1.0, "type": "kill", "src": "a.mp4"}] and st == {"frames": 4}
@@ -209,10 +215,8 @@ def test_close_cancels_a_read_and_drops_its_logs(fake, records) -> None:
 def test_close_keeps_the_logs_of_a_finished_read(fake, records) -> None:
     pre = fake.make()
     pre.offer(fake.paths[0], 60.0, True)
-    deadline = time.monotonic() + 5
-    while fake.reads != ["a.mp4"] and time.monotonic() < deadline:
-        time.sleep(0.01)
-    time.sleep(0.05)
+    _wait_idle(pre)  # the read finished, before close() could cancel it
+    assert fake.reads == ["a.mp4"]
     pre.close()  # e.g. a later source is read inline
     assert pre.take(fake.source(0), fake.params(), None) is not None
     assert records.lines[-2:] == ["a.mp4: read 1", "a.mp4: read 2"]

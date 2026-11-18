@@ -1530,10 +1530,12 @@ def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
 
 def test_a_long_message_with_many_lengths_is_parsed_fast() -> None:
     text = "each clip about 5 s " * 1000 + "make it 2 min"
-    start = time.perf_counter()
+    # this thread's CPU time: other processes on a loaded machine do not count, a scan per
+    # match over the whole message does
+    start = time.thread_time()
     assert context.target_seconds(text) == 120
     assert context.target_seconds("about 5 s, " * 2000) == 5
-    assert time.perf_counter() - start < 2.0
+    assert time.thread_time() - start < 2.0
 
 
 def test_a_length_below_the_sequence_may_remove_half_the_clips() -> None:
