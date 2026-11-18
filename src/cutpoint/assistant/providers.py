@@ -56,7 +56,6 @@ from cutpoint.vision import unreachable_reason
 logger = logging.getLogger(__name__)
 
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
-PREVIOUS_VISION_MODEL = "qwen3-vl:8b"  # the default vision model before qwen3.5:9b
 CHAT_TIMEOUT_S = 300.0  # one read of a local model's reply on a slow GPU
 HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
 CONNECT_TIMEOUT_S = 10.0
@@ -646,12 +645,12 @@ class OllamaProvider:
         return self._model or DEFAULT_OLLAMA_MODEL
 
     def resolve_model(self) -> str:
-        """The model to ask. Auto: the first of :data:`DEFAULT_OLLAMA_MODEL`, the vision model
-        (:func:`cutpoint.vision.default_model`) and :data:`PREVIOUS_VISION_MODEL` that
-        ``/api/tags`` lists, else :data:`DEFAULT_OLLAMA_MODEL`; asked once."""
+        """The model to ask. Auto: the first of :data:`DEFAULT_OLLAMA_MODEL` and the vision
+        model (:func:`cutpoint.vision.default_model`) that ``/api/tags`` lists, else
+        :data:`DEFAULT_OLLAMA_MODEL`; asked once."""
         if not self._model:
             names = set(self._tags())
-            wanted = (DEFAULT_OLLAMA_MODEL, vision_model(), PREVIOUS_VISION_MODEL)
+            wanted = (DEFAULT_OLLAMA_MODEL, vision_model())
             self._model = next((m for m in wanted if m in names), DEFAULT_OLLAMA_MODEL)
         return self._model
 

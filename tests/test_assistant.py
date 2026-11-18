@@ -242,7 +242,7 @@ def test_a_cancelled_stream_is_closed_at_the_next_chunk(monkeypatch) -> None:
     ("configured", "env", "tags", "want"),
     [
         ("", None, ["qwen3-vl:8b", "qwen3.5:9b"], "qwen3.5:9b"),
-        ("", None, ["qwen3-vl:8b"], "qwen3-vl:8b"),  # pulled for the earlier vision default
+        ("", None, ["qwen3-vl:8b"], "qwen3.5:9b"),  # the earlier vision default is not asked
         ("", "llava:7b", ["qwen3-vl:8b", "llava:7b"], "llava:7b"),
         ("", "llava:7b", [], "qwen3.5:9b"),
         ("llama3.1:8b", None, None, "llama3.1:8b"),
@@ -272,6 +272,18 @@ def test_auto_model_is_qwen3_5_if_pulled_else_the_vision_model(
     p.capabilities()
     assert p.resolve_model() == p.model == want
     assert asked == ([] if configured else ["http://h:1/api/tags"])
+
+
+def test_auto_model_without_qwen3_5_pulled_hints_to_pull_it(monkeypatch) -> None:
+    """Only the earlier vision default pulled: the chat names qwen3.5:9b to pull."""
+    monkeypatch.delenv("CUTPOINT_VISION_MODEL", raising=False)
+    tags = _Resp({"models": [{"name": "qwen3-vl:8b"}]})
+    monkeypatch.setattr(providers.requests, "get", lambda *a, **k: tags)
+    missing = _Resp({"error": "model 'qwen3.5:9b' not found"}, 404)
+    monkeypatch.setattr(providers.requests, "post", lambda *a, **k: missing)
+    p = providers.OllamaProvider("http://h:1", "", 8192)
+    with pytest.raises(providers.ProviderError, match=r"pull it with `ollama pull qwen3\.5:9b`"):
+        p.capabilities()
 
 
 @pytest.mark.parametrize(

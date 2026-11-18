@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import io
 import json
+import logging
 import os
 import signal
 import socket
@@ -691,6 +692,26 @@ with open(r"{report_file}", "w") as f:
     assert "HOME_JWT" not in child_env
     assert "MANAGEMENT_PASSWORD" not in child_env
     assert child_env.get("HTTP_PROXY") == "http://corporate-proxy:8080"
+
+
+def test_binary_override_logs_one_warning_naming_it(
+    temp_home: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CUTPOINT_CLIPROXY_BINARY runs a binary without the hash check: a start says so."""
+    fake_bin = temp_home / "fake_bin"
+    fake_bin.write_text("#!/bin/sh\nexit 0\n")
+    fake_bin.chmod(0o755)
+    monkeypatch.setenv("CUTPOINT_CLIPROXY_BINARY", str(fake_bin))
+    monkeypatch.setattr(cliproxy, "_install_binary", lambda _dir: pytest.fail("downloaded"))
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        free = s.getsockname()[1]
+    with caplog.at_level(logging.WARNING, logger=cliproxy.__name__):
+        cmd, _ = cliproxy._prepare_launch(cliproxy.cliproxy_dir(), free)
+    assert str(fake_bin.resolve()) in cmd
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warned) == 1
+    assert "CUTPOINT_CLIPROXY_BINARY" in warned[0] and str(fake_bin.resolve()) in warned[0]
 
 
 def test_run_fails_closed_if_run_dir_has_untrusted_dotenv(
