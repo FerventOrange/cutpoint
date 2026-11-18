@@ -924,7 +924,12 @@ frame index", with the fix (`cutpoint setup --only visual` for missing CLIP weig
 model gets text only, the best windows as moment rows with `match` 0-10 and `confidence`:
 `strong` from a CLIP cosine of 0.222, `weak` from 0.202 (a few at most, so a query the footage
 may answer, such as "fish" in a reef, still lists its best guesses, while one it cannot answer
-lists nothing or a few weak ones). A window that a moment or a row of the sequence covers is that
+lists nothing or a few weak ones). These bars are calibrated for CLIP ViT-L/14 (OpenAI
+weights), the model of every frame index Cutpoint writes; a source whose frame index records
+another model is skipped, and with only such sources the search finds nothing and the page says
+"Visual search isn't available for this project: its frame index was made with another CLIP
+model than the one its match thresholds are calibrated for" (the chat names both models). A
+window that a moment or a row of the sequence covers is that
 moment. A clear window nothing covers (cosine 0.26 or more) comes back as a new moment (`new:
 true`, labeled with the query, an id of the same kind as an analysis moment) that the proposal can
 add and that is saved with the proposal. Any other uncovered window is `unconfirmed`: it has an id

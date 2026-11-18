@@ -27,15 +27,20 @@ from cutpoint.events import visual as V
 TEXT = np.eye(768, dtype=np.float32)[0]
 
 
-def frames(n: int, hot: range | list[int], cos: float = 0.3) -> SimpleNamespace:
-    """``n`` frames at 1 fps whose cosine with :data:`TEXT` is 0, and ``cos`` for ``hot``."""
+def frames(
+    n: int, hot: range | list[int], cos: float = 0.3, meta: dict[str, Any] | None = None
+) -> SimpleNamespace:
+    """``n`` frames at 1 fps whose cosine with :data:`TEXT` is 0, and ``cos`` for ``hot``;
+    ``meta`` is the cache meta (default: made with the calibrated CLIP model)."""
     rng = np.random.default_rng(n)
     emb = rng.normal(size=(n, 768)).astype(np.float32)
     emb[:, 0] = 0
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
     for i in hot:
         emb[i] = cos * TEXT + np.sqrt(1 - cos**2) * emb[i]
-    return SimpleNamespace(t=np.arange(n, dtype=np.float32), mean_emb=emb)
+    if meta is None:
+        meta = {"params": {"layer": "visual", "clip": list(lookfor.CALIBRATED_FOR)}}
+    return SimpleNamespace(t=np.arange(n, dtype=np.float32), mean_emb=emb, meta=meta)
 
 
 @pytest.fixture
@@ -173,6 +178,115 @@ def test_no_cached_embeddings_say_so(clip, monkeypatch) -> None:
     assert "--visual-index" in str(e.value)
     assert e.value.reason == lookfor.NO_INDEX  # what the page shows
     assert "no frame index" in lookfor.NO_INDEX
+
+
+def test_the_thresholds_are_calibrated_for_the_model_that_makes_the_index() -> None:
+    """A1085/A304: changing the CLIP model without calibrating look_for's bars again fails here."""
+    assert lookfor.CALIBRATED_FOR == (V.CLIP_ARCH, V.CLIP_PRETRAINED)
+    assert V.VisualParams().key()["clip"] == list(lookfor.CALIBRATED_FOR)
+    assert V.LightParams().key()["clip"] == list(lookfor.CALIBRATED_FOR)
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {},  # no .json next to the cache, or a damaged one
+        {"frames": 30, "mode": "keyframes"},  # no params
+        {"params": {"layer": "visual"}},  # params without the model
+        {"params": {"clip": "ViT-B-32"}},  # not an (arch, tag) pair
+        {"params": None},
+    ],
+)
+def test_meta_without_the_model_counts_as_this_installs_model(meta) -> None:
+    """The model is part of the cache key, so a file found without it was made with it."""
+    assert lookfor.clip_of(meta) == (V.CLIP_ARCH, V.CLIP_PRETRAINED)
+
+
+def test_a_legacy_index_without_the_model_is_searched_as_before(clip, monkeypatch) -> None:
+    before = [(h.source, h.start, h.end, round(h.cos, 4), c) for h, c in search().hits]
+    layers = {A: frames(100, range(12, 17), meta={}), B: frames(30, range(10, 15), meta={})}
+    for lo, cos in ((50, 0.23), (70, 0.21), (85, 0.19)):
+        layers[A].mean_emb[lo : lo + 5] = (
+            cos * TEXT + np.sqrt(1 - cos**2) * layers[A].mean_emb[lo : lo + 5]
+        )
+    monkeypatch.setattr(V, "load_visual", lambda src, *_a, **_k: layers.get(Path(src).as_posix()))
+    found = search()
+    assert found.searched == 2
+    assert [(h.source, h.start, h.end, round(h.cos, 4), c) for h, c in found.hits] == before
+
+
+def test_an_index_of_another_clip_model_is_skipped_with_a_message(clip, monkeypatch) -> None:
+    other = {"params": {"layer": "visual", "clip": ["ViT-B-32", "laion2b_s34b_b79k"]}}
+    monkeypatch.setattr(V, "load_visual", lambda *_a, **_k: frames(30, range(10, 15), meta=other))
+    with pytest.raises(lookfor.LookForError) as e:
+        search()
+    msg = str(e.value)
+    assert "ViT-B-32/laion2b_s34b_b79k" in msg
+    assert "ViT-L-14-quickgelu/openai" in msg and "find_moments" in msg
+    assert e.value.reason == lookfor.NO_MODEL
+    assert clip["queries"] == []  # nothing searched: no text embedding either
+
+
+def test_only_the_sources_of_another_model_are_skipped(clip, monkeypatch) -> None:
+    other = {"params": {"clip": ["ViT-B-32", "openai"]}}
+    good = V.load_visual
+
+    def load(src: Path, params: Any = None):
+        if Path(src).as_posix() == A:
+            return frames(100, range(12, 17), meta=other)
+        return good(src)
+
+    monkeypatch.setattr(V, "load_visual", load)
+    found = search()
+    assert found.searched == 1 and {h.source for h, _ in found.hits} == {B}
+
+
+def test_a_light_index_of_another_model_is_skipped_too(clip, monkeypatch) -> None:
+    other = {"params": {"layer": "visual_light", "clip": ["ViT-B-32", "openai"]}}
+    monkeypatch.setattr(V, "load_visual", lambda *_a, **_k: None)
+    monkeypatch.setattr(V, "load_visual_light", lambda *_a, **_k: frames(30, [], meta=other))
+    with pytest.raises(lookfor.LookForError) as e:
+        search()
+    assert e.value.reason == lookfor.NO_MODEL
+
+
+def test_the_page_and_the_model_hear_of_another_clip_model(clip, monkeypatch) -> None:
+    other = {"params": {"clip": ["ViT-B-32", "openai"]}}
+    monkeypatch.setattr(V, "load_visual", lambda *_a, **_k: frames(30, [], meta=other))
+    provider = FakeProvider([call("look_for", query="sunset"), Reply("ok")])
+    turn = run(provider)
+    ev = next(e for e in turn.events if e.get("name") == "look_for")
+    assert "ViT-B-32/openai" in ev["error"] and ev["reason"] == lookfor.NO_MODEL
+
+
+def test_the_tool_reply_names_sources_skipped_for_another_clip_model(clip, monkeypatch) -> None:
+    """#1085 F1: a source of another model is not one without cached frames."""
+    other = {"params": {"clip": ["ViT-B-32", "openai"]}}
+    good = V.load_visual
+
+    def load(src: Path, params: Any = None):
+        if Path(src).as_posix() == A:
+            return frames(100, range(12, 17), meta=other)
+        return good(src)
+
+    monkeypatch.setattr(V, "load_visual", load)
+    fake = FakeProvider([call("look_for", query="powder spray"), Reply("ok")])
+    run(fake)
+    reply = json.dumps(fake.requests[1]["messages"])
+    assert "1 of 2 have a frame index made with another CLIP model" in reply
+    assert "no cached frames" not in reply
+
+
+def test_the_tool_reply_names_both_kinds_of_skipped_sources(clip, monkeypatch) -> None:
+    found = lookfor.Found([], searched=1, total=3, best=0, other=1)
+    monkeypatch.setattr(lookfor.Finder, "search", lambda *_a, **_k: found)
+    fake = FakeProvider([call("look_for", query="powder spray"), Reply("ok")])
+    run(fake)
+    reply = json.dumps(fake.requests[1]["messages"])
+    assert (
+        "1 of 3 sources have no cached frames and 1 of 3 have a frame index made with another "
+        "CLIP model; neither was searched"
+    ) in reply
 
 
 def test_indexed_looks_only_for_the_cache_file(tmp_path, monkeypatch) -> None:
