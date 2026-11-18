@@ -341,3 +341,55 @@ def test_forced_gpu_encode_that_fails_names_the_cpu_setting_and_is_not_retried(
 
     assert codecs == ["h264_nvenc"]
     assert list(tmp_path.glob("*.mp4")) == []  # no final file, no .part
+
+
+def _checked(monkeypatch, tmp_path, texts, durations):
+    """Run ``_export_checked`` with ``_export`` returning ``texts`` and probe ``durations``."""
+    calls: list[float] = []
+    texts, durations = list(texts), list(durations)
+
+    def fake_export(_src, _info, _start, end, *_a, **_kw):
+        calls.append(end)
+        return texts.pop(0)
+
+    monkeypatch.setattr(encode, "_export", fake_export)
+    monkeypatch.setattr(encode, "probe", lambda _p: type("P", (), {"duration": durations.pop(0)})())
+    fmt = encode.OutputFormat(64, 48, 25)
+    rec = encode._export_checked(
+        tmp_path / "s.mp4", None, 10.0, 20.0, tmp_path / "p.mp4", fmt, False, None, 0.0,
+        tmp_path / "001_x.mp4",
+    )  # fmt: skip
+    return rec, calls
+
+
+ERR = "Error while reading file: Input/output error"
+
+
+def test_checked_full_length_with_messages_is_kept(monkeypatch, tmp_path):
+    rec, calls = _checked(monkeypatch, tmp_path, [ERR], [10.0])
+    assert calls == [20.0]
+    assert rec["failure_time"] is None
+    assert rec["end"] == 20.0
+    assert rec["retried"] is False
+    assert rec["messages"]
+
+
+def test_checked_short_then_full_with_messages_is_kept(monkeypatch, tmp_path):
+    rec, calls = _checked(monkeypatch, tmp_path, [ERR, ERR], [4.0, 10.0])
+    assert calls == [20.0, 20.0]
+    assert rec["failure_time"] is None
+    assert rec["end"] == 20.0
+    assert rec["retried"] is True
+
+
+def test_checked_short_twice_is_trimmed(monkeypatch, tmp_path):
+    rec, calls = _checked(monkeypatch, tmp_path, [ERR, ERR, ""], [4.0, 4.0])
+    assert len(calls) == 3
+    assert rec["failure_time"] == 14.0
+    assert rec["end"] < 14.0
+
+
+def test_checked_full_length_without_messages_is_none(monkeypatch, tmp_path):
+    rec, calls = _checked(monkeypatch, tmp_path, [""], [10.0])
+    assert rec is None
+    assert calls == [20.0]

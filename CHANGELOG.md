@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A clip that comes out full length but with read-error lines in ffmpeg's output is kept as it is (a warning and a `read_error` record with the messages) instead of being encoded three times and trimmed 0.3 s at its end (#1085, A234)
 - `mix` content QA no longer fails footage without every category (surf, MTB without lifts, FPV): the category count requires at most the categories that have candidates, the run-cover check is skipped without `run` candidates and the "lift or scenery" opener rule without lift or scenery candidates. With fewer than three categories that have candidates, the selection holds each category to 1 / n of the budget (40% minimum) and the check accepts what that guarantees at the shortest accepted length: up to 60% with two categories and 100% with one, so such a day can reach its length; with three or more categories nothing changes (#1085, A788).
 - `mix --target` sets the content QA length window to 0.75-1.25 times the target (180-300 s for the default 240 s, as before) instead of a fixed 180-300 s, so a 60 s or 600 s mix no longer fails `length_s`. The window is stored as `content_qa.length_window_s` in `mix_report.json`, and `360 repair` caps the rendered edit at its upper end (an older report without it keeps 300 s) (#1085, A190).
 - A HUD preset with a malformed region (a missing field, or something that is not a region) no longer crashes the analysis: the region is skipped with a WARNING (#1085, A141).
