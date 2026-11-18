@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 import requests
 
-from cutpoint import vision
+from cutpoint import backends, vision
 from vision_helpers import Resp
 
 URL = "http://127.0.0.1:1"
@@ -56,7 +56,7 @@ def test_load_success_sends_a_promptless_generate(monkeypatch, rater):
         {
             "url": f"{URL}/api/generate",
             "json": {"model": "qwen-test"},
-            "timeout": 30,
+            "timeout": (backends.CONNECT_TIMEOUT_S, 30),
             "redir": False,
         }
     ]
@@ -215,7 +215,10 @@ def test_describe_failure_sets_timed_out_only_for_timeouts(monkeypatch, rater, r
     sent = _post(monkeypatch, reply)
     assert _describe(rater, timeout=12) is None
     assert rater.timed_out is timed_out
-    assert sent[0]["url"] == f"{URL}/api/chat" and sent[0]["timeout"] == 12
+    assert sent[0]["url"] == f"{URL}/api/chat" and sent[0]["timeout"] == (
+        backends.CONNECT_TIMEOUT_S,
+        12,
+    )
 
 
 def test_describe_resets_timed_out_after_a_success(monkeypatch, rater):

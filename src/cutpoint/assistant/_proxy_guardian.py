@@ -97,7 +97,14 @@ class _Tail:
         text = raw.decode("utf-8", errors="replace")
         if partial:  # the start of that line is gone: a secret in it could be cut in two
             text = text.partition("\n")[2]
-        return redact_output(text)
+        return redact_output(_plain_lines(text))
+
+
+def _plain_lines(text: str) -> str:
+    """``text`` with ``\\n`` line ends only: a child that writes CRLF (Windows) would otherwise
+    keep a ``\\r`` per line, which the text-mode write and read of :data:`OUTPUT_FILE` turn into
+    a blank line between the tail's lines."""
+    return "\n".join(line.rstrip("\r\n") for line in text.split("\n"))
 
 
 def redact_output(text: str) -> str:
@@ -122,7 +129,7 @@ def _save_output(root: Path, text: str) -> None:
     path = root / OUTPUT_FILE
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path, flags, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:  # \n on Windows too
         f.write(text)
     private_file(path)
 
@@ -133,8 +140,9 @@ def output_tail(root: Path) -> str:
     path = Path(root) / OUTPUT_FILE
     try:
         private_file(path)
-        with path.open(encoding="utf-8", errors="replace") as f:
-            text = redact_output(f.read(4 * _TAIL_CHARS))
+        # newline="": a stray \r (a file saved before line ends were cleaned) is no line end
+        with path.open(encoding="utf-8", errors="replace", newline="") as f:
+            text = redact_output(_plain_lines(f.read(4 * _TAIL_CHARS)))
     except (OSError, ValueError):
         return ""
     return f"\nCLIProxyAPI output (last lines):\n{text}" if text else ""

@@ -15,6 +15,9 @@ from cutpoint.config import get_config
 
 OLLAMA_FALLBACK_URL = "http://127.0.0.1:11434"
 OLLAMA_PORT = 11434
+# The connect timeout of a request to a model server (Ollama, a hosted API): one that does
+# not answer is reported in seconds, not after the whole read timeout (A298)
+CONNECT_TIMEOUT_S = 10.0
 _ANY_HOST = ("0.0.0.0", "::", "")  # bind-all addresses: replaced below
 
 
@@ -229,10 +232,14 @@ def ollama_send(
     A redirect is never followed (the caller refuses it: what was sent never goes to a host
     the user did not allow); ``~/.netrc`` is never read; a server on this machine is reached
     without the environment's proxy (A680). Raises ``requests``' errors without the URL's
-    ``user:password`` (A641).
+    ``user:password`` (A641). ``timeout``: a ``(connect, read)`` pair, or one number for the
+    read, whose connection then gets :data:`CONNECT_TIMEOUT_S` (never more than that number),
+    so an Ollama that does not answer fails in seconds (A298).
     """
     from cutpoint.assistant.providers import is_local  # noqa: PLC0415 (it imports this module)
 
+    if isinstance(timeout, int | float):
+        timeout = (min(CONNECT_TIMEOUT_S, timeout), timeout)
     kw: dict[str, Any] = {"timeout": timeout, "allow_redirects": False, "auth": _auth(url)}
     if is_local(url):
         kw["proxies"] = {"http": None, "https": None, "all": None}
