@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from cutpoint.assistant import private_files
-from cutpoint.assistant.private_files import private_directory, private_file
+from cutpoint.assistant.private_files import private_directory, private_file, write_private
 
 
 @pytest.mark.parametrize(
@@ -273,3 +273,112 @@ def test_windows_rejects_junction_paths(tmp_path: Path) -> None:
         pytest.skip("Windows junction creation unavailable")
     with pytest.raises(OSError):
         private_directory(junction)
+
+
+# A433: one atomic writer for the proxy's keys, config, TLS identity and stored credentials
+
+
+def _entries(folder: Path) -> list[str]:
+    return sorted(p.name for p in folder.iterdir())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX modes")
+def test_write_private_gives_owner_only_modes(tmp_path: Path) -> None:
+    folder = tmp_path / "proxy"
+    target = folder / "keys.json"
+    write_private(target, '{"k": "fake-value"}\n')
+    assert target.read_bytes() == b'{"k": "fake-value"}\n'
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert folder.stat().st_mode & 0o777 == 0o700
+
+    target.chmod(0o644)
+    folder.chmod(0o755)
+    write_private(target, b"\x00fake-bytes")
+    assert target.read_bytes() == b"\x00fake-bytes"
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert folder.stat().st_mode & 0o777 == 0o700
+    assert _entries(folder) == ["keys.json"]
+
+
+def test_write_private_makes_the_temp_file_private_before_any_byte(tmp_path: Path) -> None:
+    target = tmp_path / "proxy-key.pem"
+    seen: list[tuple[str, int, int]] = []
+
+    def check(path: Path) -> os.stat_result:
+        info = private_file(path)
+        seen.append((Path(path).name, info.st_size, info.st_mode & 0o777))
+        return info
+
+    write_private(target, "fake key material", file=check)
+    temp_name, temp_size, temp_mode = seen[0]
+    assert temp_name.startswith(".proxy-key.pem.") and temp_size == 0
+    if os.name != "nt":
+        assert temp_mode == 0o600
+    assert seen[-1][0] == "proxy-key.pem" and seen[-1][1] == len("fake key material")
+
+
+@pytest.mark.parametrize("step", ["check", "fsync", "replace"])
+def test_write_private_leaves_no_temp_file_and_the_old_file_when_it_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    target = tmp_path / "config.json"
+    write_private(target, "old")
+
+    def deny(path: Path) -> os.stat_result:
+        if Path(path).name != "config.json":
+            raise PermissionError("cannot protect private Windows file")
+        return private_file(path)
+
+    def fail(*_args: object) -> None:
+        raise OSError("disk full")
+
+    checks = {"file": deny} if step == "check" else {}
+    if step == "fsync":
+        monkeypatch.setattr(private_files.os, "fsync", fail)
+    if step == "replace":
+        monkeypatch.setattr(Path, "replace", fail)
+    with pytest.raises(OSError):
+        write_private(target, "new", **checks)
+    assert target.read_text(encoding="utf-8") == "old"
+    assert _entries(tmp_path) == ["config.json"]
+
+
+def test_write_private_replaces_the_file_whole_after_syncing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "credentials-runtime.json"
+    write_private(target, "old")
+    old_inode = target.stat().st_ino
+    synced: list[int] = []
+    real_fsync, real_replace = os.fsync, Path.replace
+
+    def fsync(fd: int) -> None:
+        synced.append(fd)
+        real_fsync(fd)
+
+    def replace(source: Path, dest: Path) -> Path:
+        assert synced, "the data is synced before it replaces the file"
+        assert Path(dest).read_text(encoding="utf-8") == "old"  # never partly written
+        assert source.read_text(encoding="utf-8") == "new content"
+        return real_replace(source, dest)
+
+    monkeypatch.setattr(private_files.os, "fsync", fsync)
+    monkeypatch.setattr(Path, "replace", replace)
+    write_private(target, "new content")
+    assert target.read_text(encoding="utf-8") == "new content"
+    if os.name != "nt":
+        assert target.stat().st_ino != old_inode  # a new file, not rewritten in place
+        assert len(synced) == 2  # the file, then its folder
+    assert _entries(tmp_path) == ["credentials-runtime.json"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlinks")
+def test_write_private_refuses_a_symlinked_target(tmp_path: Path) -> None:
+    elsewhere = tmp_path / "elsewhere.json"
+    elsewhere.write_text("theirs", encoding="utf-8")
+    link = tmp_path / "keys.json"
+    link.symlink_to(elsewhere)
+    with pytest.raises(OSError):
+        write_private(link, "new")
+    assert elsewhere.read_text(encoding="utf-8") == "theirs"
+    assert _entries(tmp_path) == ["elsewhere.json", "keys.json"]

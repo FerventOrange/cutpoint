@@ -657,14 +657,14 @@ def test_journal_write_failure_keeps_last_plaintext_copy(
             raise RuntimeError("locked")
 
     monkeypatch.setattr(keys, "_keyring", lambda: LockedRing())
-    private_write = proxy_credentials._private_write
+    write_private = proxy_credentials.write_private
 
-    def fail_journal(path: Path, content: str | bytes) -> None:
+    def fail_journal(path: Path, content: str | bytes, **checks: Any) -> None:
         if path.name == "credential-recovery.enc":
             raise OSError("disk full")
-        private_write(path, content)
+        write_private(path, content, **checks)
 
-    monkeypatch.setattr(proxy_credentials, "_private_write", fail_journal)
+    monkeypatch.setattr(proxy_credentials, "write_private", fail_journal)
     with pytest.raises(keys.KeyringError, match="private files remain"):
         store.finish()
     assert json.loads(account.read_text(encoding="utf-8"))["token"] == "latest-refresh"

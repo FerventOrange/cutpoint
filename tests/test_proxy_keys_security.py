@@ -20,6 +20,7 @@ import pytest
 import requests
 
 from cutpoint.assistant import cliproxy, keys
+from cutpoint.assistant.private_files import private_directory, private_file
 from cutpoint.assistant.providers import OllamaProvider, OpenAIProvider
 
 FAKE_KEY = "sk-test-fake-0123456789abcdef"  # never a real key
@@ -179,6 +180,62 @@ def test_bearer_and_google_oauth_tokens_are_redacted() -> None:
     header = "Authorization: Bearer fakeBearer0123456789abc"
     assert keys.redact(header) == "Authorization: Bearer [redacted]"
     assert keys.redact("a Bearer token header") == "a Bearer token header"
+
+
+# A436: one redactor, with what cliproxy's own redactor masked (its marker was [REDACTED])
+@pytest.mark.parametrize(
+    ("said", "secret"),
+    [
+        ("Bearer {}", "fakeBearer0123456789abc"),  # both
+        ("Bearer {}", "my_super_secret_token_12345"),  # cliproxy
+        ("Bearer {}", "fake$Bearer$0123456789"),  # cliproxy's "$"
+        ("Bearer {}", "fake+Bearer/0123456789=="),  # keys' "+/="
+        ("{}", "sk-12345678901234567890"),  # both
+        ("{}", "sk-ant-api03-fakefakefakefakefake"),  # both
+        ("{}", "xai-fakefakefakefakefake1"),  # keys
+        ("{}", "ya29.a0Fake-OAuth-token_0123456789"),  # both
+        ("api_key={}", "fakeApiKeyValue012345"),  # cliproxy, from here on
+        ("api-key: {}", "fakeApiKeyValue012345"),
+        ('"secret_key": "{}"', "fakeSecretValue012345"),
+        ("secret-key {}", "fakeSecretValue012345"),
+        ("token={}", "fake.token-value_0123456789"),
+        ('password: "{}"', "fake$password0123456"),
+        ("TOKEN: {}", "fakeUpperCaseValue012345"),
+        ('"refresh_token": "{}"', "1//0gFakeRefresh-Token_0123456789"),  # Google refresh
+        ("api_key={}", "ZmFrZS9iYXNlNjQrdmFsdWU+Zm9v/a=="),  # base64
+    ],
+)
+def test_the_one_redactor_masks_what_both_old_ones_did(said: str, secret: str) -> None:
+    text = keys.redact(f"proxy error 401: {said.format(secret)} rejected")
+    assert text == f"proxy error 401: {said.format('[redacted]')} rejected"
+
+
+def test_the_proxy_keys_are_masked_once_read(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("cutpoint.paths.home", lambda: tmp_path)
+    monkeypatch.setattr(keys, "_SEEN", set())
+    mgmt, client = cliproxy._ensure_keys(target_port=8317)
+    text = keys.redact(f"sent {mgmt} with {client}")
+    assert text == "sent [redacted] with [redacted]"
+
+
+def test_keys_another_process_wrote_are_masked_once_read(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("cutpoint.paths.home", lambda: tmp_path)
+    mgmt, client = "a1" * 32, "b2" * 32  # made up, 64 hex characters each
+    kp = cliproxy.keys_path()
+    private_directory(kp.parent)
+    kp.write_text(
+        json.dumps({"management_key": mgmt, "client_api_key": client, "port": 8317}),
+        encoding="utf-8",
+    )
+    private_file(kp)
+    monkeypatch.setattr(keys, "_SEEN", set())  # this process never wrote or read them
+    assert cliproxy._read_keys_file() == (mgmt, client, 8317)
+    assert keys.redact(f"sent {mgmt} with {client}") == "sent [redacted] with [redacted]"
+
+
+def test_prose_about_tokens_is_not_redacted() -> None:
+    for prose in ("the token limit was hit", "wrong password", "an api_key is missing"):
+        assert keys.redact(prose) == prose
 
 
 # A680: on-machine servers skip the environment's proxy; ~/.netrc never replaces the key

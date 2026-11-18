@@ -1,7 +1,7 @@
 """CLIProxyAPI daemon client and lifecycle management.
 
-Connects Cutpoint assistant subscription providers (Claude Code, ChatGPT Codex,
-Google Antigravity) to an external authenticated CLIProxyAPI loopback proxy.
+Connects Cutpoint assistant subscription providers (Claude Code, Codex,
+Antigravity) to an external authenticated CLIProxyAPI loopback proxy.
 """
 
 from __future__ import annotations
@@ -11,14 +11,12 @@ import json
 import logging
 import os
 import platform
-import re
 import secrets
 import signal
 import socket
 import subprocess
 import sys
 import tarfile
-import tempfile
 import threading
 import time
 import webbrowser
@@ -32,7 +30,12 @@ import requests
 from cutpoint import folders, paths, state
 from cutpoint.assistant import keys, proxy_tls
 from cutpoint.assistant.keys import KeyringError
-from cutpoint.assistant.private_files import Checked, private_directory, private_file
+from cutpoint.assistant.private_files import (
+    Checked,
+    private_directory,
+    private_file,
+    write_private,
+)
 from cutpoint.assistant.proxy_credentials import checkpoint
 from cutpoint.errors import FolderBusyError
 
@@ -40,10 +43,12 @@ logger = logging.getLogger(__name__)
 
 PROVIDERS = ("claude-code", "codex", "antigravity")
 
+# The subscription providers' titles, as the Models tab of ``cutpoint ui`` shows them
+# ("<Provider> subscription"); providers.TITLES takes them from here (it imports this module)
 TITLES = {
     "claude-code": "Claude Code subscription",
-    "codex": "ChatGPT Codex subscription",
-    "antigravity": "Google Antigravity subscription",
+    "codex": "Codex subscription",
+    "antigravity": "Antigravity subscription",
 }
 
 CLI_PROVIDERS = {
@@ -210,31 +215,6 @@ def base_url() -> str:
     return f"https://127.0.0.1:{port()}"
 
 
-_BEARER_RE = re.compile(r"(Bearer\s+)[a-zA-Z0-9_\-\.\$]+", re.IGNORECASE)
-_KEY_PARAM_RE = re.compile(
-    r"((?:secret-key|api-key|secret_key|api_key|token|password)[\"':\s=]+)[a-zA-Z0-9_\-\.\$]+",
-    re.IGNORECASE,
-)
-_RAW_TOKEN_RE = re.compile(r"\b(?:sk-[a-zA-Z0-9_\-]{16,}|ya29\.[a-zA-Z0-9_\-]{20,})\b")
-
-
-def redact(text: str) -> str:
-    """Scrub management keys, client API keys, and bearer tokens from message text."""
-    if not text:
-        return ""
-    keys = _read_keys_file()
-    if keys:
-        mgmt, client = keys[0], keys[1]
-        if mgmt:
-            text = text.replace(mgmt, "[REDACTED]")
-        if client:
-            text = text.replace(client, "[REDACTED]")
-    text = _BEARER_RE.sub(r"\1[REDACTED]", text)
-    text = _KEY_PARAM_RE.sub(r"\1[REDACTED]", text)
-    text = _RAW_TOKEN_RE.sub("[REDACTED]", text)
-    return text
-
-
 # Private files and folders this process checked for a read (#1085 A758), see _checked_private
 _CHECKED = state.register_container(__name__, "_CHECKED", Checked())
 
@@ -243,29 +223,8 @@ def _checked_private(path: Path, *, directory: bool = False) -> None:
     """:func:`private_directory` (``directory``) or :func:`private_file` of ``path`` before a
     read: once per process while ``path`` stays the object that was checked; replaced,
     rewritten or (on POSIX) chmod-ed since, it is checked again (:class:`Checked`). Writes
-    (:func:`_write_private_file`) always check."""
+    (:func:`write_private`) always check."""
     _CHECKED.check(path, private_directory if directory else private_file, directory=directory)
-
-
-def _write_private_file(path: Path, content: str) -> None:
-    private_directory(path.parent)
-    if path.exists() or path.is_symlink():
-        private_file(path)
-    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temp_name)
-    try:
-        os.close(fd)
-        fd = -1
-        private_file(temp_path)
-        with temp_path.open("w", encoding="utf-8") as f:
-            f.write(content)
-        temp_path.replace(path)
-    finally:
-        if fd >= 0:
-            with contextlib.suppress(OSError):
-                os.close(fd)
-        with contextlib.suppress(OSError):
-            temp_path.unlink()
 
 
 def _read_keys_file() -> tuple[str, str, int] | None:
@@ -295,12 +254,14 @@ def _ensure_keys(target_port: int | None = None) -> tuple[str, str]:
     client = secrets.token_hex(32)
     keys._remember(mgmt)  # redacted in this process's log records too
     keys._remember(client)
-    _write_private_file(
+    write_private(
         keys_path(),
         json.dumps(
             {"management_key": mgmt, "client_api_key": client, "port": p},
             indent=2,
         ),
+        directory=private_directory,
+        file=private_file,
     )
     return mgmt, client
 
@@ -362,10 +323,55 @@ def _json_object(resp: requests.Response) -> dict[str, Any]:
     try:
         data = resp.json()
     except (ValueError, json.JSONDecodeError) as err:
-        raise ProxyError(redact(f"proxy returned invalid JSON: {err}")) from err
+        raise ProxyError(keys.redact(f"proxy returned invalid JSON: {err}")) from err
     if not isinstance(data, dict):
         raise ProxyError(f"proxy returned JSON that is not an object ({type(data).__name__})")
     return data
+
+
+def _request(
+    method: str,
+    path: str,
+    *,
+    client: bool,
+    json_data: dict | None,
+    params: dict | None,
+    timeout: float,
+) -> dict[str, Any]:
+    """A request to the running proxy with the management key (``client`` False) or the client
+    API key, its answer's JSON object. Errors name a management request "proxy connection
+    failed" / "proxy error" and a client one "proxy inference request failed" / "proxy
+    inference error"; secrets redacted."""
+    if not _is_daemon_owned():
+        raise ProxyConnectionError(NOT_RUNNING)
+    mgmt_key, client_key = _load_keys()
+    url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
+    headers = {
+        "Authorization": f"Bearer {client_key if client else mgmt_key}",
+        "Content-Type": "application/json",
+    }
+    what = "inference request failed" if client else "connection failed"
+    s = _session()
+    try:
+        resp = s.request(
+            method,
+            url,
+            json=json_data,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+            allow_redirects=False,
+        )
+    except requests.exceptions.SSLError as err:
+        raise ProxyError("proxy TLS identity validation failed; refusing the request") from err
+    except requests.RequestException as err:
+        raise ProxyConnectionError(keys.redact(f"proxy {what}: {err}")) from err
+
+    if not resp.ok:
+        kind = "proxy inference error" if client else "proxy error"
+        clean_msg = keys.redact(f"{kind} {resp.status_code}: {_error_text(resp)}")
+        raise ProxyHTTPError(clean_msg, resp.status_code)
+    return _json_object(resp)
 
 
 def _management_request(
@@ -375,34 +381,7 @@ def _management_request(
     params: dict | None = None,
     timeout: float = 15.0,
 ) -> dict[str, Any]:
-    if not _is_daemon_owned():
-        raise ProxyConnectionError(NOT_RUNNING)
-    mgmt_key, _ = _load_keys()
-    url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
-    headers = {
-        "Authorization": f"Bearer {mgmt_key}",
-        "Content-Type": "application/json",
-    }
-    s = _session()
-    try:
-        resp = s.request(
-            method,
-            url,
-            json=json_data,
-            params=params,
-            headers=headers,
-            timeout=timeout,
-            allow_redirects=False,
-        )
-    except requests.exceptions.SSLError as err:
-        raise ProxyError("proxy TLS identity validation failed; refusing the request") from err
-    except requests.RequestException as err:
-        raise ProxyConnectionError(redact(f"proxy connection failed: {err}")) from err
-
-    if not resp.ok:
-        clean_msg = redact(f"proxy error {resp.status_code}: {_error_text(resp)}")
-        raise ProxyHTTPError(clean_msg, resp.status_code)
-    return _json_object(resp)
+    return _request(method, path, client=False, json_data=json_data, params=params, timeout=timeout)
 
 
 def _client_request(
@@ -412,35 +391,7 @@ def _client_request(
     params: dict | None = None,
     timeout: float = 180.0,
 ) -> dict[str, Any]:
-    if not _is_daemon_owned():
-        raise ProxyConnectionError(NOT_RUNNING)
-    _, client_key = _load_keys()
-    url = f"{base_url().rstrip('/')}/{path.lstrip('/')}"
-    headers = {
-        "Authorization": f"Bearer {client_key}",
-        "Content-Type": "application/json",
-    }
-    s = _session()
-    try:
-        resp = s.request(
-            method,
-            url,
-            json=json_data,
-            params=params,
-            headers=headers,
-            timeout=timeout,
-            allow_redirects=False,
-        )
-    except requests.exceptions.SSLError as err:
-        raise ProxyError("proxy TLS identity validation failed; refusing the request") from err
-    except requests.RequestException as err:
-        raise ProxyConnectionError(redact(f"proxy inference request failed: {err}")) from err
-
-    if not resp.ok:
-        clean_msg = redact(f"proxy inference error {resp.status_code}: {_error_text(resp)}")
-        raise ProxyHTTPError(clean_msg, resp.status_code)
-
-    return _json_object(resp)
+    return _request(method, path, client=True, json_data=json_data, params=params, timeout=timeout)
 
 
 def _ensure_credential_prefixes() -> None:
@@ -483,6 +434,19 @@ def forget_statuses() -> None:
         _STATUSES.clear()
 
 
+def _logged_out(provider: str, error: str | None) -> dict[str, Any]:
+    """The status of ``provider`` with no login: ``error`` says why, if known."""
+    return {
+        "provider": provider,
+        "logged_in": False,
+        "email": None,
+        "org": None,
+        "expired": False,
+        "expires_ms": None,
+        "error": error,
+    }
+
+
 def statuses() -> list[dict[str, Any]]:
     """Return status dictionaries for all supported subscription providers in one call.
 
@@ -494,44 +458,11 @@ def statuses() -> list[dict[str, Any]]:
         data = _management_request("GET", "/v8/management/credentials", timeout=3.0)
         files = data.get("files") or []
     except ProxyHTTPError as err:
-        return [
-            {
-                "provider": p,
-                "logged_in": False,
-                "email": None,
-                "org": None,
-                "expired": False,
-                "expires_ms": None,
-                "error": str(err),
-            }
-            for p in PROVIDERS
-        ]
+        return [_logged_out(p, str(err)) for p in PROVIDERS]
     except ProxyConnectionError:
-        return [
-            {
-                "provider": p,
-                "logged_in": False,
-                "email": None,
-                "org": None,
-                "expired": False,
-                "expires_ms": None,
-                "error": NOT_RUNNING,
-            }
-            for p in PROVIDERS
-        ]
+        return [_logged_out(p, NOT_RUNNING) for p in PROVIDERS]
     except (ProxyError, OSError) as err:
-        return [
-            {
-                "provider": p,
-                "logged_in": False,
-                "email": None,
-                "org": None,
-                "expired": False,
-                "expires_ms": None,
-                "error": redact(str(err)),
-            }
-            for p in PROVIDERS
-        ]
+        return [_logged_out(p, keys.redact(str(err))) for p in PROVIDERS]
 
     out = []
     for p in PROVIDERS:
@@ -542,17 +473,7 @@ def statuses() -> list[dict[str, Any]]:
             if isinstance(f, dict) and (f.get("provider") == cli_p or f.get("type") == cli_p)
         ]
         if not matching:
-            out.append(
-                {
-                    "provider": p,
-                    "logged_in": False,
-                    "email": None,
-                    "org": None,
-                    "expired": False,
-                    "expires_ms": None,
-                    "error": None,
-                }
-            )
+            out.append(_logged_out(p, None))
             continue
 
         # Select active credential first; keep cooldown (status: error) connected to let proxy report status
@@ -647,7 +568,7 @@ def poll_login(state: str) -> dict[str, Any]:
     try:
         resp = _management_request("GET", "/v8/management/oauth/status", params={"state": state})
     except ProxyError as err:
-        return {"state": "error", "error": redact(str(err))}
+        return {"state": "error", "error": keys.redact(str(err))}
 
     status_str = str(resp.get("status", "")).lower()
     if status_str == "wait":
@@ -660,7 +581,7 @@ def poll_login(state: str) -> dict[str, Any]:
             except ProxyError as err:
                 return {
                     "state": "error",
-                    "error": redact(f"failed to configure credential prefix: {err}"),
+                    "error": keys.redact(f"failed to configure credential prefix: {err}"),
                 }
             try:
                 checkpoint(cliproxy_dir())
@@ -671,7 +592,7 @@ def poll_login(state: str) -> dict[str, Any]:
         return {"state": "done", "error": None}
     elif status_str == "error":
         err_msg = _error_message(resp.get("error")) or "login failed"
-        return {"state": "error", "error": redact(err_msg)}
+        return {"state": "error", "error": keys.redact(err_msg)}
     return {"state": "pending", "error": None}
 
 
@@ -1084,7 +1005,12 @@ def _prepare_launch(home_dir: Path, resolved_port: int) -> tuple[list[str], Path
         tls_cert_path=tls_cert,
         tls_key_path=tls_key,
     )
-    _write_private_file(cfg_path, json.dumps(cfg_dict, indent=2))
+    write_private(
+        cfg_path,
+        json.dumps(cfg_dict, indent=2),
+        directory=private_directory,
+        file=private_file,
+    )
 
     env_bin = os.environ.get("CUTPOINT_CLIPROXY_BINARY")
     if env_bin:
