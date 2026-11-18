@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from cutpoint import folders, procs
-from cutpoint.assistant import cliproxy, keys
+from cutpoint.assistant import _proxy_guardian, cliproxy, keys
 from cutpoint.assistant.proxy_credentials import CredentialStore
 
 pytestmark = pytest.mark.network  # the temp_home fixture probes a free loopback port
@@ -1538,6 +1538,27 @@ def test_startup_fails_fast_when_the_supervisor_exits(monkeypatch: pytest.Monkey
     # one retry wait per refused probe, then the exit is seen: long before the deadline
     assert guardian.waits == 2 and clock.elapsed == pytest.approx(2 * cliproxy._STARTUP_RETRY)
     assert clock.elapsed < cliproxy._STARTUP_TIMEOUT
+
+
+def test_a_startup_failure_shows_the_redacted_daemon_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    secret = "synthetic-client-key-0001"
+    monkeypatch.setattr(cliproxy.keys, "_SEEN", set())
+    cliproxy.keys._remember(secret)  # as the launcher does when it reads the keys
+    home = tmp_path / "cliproxy"
+    home.mkdir(mode=0o700)
+    (home / _proxy_guardian.OUTPUT_FILE).write_text(
+        f"using {secret}\nfatal: synthetic bind error\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(cliproxy, "cliproxy_dir", lambda: home)
+    monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", _not_ready([]))
+    with pytest.raises(cliproxy.ProxyError) as caught:
+        cliproxy._wait_until_ready(_StartingGuardian(rc=3))
+    message = str(caught.value)
+    assert message.startswith("CLIProxyAPI supervisor exited with non-zero code 3")
+    assert "fatal: synthetic bind error" in message
+    assert secret not in message and "[redacted]" in message
 
 
 def test_startup_returns_when_the_supervisor_exits_cleanly(

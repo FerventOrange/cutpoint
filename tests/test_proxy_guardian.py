@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import signal
@@ -175,6 +176,123 @@ def test_guardian_propagates_normal_and_abnormal_daemon_exit(
     assert not list((root / "auths").glob("*.json"))
 
 
+# Synthetic secrets: a proxy-style 64-hex key and an OpenAI-shaped key.
+_HEX_SECRET = "0123456789abcdef" * 4
+_SK_SECRET = "sk-" + "SyntheticSecret" * 2
+
+
+@pytest.mark.slow
+def test_a_failing_daemon_s_redacted_output_tail_is_kept_for_the_error(
+    tmp_path: Path, guardian_env: tuple[dict[str, str], Path]
+) -> None:
+    root = tmp_path / "proxy"
+    _seed_runtime(root)
+    script = (
+        "import sys\n"
+        f"print('loaded key {_HEX_SECRET} and {_SK_SECRET}', flush=True)\n"
+        "print('fatal: synthetic listen error', file=sys.stderr, flush=True)\n"
+        "sys.exit(3)\n"
+    )
+    process, _ = _launch(root, tmp_path, guardian_env, [sys.executable, "-c", script])
+    assert process.wait(timeout=12) == 3
+    tail = guardian.output_tail(root)
+    assert "fatal: synthetic listen error" in tail
+    assert "CLIProxyAPI output" in tail
+    assert _HEX_SECRET not in tail and _SK_SECRET not in tail
+    saved = (root / guardian.OUTPUT_FILE).read_text(encoding="utf-8")
+    assert _HEX_SECRET not in saved and _SK_SECRET not in saved
+    assert saved.count("[redacted]") == 2
+    if os.name != "nt":
+        assert (root / guardian.OUTPUT_FILE).stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.slow
+def test_a_chatty_daemon_starts_without_blocking_and_leaves_no_output_file(
+    tmp_path: Path, guardian_env: tuple[dict[str, str], Path]
+) -> None:
+    root = tmp_path / "proxy"
+    _seed_runtime(root)
+    ready = tmp_path / "ready"
+    (root / guardian.OUTPUT_FILE).write_text("an earlier run's output", encoding="utf-8")
+    script = (
+        "import sys, time\n"
+        "line = 'x' * 1023 + '\\n'\n"
+        "for _ in range(4096):\n"  # 4 MB on each stream: far beyond any pipe buffer
+        "    sys.stdout.write(line); sys.stderr.write(line)\n"
+        "sys.stdout.flush(); sys.stderr.flush()\n"
+        "open(sys.argv[1], 'w').close()\n"
+        "time.sleep(30)\n"
+    )
+    process, _ = _launch(root, tmp_path, guardian_env, [sys.executable, "-c", script, str(ready)])
+    _wait_for(ready, process)
+    assert not (root / guardian.OUTPUT_FILE).exists()  # removed at start
+    assert process.stdin is not None
+    process.stdin.close()
+    process.wait(timeout=12)
+    assert not (root / guardian.OUTPUT_FILE).exists()  # stopped, not failed: nothing kept
+    assert guardian.output_tail(root) == ""
+
+
+def test_the_output_tail_is_bounded_and_starts_at_a_whole_line() -> None:
+    tail = guardian._Tail()
+    tail.drain(io.BytesIO(b"".join(b"line %d\n" % i for i in range(1000))))
+    text = tail.text()
+    assert text.splitlines() == [f"line {i}" for i in range(990, 1000)]
+
+    tail = guardian._Tail()
+    long_line = b"y" * (guardian._TAIL_CHARS * 3) + b"\n"
+    tail.drain(io.BytesIO(long_line * 5))
+    assert len(tail.text()) <= guardian._TAIL_CHARS
+
+    # a line longer than the ring holds: its kept end could be half a key, so it is dropped
+    tail = guardian._Tail()
+    pieces = guardian._TAIL_LINES + 2
+    tail.drain(io.BytesIO(b"z" * (guardian._LINE_BYTES * pieces) + b"\nlast line\n"))
+    assert tail.text() == "last line"
+
+
+def test_the_output_is_redacted_before_it_is_cut(monkeypatch) -> None:
+    monkeypatch.setattr(guardian.keys, "_SEEN", set())
+    remembered = "synthetic-remembered-secret"
+    guardian.keys._remember(remembered)
+    text = "a" * guardian._TAIL_CHARS + f" {remembered} {_HEX_SECRET.upper()} done"
+    clean = guardian.redact_output(text)
+    assert len(clean) <= guardian._TAIL_CHARS
+    assert remembered not in clean and _HEX_SECRET.upper() not in clean
+    assert clean.endswith("[redacted] [redacted] done")
+
+
+# One synthetic daemon log line per secret shape, and the secret that must not survive.
+_DAEMON_SECRETS = [
+    ('{"access_token":"eyJhbGciOiJTeW50aGV0aWMifQ.eyJzdWIiOiJ4In0.c3lu"}', "eyJhbGciOiJ"),
+    ('{"refresh_token": "1//0gSyntheticRefresh-Value_01"}', "1//0gSynthetic"),
+    ("x-goog-api-key: AIzaSyntheticGoogleKeyValue0001", "AIzaSynthetic"),
+    ("GET /oauth/callback?code=4/0SyntheticCode-01&state=st8", "4/0SyntheticCode"),
+    ("Authorization: Basic c3ludGhldGljOnVzZXI=", "c3ludGhldGljOnVzZXI="),
+    ("password: shortpw1", "shortpw1"),
+    ("refreshing with token=abc123def", "abc123def"),
+    ('body={\\"refresh_token\\":\\"1//0gSyntheticEscaped-02\\"}', "1//0gSyntheticEscaped"),
+    ("saved rt_SyntheticRefresh01 for account", "rt_SyntheticRefresh01"),
+    ("session eyJhbGciOiJTeW50aCJ9.eyJzdWIiOiJzeW50aCJ9.U3ludGhTaWc-01 ok", "U3ludGhTaWc"),
+    ("using key AIzaSyntheticGoogleKey_0123456789-abcdef ok", "AIzaSyntheticGoogleKey"),
+]
+
+
+@pytest.mark.parametrize(("line", "secret"), _DAEMON_SECRETS)
+def test_daemon_output_masks_named_tokens_codes_and_logins(line: str, secret: str) -> None:
+    clean = guardian.redact_output(f"time=1 level=info msg={line}")
+    assert "[redacted]" in clean
+    for part in (secret, secret[:6], secret[-6:]):
+        assert part not in clean, clean
+
+
+def test_daemon_output_masking_stays_linear_on_jwt_like_runs() -> None:
+    text = "eyJ-" * (80 * 1024 // 4)
+    started = time.perf_counter()
+    guardian.redact_output(text)
+    assert time.perf_counter() - started < 0.5
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows terminate is forceful, not ignorable")
 def test_guardian_escalates_when_daemon_ignores_termination(
@@ -319,6 +437,7 @@ class _FakeDaemon:
         self.clock = clock
         self.returncode: int | None = None
         self.terminated = False
+        self.stdout = io.BytesIO()
 
     def poll(self) -> int | None:
         return self.returncode
