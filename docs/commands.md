@@ -2404,7 +2404,7 @@ Profile library verbs (they read no project):
 | `validate NAME\|FILE` | Check a profile by name or a `.json` file by path and list every problem; exit 1 if invalid |
 | `delete NAME` | Delete one of your profiles. `base` and `generic` cannot be deleted. There is no confirmation |
 
-`cutpoint profile show generic` prints the format.
+The JSON block of `cutpoint profile show generic` (with `--json`: `outputs.profile`) is the format. The rest of the output is not part of the profile.
 
 ## style
 

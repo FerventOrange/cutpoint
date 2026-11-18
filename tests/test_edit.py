@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -30,12 +31,22 @@ def pipeline(home, tmp_path, monkeypatch):
     calls: list[tuple[str, tuple, dict]] = []
     state = SimpleNamespace(video=video, calls=calls, write_srt=True, fail_assemble=None)
 
+    # each fake must accept exactly what the real function does: a renamed or removed
+    # parameter fails here instead of vanishing into **kw (#1085 A512)
+    real_analyze, real_export, real_assemble = (
+        cutpoint.analyze.analyze,
+        edit.export_clips,
+        edit.assemble,
+    )
+
     def analyze(targets, style, out, **kw):
+        inspect.signature(real_analyze).bind(targets, style, out, **kw)
         calls.append(("analyze", (targets, getattr(style, "name", style), out), kw))
         out.mkdir(parents=True, exist_ok=True)
         (out / "highlights.json").write_text("{}", encoding="utf-8")
 
     def export_clips(project, **kw):
+        inspect.signature(real_export).bind(project, **kw)
         calls.append(("clips", (project,), kw))
         out = kw.get("out_dir") or project / ("clips_vertical" if kw["vertical"] else "clips")
         out.mkdir(exist_ok=True)
@@ -44,6 +55,7 @@ def pipeline(home, tmp_path, monkeypatch):
         return out
 
     def assemble(clips_dir, out=None, **kw):
+        inspect.signature(real_assemble).bind(clips_dir, out, **kw)
         calls.append(("assemble", (clips_dir, out), kw))
         if out is None:
             stem = "final" + clips_dir.name[5:]

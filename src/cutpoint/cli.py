@@ -1900,7 +1900,7 @@ def _add_profile_verb_parsers(sub: argparse._SubParsersAction) -> None:
         dest="from_file",
         metavar="FILE",
         required=True,
-        help="the profile JSON (- reads standard input); see cutpoint profile show generic",
+        help="the profile JSON (- reads standard input); see the JSON block of cutpoint profile show generic",
     )
     cr.add_argument("--force", action="store_true", help="replace your profile of this name")
     _add_json_argument(cr)
