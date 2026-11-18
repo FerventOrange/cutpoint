@@ -1805,6 +1805,104 @@ def test_moments_view_looks_up_each_source_once_and_keeps_the_ids(
     assert [c["id"] for c in view] == want
 
 
+@pytest.mark.parametrize(
+    ("argv", "flag", "expected"),
+    [
+        (["analyze", "a.mp4", "--style", "funny", "--json"], "--style", ["funny"]),
+        (["analyze", "a.mp4", "--style=funny", "--json"], "--style", ["funny"]),
+        (["analyze", "a.mp4", "--skip", "crashes", "dialogue"], "--skip", ["crashes", "dialogue"]),
+        (["analyze", "a.mp4", "--skip=crashes", "dialogue"], "--skip", ["crashes"]),
+        (["clips", "p", "--segments=my picks.json"], "--segments", ["my picks.json"]),
+        (["clips", "p", "--max-total=60"], "--max-total", ["60"]),
+        (["clips", "p", "--top=8"], "--top-n", []),  # another flag's prefix is not it
+        (["clips", "p", "--top8"], "--top", []),
+        (["clips", "p"], "--top", []),
+        # repeated: argparse keeps the last, in either form
+        (["analyze", "a.mp4", "--style", "gaming", "--style=funny"], "--style", ["funny"]),
+        (["analyze", "a.mp4", "--style=gaming", "--style", "funny", "-v"], "--style", ["funny"]),
+    ],
+)
+def test_a_recorded_command_line_gives_its_flag_values_in_both_forms(
+    argv: list[str], flag: str, expected: list[str]
+) -> None:
+    """A269: ``--flag=value`` is read as argparse reads it."""
+    from cutpoint.ui.files import _values  # noqa: PLC0415
+
+    assert _values(argv, flag) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (3, 3.0),
+        (2.5, 2.5),
+        (0, 0.0),
+        (-1.5, -1.5),
+        (True, None),
+        (False, None),
+        ("3", None),
+        (None, None),
+        (math.nan, None),
+        (math.inf, None),
+        (-math.inf, None),
+        (10**400, None),  # too large for a float
+    ],
+)
+def test_finite_number_takes_only_finite_ints_and_floats(value: Any, expected: Any) -> None:
+    from cutpoint.ui.common import finite_number  # noqa: PLC0415
+
+    got = finite_number(value)
+    assert got == expected and (got is None or type(got) is float)
+
+
+def test_a_flag_or_target_check_refuses_nan_infinity_and_bools() -> None:
+    """A415: every UI number check reads a value as :func:`finite_number` does."""
+    from cutpoint.ui.analysis import _color_state, _seconds  # noqa: PLC0415
+    from cutpoint.ui.pano_previews import _pano_reasons  # noqa: PLC0415
+    from cutpoint.ui.projects import _secs, _valid_target  # noqa: PLC0415
+
+    for v in (math.nan, math.inf, 10**400, True, "5"):
+        assert _secs(v) is None and not _valid_target(v)
+        assert _color_state({"mode": "auto", "strength": v}) is None
+        with pytest.raises(HTTPException):
+            _seconds({"max_total": v}, "max_total", 60.0)
+    assert _secs(5) == 5.0 and _valid_target(60) and _seconds({"x": 2}, "x", 60.0) == 2.0
+    assert _color_state({"mode": "auto", "strength": 1}) == {"mode": "auto", "strength": 1.0}
+    # a NaN share is left out of the flag's reason instead of breaking the listing
+    reasons = _pano_reasons(["sky"], {"sky": "mostly sky"}, {"sky": math.nan})
+    assert reasons == [{"flag": "sky", "text": "mostly sky"}]
+
+
+@pytest.mark.parametrize(
+    ("device", "expected"), [("cuda", "medium"), ("cpu", "small"), (None, "small")]
+)
+def test_the_ui_default_whisper_model_is_transcribes(device: Any, expected: str) -> None:
+    """A417: the UI asks :func:`cutpoint.transcribe.default_model` for the device the analysis
+    ran on (an older analysis without one: the CPU's)."""
+    from cutpoint.ui.analysis import _default_model  # noqa: PLC0415
+
+    assert _default_model({"whisper_device": device}) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, "assistant"), ("", "assistant"), ("assistant", "assistant"), ("vision", "vision")],
+)
+def test_a_role_is_assistant_or_vision(value: Any, expected: str) -> None:
+    from cutpoint.ui.routes.settings import role_of  # noqa: PLC0415
+
+    assert role_of(value) == expected
+
+
+@pytest.mark.parametrize("value", ["chat", 1, ["vision"]])
+def test_another_role_is_refused(value: Any) -> None:
+    from cutpoint.ui.routes.settings import role_of  # noqa: PLC0415
+
+    with pytest.raises(HTTPException) as err:
+        role_of(value)
+    assert err.value.status_code == 400 and err.value.detail == "role must be assistant or vision"
+
+
 def test_plain_json_writes_the_bytes_fastapis_own_reply_writes() -> None:
     """A742: the project reply skips FastAPI's value-by-value copy (``jsonable_encoder``) but
     writes the same bytes, a value JSON has no type for included; NaN is refused as before."""
@@ -5714,6 +5812,7 @@ def test_prepare_without_a_window_keeps_the_whole_source_behaviour(
         b'{"lo": "1", "hi": 5}',
         b'{"lo": NaN, "hi": 5}',
         b'{"lo": 1, "hi": Infinity}',
+        b'{"lo": 1, "hi": 1' + b"0" * 400 + b"}",  # too large for a float: no 500
         b'{"lo": 6, "hi": 5}',
         b'{"lo": -1, "hi": 5}',
         b'{"lo": 1}',
@@ -6971,6 +7070,10 @@ def test_odd_progress_fields_are_tidied() -> None:
     }
     nan = ui.parse_progress('PROGRESS {"step":"x","index":2,"state":"running","pct":NaN}')
     assert nan is not None and nan["pct"] is None
+    huge = ui.parse_progress(
+        'PROGRESS {"step":"x","index":2,"state":"running","pct":1' + "0" * 400 + "}"
+    )  # too large for a float: no OverflowError in the job watcher
+    assert huge is not None and huge["pct"] is None
 
 
 @pytest.mark.parametrize("code", [0, 1])
@@ -8266,6 +8369,28 @@ def test_a_failed_subscription_login_says_why_and_can_start_again(
     assert client.post("/api/assistant/login", json={"provider": "other"}).status_code == 400
 
 
+def test_a_login_still_starting_is_pending_and_not_polled(
+    client: TestClient, logins: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A274: while start_login waits for the proxy the state has no proxy_state; polling
+    ``None`` would store the proxy's "unknown state" error over the pending login."""
+    polled: list[Any] = []
+
+    def poll_login(state: Any) -> dict:
+        polled.append(state)
+        return {"state": "error", "error": "unknown login state"}
+
+    monkeypatch.setattr(cliproxy, "poll_login", poll_login)
+    states = client.app.state.login_states
+    states["codex"] = {"state": "pending", "started_at": time.monotonic(), "error": ""}
+    assert login_state(client, "codex") == {"state": "pending", "error": ""}
+    assert polled == [] and states["codex"]["state"] == "pending"
+    # one that never got a proxy_state still times out, with nothing to cancel or poll
+    states["codex"]["started_at"] = time.monotonic() - ui.LOGIN_TIMEOUT_S - 1
+    assert login_state(client, "codex") == {"state": "error", "error": "login timed out"}
+    assert polled == [] and not getattr(logins, "cancelled", [])
+
+
 def offline_until_started(launcher: FakeLauncher, monkeypatch: pytest.MonkeyPatch) -> None:
     """``cliproxy.start_login`` fails like a missing proxy until the launcher has started one."""
     real = cliproxy.start_login
@@ -8684,6 +8809,50 @@ def test_another_failure_keeps_its_error_line_and_reports_its_code() -> None:
     assert job.done.wait(30)
     assert (job.status, job.error, job.error_code) == ("failed", "boom", "not_found")
     assert job.result is not None and job.result["error"]["code"] == "not_found"
+
+
+@pytest.mark.slow
+def test_a_failed_job_takes_its_error_from_the_envelope_before_any_error_line() -> None:
+    """A270: a later log line that holds "ERROR " (transcript text, a path) does not replace
+    the reason the command's --json envelope gives."""
+    envelope = {"ok": False, "command": "clips", "schema": 1, "project": None, "outputs": {}}
+    envelope |= {"warnings": [], "error": {"code": "error", "message": "the real reason"}}
+    script = (
+        "print('12:00:00 ERROR the real reason')\n"
+        "print('12:00:01 INFO said: ERROR 404 in the transcript')\n"
+        f"print({json.dumps(envelope)!r})\nraise SystemExit(1)"
+    )
+    job = ui.Jobs().start("p", "clips", [sys.executable, "-c", script])
+    assert job.done.wait(30)
+    assert (job.status, job.error) == ("failed", "the real reason")
+
+
+@pytest.mark.parametrize(
+    ("envelope_error", "expected"),
+    [
+        ({"code": "error", "message": "from the envelope"}, "from the envelope"),
+        # an ffmpeg failure's message goes on with its stderr: its first line only
+        (
+            {"code": "error", "message": "ffmpeg failed (exit 1):\nline a\nline b"},
+            "ffmpeg failed (exit 1):",
+        ),
+        ({"code": "error", "message": "\n  \nfrom the envelope\nmore"}, "from the envelope"),
+        ({"code": "error", "message": " \n "}, "last line"),  # only blanks: the log's line
+        ({"code": "error", "message": ""}, "last line"),  # nothing to say: the log's line
+        ("not an object", "last line"),
+        (None, "last line"),  # stopped before its envelope
+    ],
+)
+def test_a_job_error_text_prefers_the_envelope_message(envelope_error: Any, expected: str) -> None:
+    job = ui.Job("p", "clips")
+    job.add_output("12:00:00 ERROR first line")
+    job.add_output("12:00:01 ERROR last line")
+    if envelope_error is not None:
+        job.result = {"error": envelope_error}
+    assert ui.Jobs._error_text(job, 0) == expected
+    assert ui.Jobs._error_text(job, job.logged) == (
+        None if expected == "last line" else expected
+    )  # lines before the mark belong to the step before
 
 
 @pytest.mark.slow

@@ -5,14 +5,13 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import logging
-import math
 import re
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, progress, selfcheck
+from cutpoint import cache, progress, selfcheck, transcribe
 from cutpoint.assistant import providers as ai_providers
 from cutpoint.config import (
     COLOR_MODES,
@@ -50,6 +49,7 @@ from cutpoint.ui.common import (
     UI_DIR,
     bad,
     cutpoint_cmd,
+    finite_number,
     logger,
 )
 from cutpoint.ui.files import (
@@ -181,11 +181,10 @@ def _color_state(raw: Any) -> dict[str, Any] | None:
     None when it did not send one (or sent nonsense)."""
     if not isinstance(raw, dict) or raw.get("mode") not in COLOR_MODES:
         return None
-    strength = raw.get("strength")
-    ok = isinstance(strength, int | float) and not isinstance(strength, bool)
-    if not ok or not 0 <= strength <= 1:
+    strength = finite_number(raw.get("strength"))
+    if strength is None or not 0 <= strength <= 1:
         return None
-    return {"mode": raw["mode"], "strength": float(strength)}
+    return {"mode": raw["mode"], "strength": strength}
 
 
 def _color_after(target: dict[str, Any], now: dict[str, Any] | None) -> dict[str, Any]:
@@ -210,15 +209,12 @@ def _color_args(body: dict[str, Any]) -> list[str]:
         raise bad("color cannot be combined with lut; use one")
     if strength is None:
         return [] if color is None else ["--color", color]
-    if (
-        isinstance(strength, bool)
-        or not isinstance(strength, (int, float))
-        or not 0 <= strength <= 1
-    ):
+    value = finite_number(strength)
+    if value is None or not 0 <= value <= 1:
         raise bad("color_strength must be a number from 0 to 1")
     if color not in ("auto", "underwater"):
         raise bad("color_strength needs color auto or underwater")
-    return ["--color", color, "--color-strength", f"{float(strength):g}"]
+    return ["--color", color, "--color-strength", f"{value:g}"]
 
 
 def _rerank_mark(hl: dict[str, Any] | None) -> str | None:
@@ -454,7 +450,8 @@ def _subscription_roles(args: list[str], style: object) -> bool:
         )
         if rating and ai_providers.is_subscription(vision_assistant_settings().provider):
             return True
-        skipped = _values(args, "--skip") if "--skip" in args else analysis_skip()
+        given = any(a == "--skip" or a.startswith("--skip=") for a in args)
+        skipped = _values(args, "--skip") if given else analysis_skip()
         if "dialogue" in skipped or not ai_providers.is_subscription(assistant_settings().provider):
             return False
         return style == AUTO or get_style(str(style)).open_list
@@ -498,7 +495,7 @@ ANALYZE_KEYS = ("model", "language", "max_candidates", "no_scenes", "skip", "mus
 def _default_model(st: dict[str, Any]) -> str:
     """The whisper model ``analyze`` picks without ``--model`` on the device the analysis ran on
     (Transcriber's default)."""
-    return "medium" if st.get("whisper_device") == "cuda" else "small"
+    return transcribe.default_model("cuda" if st.get("whisper_device") == "cuda" else "cpu")
 
 
 def _style(name: object, hl: dict[str, Any] | None = None) -> Style | None:
@@ -760,7 +757,7 @@ def preset_problem(meta: dict[str, Any], hl: dict[str, Any] | None) -> str | Non
     # detect scenes, and rewrite highlights.json. The default model is Transcriber's for the
     # device the analysis ran on.
     model = st.get("whisper_model")
-    if model is not None and model != ("medium" if st.get("whisper_device") == "cuda" else "small"):
+    if model is not None and model != _default_model(st):
         return (
             f"Presets are not available here: this project was transcribed with the {model} "
             "model (analyze --model), which cutpoint edit does not take."
@@ -815,19 +812,12 @@ def preset_taken(p: Path) -> list[str]:
 
 def _seconds(body: dict[str, Any], key: str, hi: float, *, positive: bool = False) -> float | None:
     """``body[key]`` as seconds, 0 (or above 0 with ``positive``) to ``hi``; None when not sent."""
-    v = body.get(key)
-    if v is None:
+    if body.get(key) is None:
         return None
-    if (
-        isinstance(v, bool)
-        or not isinstance(v, (int, float))
-        or not math.isfinite(v)
-        or v > hi
-        or v < 0
-        or (positive and v == 0)
-    ):
+    v = finite_number(body[key])
+    if v is None or v > hi or v < 0 or (positive and v == 0):
         raise bad(f"{key} must be {'above 0' if positive else '0'}-{hi:g} seconds")
-    return float(v)
+    return v
 
 
 def _opt(flag: str, v: float | None) -> list[str]:

@@ -98,11 +98,15 @@ def _is_project(d: Path) -> bool:
 
 
 def _values(argv: list[str], flag: str) -> list[str]:
-    """The tokens a recorded command line gives ``flag`` (after it, up to the next option)."""
-    if flag not in argv:
-        return []
-    rest = argv[argv.index(flag) + 1 :]
-    return rest[: next((i for i, t in enumerate(rest) if t.startswith("-")), len(rest))]
+    """The tokens a command line gives ``flag``: after it, up to the next option, or the one
+    value of ``flag=value`` (as argparse reads both; a repeated flag: its last)."""
+    for i, t in reversed(list(enumerate(argv))):
+        if t == flag:
+            rest = argv[i + 1 :]
+            return rest[: next((j for j, r in enumerate(rest) if r.startswith("-")), len(rest))]
+        if t.startswith(f"{flag}="):
+            return [t[len(flag) + 1 :]]
+    return []
 
 
 def _typed_path(x: object) -> object:

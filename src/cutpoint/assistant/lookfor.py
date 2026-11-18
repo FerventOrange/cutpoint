@@ -30,9 +30,7 @@ page shows :class:`LookForError`'s short ``reason``.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +41,7 @@ import numpy as np
 from cutpoint import actioncam, extras
 from cutpoint.config import path_key
 from cutpoint.events import visual as V
+from cutpoint.segments import moment_id
 from cutpoint.visual_pool import _fit, _overlap
 
 NAME = "look_for"
@@ -223,12 +222,6 @@ def unavailable() -> str | None:
         if importlib.util.find_spec(module) is None:
             return extras.missing_module_message(module)
     return None
-
-
-def moment_id(source: str, start: float, end: float) -> str:
-    """The id ``cutpoint.ui.moments_view`` would give an analysis moment of this span."""
-    key = f"{os.path.realpath(source)}|{float(start)}|{float(end)}"
-    return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
 def new_moment(hit: Hit, query: str) -> dict[str, Any]:

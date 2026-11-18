@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import subprocess
@@ -85,6 +86,18 @@ RESUME_CHECK_S = 60.0  # seconds ``cutpoint resume --dry-run`` may take (it star
 
 def bad(detail: str, status: int = 400) -> HTTPException:
     return HTTPException(status, detail)
+
+
+def finite_number(v: Any) -> float | None:
+    """``v`` as a float when it is a finite int or float (not a bool), else None (an int too
+    large for a float too)."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    try:
+        f = float(v)
+    except OverflowError:
+        return None
+    return f if math.isfinite(f) else None
 
 
 # --------------------------------------------------------------------------- processes

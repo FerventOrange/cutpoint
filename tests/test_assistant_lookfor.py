@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util as util
 import json
+import os
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -816,3 +817,14 @@ def test_the_frame_index_is_one_cache_file_whatever_the_option(tmp_path, monkeyp
     monkeypatch.setattr(V, "VisualModels", built)
     assert V.run_layer([video], V.VisualParams()) == {"cached": 1, "computed": 0}
     assert lookfor.indexed([str(video)]) is True
+
+
+def test_a_found_moment_takes_the_id_the_page_gives_its_span(tmp_path: Path) -> None:
+    """A435: the AI Chat's found moments and the page's moments share one id rule."""
+    from cutpoint import segments  # noqa: PLC0415
+
+    src = str(tmp_path / "a.mp4")
+    assert lookfor.moment_id is segments.moment_id is ui.moment_id
+    got = segments.moment_id(src, 10, 15.5)
+    assert got == segments.span_id(os.path.realpath(src), 10.0, 15.5)
+    assert len(got) == 12 and got != segments.moment_id(src, 10, 15.6)

@@ -8,7 +8,9 @@ broken rule into its own exception (an HTTP 400 for the UI, an ``OpsError`` for 
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 from collections.abc import Callable
 from typing import Any
 
@@ -22,6 +24,20 @@ LABEL_MAX = 200  # characters in a segment's label
 #   list, count, object, id, source, number (key), range (start, end), unreadable,
 #   past (end, duration), label, exact
 Fail = Callable[..., Exception]
+
+
+def moment_id(source: str, start: float, end: float) -> str:
+    """The page's id of the moment ``source`` ``start``-``end``: a hash of the source's real
+    path and the span, so saved trims, sequences and drafts stay attached to the interval
+    whatever the CLI ranks (``h001``) become after an analysis or a re-rank. The AI Chat's
+    found moments (:mod:`cutpoint.assistant.lookfor`) take the same id."""
+    return span_id(os.path.realpath(source), start, end)
+
+
+def span_id(real: str, start: float, end: float) -> str:
+    """:func:`moment_id` of the source whose real path is ``real``."""
+    key = f"{real}|{float(start)}|{float(end)}"
+    return hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
 def check_segments(

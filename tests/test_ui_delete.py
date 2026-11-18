@@ -124,6 +124,33 @@ def test_permanent_deletes_without_the_trash(client: TestClient, bin_dir: Path) 
     assert [f.name for f in p.iterdir()] == ["notes.txt"]
 
 
+def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_one(
+    client: TestClient,
+) -> None:
+    make()
+    make("other")
+    app = client.app
+    old, other = ui.project_dir("trip"), ui.project_dir("other")
+    previews, planners = app.state.previews, app.state.planners
+    for q in (old, other):
+        previews.outcomes[(q, "h001")] = {"state": "failed", "reason": "x", "ident": "h001-a"}
+        previews.done[(q, "h001")] = {"ident": "h001-a", "name": "h001-a"}
+        previews.memo[q] = ("sig", {})
+        previews.ready_memo[q] = (0.0, "sig", {})
+        previews.pruned.add(q)
+        planners[q] = object()
+    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    make()
+    p = ui.project_dir("trip")
+    assert (p, "h001") not in previews.outcomes and (p, "h001") not in previews.done
+    assert p not in previews.memo and p not in previews.ready_memo
+    assert p not in previews.pruned and p not in planners
+    # another project keeps what this run knows of it
+    assert (other, "h001") in previews.outcomes and (other, "h001") in previews.done
+    assert other in previews.memo and other in previews.ready_memo
+    assert other in previews.pruned and other in planners
+
+
 def test_permanent_must_be_a_boolean(client: TestClient) -> None:
     make()
     res = client.request("DELETE", "/api/projects/trip", json={"permanent": "yes"})
