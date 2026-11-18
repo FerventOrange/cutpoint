@@ -106,8 +106,8 @@ cutpoint profile list                                         # discovered and h
 cutpoint crashes trip --activity my-trails                    # a profile from the list
 ```
 
-To make a profile yourself, or have your AI agent make one, start from the format of
-`cutpoint profile show generic`, then check and save it:
+To make a profile yourself, or have your AI agent make one, start from
+the JSON block of `cutpoint profile show generic` (with `--json`: `outputs.profile`), then check and save it:
 
 ```powershell
 cutpoint profile validate my-trails.json
