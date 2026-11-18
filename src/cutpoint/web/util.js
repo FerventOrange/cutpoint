@@ -124,9 +124,10 @@ export const KINDS = Object.freeze({ action: 'Action', scenic: 'Scenic', funny: 
 // kind alike; tests/test_web_kind.py fails when they drift apart.
 const GENERIC = /^(?:[\w-]+-moment|vlm)?$/;
 const SCENIC_WORDS = ['view', 'views', 'scenic', 'scenery', 'beauty', 'beautiful', 'vista', 'vistas', 'landscape', 'panorama', 'panoramic'];
+// pacing._ACTION_KINDS: the candidate kinds that are action footage (visual pool, action-cam picks).
+const ACTION_KINDS = ['crew', 'cruise', 'airtime', 'speed', 'carve'];
 const FUNNY_WORDS = ['laugh', 'laughs', 'laughing', 'laughter', 'funny', 'joke', 'jokes', 'hilarious', 'giggle', 'giggles', 'comedy'];
-const ACTION_WORDS = ['ski', 'skis', 'skiing', 'skier', 'skiers', 'fast', 'speed', 'speeding', 'crash', 'crashes', 'wipeout', 'cruise', 'cruising', 'crew', 'jump', 'jumps', 'airtime', 'air', 'carve', 'carving', 'run', 'runs', 'descent', 'powder', 'ride', 'riding', 'groomer', 'trees', 'bike', 'biking', 'rider', 'riders', 'mtb', 'trail', 'trails', 'surf', 'surfing', 'skate', 'skating', 'snowboard', 'snowboarding'];
-// The strongest signal cue of a generic label decides next (pacing.moment_kind). The cues of the
+// The strongest signal cue decides next (pacing.moment_kind). The cues of the
 // events VLM windows (funny, action-cam tags) are not in the payload, so a moment only they name
 // falls through to its transcript here; that gap is accepted.
 const CUE_STRONG = 5;
@@ -161,7 +162,7 @@ export const crashText = (crash) => (crash.confidence == null ? 'CRASH' : `CRASH
  * title; a moment an events VLM window named by ``label_before_vlm``, not the window's title. Otherwise it follows
  * pacing.moment_kind (what AI Chat calls the moment) in the same order: the words of its labels
  * (not a generic "x-moment") and ``kind`` decide first (``view`` or a scenic word: scenic; a funny
- * word: funny; ``crew``, ``cruise`` or an action word: action; a talk word: dialogue), then the
+ * word: funny; an action kind (``crew``, ``cruise``, ``airtime``, ``speed``, ``carve``): action, never a label word; a talk word: dialogue), then the
  * strongest signal cue of 5 or more on a 0-10 scale (airtime, crash, wipeout, speed, carve: action;
  * beauty, scenic: scenic; voice_laughter, laughter: funny), then a transcript of four words or more
  * (dialogue), else action. The cues pacing also reads from the events VLM windows are not in the
@@ -183,7 +184,7 @@ export function kindOf(c) {
   const has = (words) => words.some((w) => tokens.has(w));
   if (kind === 'view' || has(SCENIC_WORDS)) return 'scenic';
   if (has(FUNNY_WORDS)) return 'funny';
-  if (kind === 'crew' || kind === 'cruise' || has(ACTION_WORDS)) return 'action';
+  if (ACTION_KINDS.includes(kind)) return 'action';
   if (has(TALK_WORDS)) return 'dialogue';
   const sig = c.signals && typeof c.signals === 'object' ? c.signals : {};
   const cues = SIGNAL_CUES.filter((k) => typeof sig[k] === 'number' && Number.isFinite(sig[k]))
