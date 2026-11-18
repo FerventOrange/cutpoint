@@ -27,6 +27,7 @@ from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
 from cutpoint.planning import report_clips
 from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
+from cutpoint.telemetry import has_telemetry
 from cutpoint.utils import file_stamp, find_videos, input_name
 
 logger = logging.getLogger(__name__)
@@ -119,8 +120,6 @@ def _action_cam(
         return get_style(name).kind == ACTION_CAM
     if style.kind != ACTION_CAM:
         return False
-    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
-
     return any(has_telemetry(v) for v in videos)
 
 

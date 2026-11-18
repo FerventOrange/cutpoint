@@ -28,7 +28,7 @@ from typing import Any
 import requests
 
 from cutpoint import folders, paths, state
-from cutpoint.assistant import keys, proxy_tls
+from cutpoint.assistant import _proxy_guardian, keys, proxy_tls
 from cutpoint.assistant.keys import KeyringError
 from cutpoint.assistant.private_files import (
     Checked,
@@ -941,7 +941,7 @@ def _wait_until_ready(
             if rc:
                 raise ProxyError(
                     f"CLIProxyAPI supervisor exited with non-zero code {rc} before the proxy "
-                    "was ready"
+                    "was ready" + _proxy_guardian.output_tail(cliproxy_dir())
                 )
             return
         try:
@@ -1113,7 +1113,10 @@ def run(port: int | None = None) -> None:
                     except subprocess.TimeoutExpired:
                         continue
                 if rc != 0:
-                    raise ProxyError(f"CLIProxyAPI supervisor exited with non-zero code {rc}")
+                    raise ProxyError(
+                        f"CLIProxyAPI supervisor exited with non-zero code {rc}"
+                        + _proxy_guardian.output_tail(home_dir)
+                    )
                 completed = True
             except KeyboardInterrupt:
                 if proc is not None and _stop_guardian(proc) != 0:
@@ -1193,7 +1196,10 @@ def start(port: int | None = None, *, cancel: threading.Event | None = None) -> 
         proc = _spawn_guardian(guardian_cmd, run_dir)
         _wait_until_ready(proc, cancel=cancel)
         if proc.poll() is not None:  # _wait_until_ready returns on a code 0 exit too
-            raise ProxyError(f"CLIProxyAPI supervisor exited with code {proc.returncode}")
+            raise ProxyError(
+                f"CLIProxyAPI supervisor exited with code {proc.returncode}"
+                + _proxy_guardian.output_tail(home_dir)
+            )
     except BaseException:
         # keep the startup error as the main one; only log a cleanup failure (#577)
         try:

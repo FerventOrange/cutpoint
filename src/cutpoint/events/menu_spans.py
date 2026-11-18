@@ -83,6 +83,7 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, st: 
         PROFANE,
         _transcript_snippet,
         keyword_hits,
+        label_for,
         laughter_hits,
     )
     from cutpoint.transcribe import flat_markers  # noqa: PLC0415
@@ -105,14 +106,7 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, st: 
     if c.get("label") not in {slugify(k, 30) for k in dropped}:
         return
     strong = [p for _, w, p in hits if w >= 0.5 and p not in PROFANE and p in signals["keywords"]]
-    if strong:
-        c["label"] = slugify(strong[0], 30)
-    elif signals.get("laughter", 0) > 0.5:
-        c["label"] = "laugh"
-    elif signals.get("loudness", 0) > 0.6:
-        c["label"] = "loud-moment"
-    else:
-        c["label"] = f"{st.name}-moment"
+    c["label"] = label_for(signals, st, strong[0] if strong else None)
 
 
 def drop_menu_time(hl: dict[str, Any], ev: dict[str, Any]) -> None:

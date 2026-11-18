@@ -29,6 +29,7 @@ from cutpoint.boundaries import (
 )
 from cutpoint.events.dialogue import lines_from_segments
 from cutpoint.extend import ExtendPlan, apply_overrides
+from cutpoint.sources import settings_language
 from cutpoint.transcribe import (
     Transcriber,
     filter_hallucinations,
@@ -354,7 +355,7 @@ def test_split_markers_takes_a_marker_out_of_a_segment_without_words():
 def test_shift_segments_moves_the_markers_with_the_words():
     (seg,) = split_markers([_marked("so", "[Laughter]", "anyway")])
 
-    (moved,) = analyze._shift_segments([seg], 100.0)
+    (moved,) = transcribe.shift_segments([seg], 100.0)
 
     assert flat_markers([moved]) == [{"start": 101.0, "end": 101.5, "text": "[Laughter]"}]
     assert moved["words"][0]["start"] == 100.0
@@ -430,3 +431,10 @@ def test_the_transcriber_asks_whisper_for_the_marker_friendly_suppress_list(monk
     monkeypatch.setattr(transcribe, "load_wav", lambda _p: None)
     tr._run(Path("x.wav"))
     assert seen["suppress_tokens"] == [10, 11] and seen["suppress_tokens"] is not tr._suppress
+
+
+def test_settings_language_reads_a_forced_language_only():
+    assert settings_language({"settings": {"language": "de"}}) == "de"
+    assert settings_language({"settings": None}) is None
+    assert settings_language({}) is None
+    assert settings_language(None) is None

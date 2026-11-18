@@ -55,6 +55,36 @@ def length(c: dict[str, Any]) -> float:
     return float(c["duration"])
 
 
+def pick_best(
+    ordered: Iterable[dict[str, Any]],
+    *,
+    count: int | None = None,
+    total: float | None = None,
+    max_len: float | None = None,
+    clash: bool = True,
+) -> list[dict[str, Any]]:
+    """The candidates of ``ordered`` (best first) that are taken, in that order: a candidate is
+    skipped when it is longer than ``max_len``, does not fit in the room left of ``total``
+    seconds, or (``clash``) mostly overlaps a pick (:func:`clashes`); picking stops at
+    ``count`` picks. A ``must_include`` candidate is always taken, past ``total`` too (but not
+    past ``count``). A limit that is None does not apply."""
+    picked: list[dict[str, Any]] = []
+    used = 0.0
+    for c in ordered:
+        if count is not None and len(picked) >= count:
+            break
+        if not c.get("must_include") and (
+            (max_len is not None and length(c) > max_len)
+            or (total is not None and used + length(c) > total)
+            or (clash and clashes(c, picked))
+        ):
+            continue
+        picked.append(c)
+        if total is not None:
+            used += length(c)
+    return picked
+
+
 def fit_target(candidates: Iterable[dict[str, Any]], target: float) -> list[dict[str, Any]]:
     """The default pick: the best candidates whose lengths fit in ``target`` seconds.
 
@@ -65,14 +95,5 @@ def fit_target(candidates: Iterable[dict[str, Any]], target: float) -> list[dict
     picked, the best candidate is, so the edit is never empty. Returns the picks in that order.
     """
     ordered = sorted(candidates, key=lambda c: (not c.get("must_include"), -c["score"]))
-    picked: list[dict[str, Any]] = []
-    total = 0.0
-    for c in ordered:
-        if c.get("must_include") or (
-            length(c) <= FIT_SHARE * target
-            and total + length(c) <= target
-            and not clashes(c, picked)
-        ):
-            picked.append(c)
-            total += length(c)
+    picked = pick_best(ordered, total=target, max_len=FIT_SHARE * target)
     return picked or ordered[:1]

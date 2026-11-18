@@ -40,6 +40,7 @@ from cutpoint import (
     paths,
     progress,
     scorer,
+    telemetry,
     transcribe,
     vision,
 )
@@ -2184,9 +2185,11 @@ def probe_env(monkeypatch):
     def fake_probe(path, **kw):
         if state.error:
             raise state.error
-        return {"streams": [{"codec_tag_string": t} for t in state.streams]}
+        return {
+            "streams": [{"index": i, "codec_tag_string": t} for i, t in enumerate(state.streams)]
+        }
 
-    monkeypatch.setattr(analyze, "ffprobe_json", fake_probe)
+    monkeypatch.setattr(telemetry, "ffprobe_json", fake_probe)
     return state
 
 
@@ -2202,7 +2205,7 @@ def probe_env(monkeypatch):
 )
 def test_has_telemetry(probe_env, imu, streams, error, want):
     probe_env.imu, probe_env.streams, probe_env.error = imu, streams, error
-    assert analyze.has_telemetry(Path("a.mp4")) is want
+    assert telemetry.has_telemetry(Path("a.mp4")) is want
 
 
 # ----------------------------------------------------------------- common / scoring helpers

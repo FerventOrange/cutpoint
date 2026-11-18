@@ -7,6 +7,7 @@ that decodes both halves on the CPU (no GPU needed)."""
 from __future__ import annotations
 
 import contextlib
+import os
 import shutil
 import subprocess
 import threading
@@ -304,6 +305,34 @@ def test_scene_cuts_falls_back_to_one_decode_when_a_half_fails(ff, monkeypatch, 
     cuts = analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
     assert cuts == [42.0] and single == [True]
     assert cache.load_json(ff.cdir / analyze.SCENES_FILE) == [42.0] and leftovers(ff.cdir) == []
+
+
+def test_the_one_decode_proxy_name_is_not_shared_with_other_runs(ff, monkeypatch):
+    """Two runs on one cache folder must not overwrite each other's proxy (#1085 A103)."""
+    names = []
+
+    def make_proxy(src, proxy, args, seconds, cancel=None, gpu=True):
+        names.append(proxy.name)
+        write(proxy, "proxy")
+
+    monkeypatch.setattr(analyze, "_make_proxy", make_proxy)
+    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [1.0])
+    analyze.scene_cuts(ff.src, ff.cdir, 200.0)
+    assert names[0] != "proxy.mp4" and str(os.getpid()) in names[0]
+    assert not list(ff.cdir.glob("proxy*"))  # removed after the scan
+
+
+def test_the_one_decode_sweeps_old_proxies_and_keeps_a_live_run_s(ff, monkeypatch):
+    live = ff.cdir / f"proxy.{os.getpid()}.{ffmpeg_utils._host_tag()}.abcd1234.tmp.mp4"
+    dead = ff.cdir / f"proxy.99999999.{ffmpeg_utils._host_tag()}.abcd1234.tmp.mp4"
+    old = ff.cdir / "proxy.mp4"
+    for f in (live, dead, old):
+        write(f, "x")
+    monkeypatch.setattr(ffmpeg_utils.procs, "pid_alive", lambda pid, mtime=None: pid == os.getpid())
+    monkeypatch.setattr(analyze, "_make_proxy", lambda src, proxy, *a, **k: write(proxy, "p"))
+    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [1.0])
+    analyze.scene_cuts(ff.src, ff.cdir, 200.0)
+    assert live.exists() and not dead.exists() and not old.exists()
 
 
 def test_scene_cuts_saves_the_merged_cuts_as_one_pass_would(ff, monkeypatch):

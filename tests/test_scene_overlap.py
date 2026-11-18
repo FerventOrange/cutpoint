@@ -305,7 +305,7 @@ def test_scene_cuts_with_a_cancel_removes_the_proxy_and_writes_nothing(tmp_path,
     with pytest.raises(RunCancelled):
         analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel)
     assert ffmpeg.cancel is cancel
-    assert not (tmp_path / "proxy.mp4").exists() and not (tmp_path / analyze.SCENES_FILE).exists()
+    assert not list(tmp_path.glob("proxy*")) and not (tmp_path / analyze.SCENES_FILE).exists()
 
 
 def test_scene_cuts_cancelled_just_as_ffmpeg_finishes_still_stops(tmp_path, monkeypatch):
@@ -319,7 +319,7 @@ def test_scene_cuts_cancelled_just_as_ffmpeg_finishes_still_stops(tmp_path, monk
     cancel.set()
     with pytest.raises(RunCancelled):
         analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel)
-    assert detected == [] and not (tmp_path / "proxy.mp4").exists()
+    assert detected == [] and not list(tmp_path.glob("proxy*"))
 
 
 def test_scene_cuts_without_a_cancel_passes_none_and_detects(tmp_path, monkeypatch):
@@ -399,7 +399,7 @@ def test_an_ffmpeg_failure_while_cancelled_does_not_retry_on_the_cpu(tmp_path, m
     with pytest.raises(RunCancelled):
         analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=threading.Event())
     assert calls == ["gpu"]
-    assert not (tmp_path / "proxy.mp4").exists() and not (tmp_path / analyze.SCENES_FILE).exists()
+    assert not list(tmp_path.glob("proxy*")) and not (tmp_path / analyze.SCENES_FILE).exists()
 
 
 @pytest.mark.parametrize("with_cancel", [False, True], ids=["no-event", "unset-event"])
@@ -699,9 +699,7 @@ def test_a_stopped_transcription_kills_the_real_child_of_the_scene_job(
         world.source()
     assert err.value is boom
     assert sleeper[0].poll() is not None and not scene_threads()
-    assert (
-        not (world.cdir / analyze.SCENES_FILE).exists() and not (world.cdir / "proxy.mp4").exists()
-    )
+    assert not (world.cdir / analyze.SCENES_FILE).exists() and not list(world.cdir.glob("proxy*"))
 
 
 # ---------------------------------------------------------------- scene proxy command (#730)

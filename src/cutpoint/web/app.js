@@ -1,7 +1,7 @@
 // cutpoint editing workspace: ranked moments, trim preview, sequence, export and assemble.
 import { api, startSession, whenExpired } from './api.js';
 import { initNewProject, pickPath } from './picker.js';
-import { $, AI_OTHER, aiModelChoices, baseName, colorNote, crashOf, crashText, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, namedFolders, naturalCompare, NO_FILTERS, parseTime, positionCompare, round2, rowInPlace, scoreText, spanText, svg, themeFromStored } from './util.js';
+import { $, AI_OTHER, aiModelChoices, baseName, colorNote, crashOf, crashText, filtersOn, fmt, fmtBytes, fmtLen, h, KINDS, kindOf, markdown, momentMatches, namedFolders, naturalCompare, NO_FILTERS, parseTime, positionCompare, readStore, round2, rowInPlace, scoreText, spanText, svg, themeFromStored, writeStore } from './util.js';
 
 const MIN_CLIP = 0.1; // seconds
 const MARGIN = 10; // seconds: the least rail context around a moment; playback and trims use the whole source
@@ -35,7 +35,8 @@ const ORDER_KEY = 'cutpoint.momentOrder'; // localStorage: "position" for video 
 const ORDER_NAMES = { score: 'score', position: 'position in video' }; // the moments list's orders (#469)
 // localStorage: the moments list's quick filters the user set ({seq, ready, must}); absent for none. The source file is per project
 const FILTERS_KEY = 'cutpoint.momentFilters';
-// localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults
+// localStorage: the Export & Assembly Options the user changed, by option ({link: false, ...}); the rest keep their defaults.
+// Candidate ids (ids) are never stored: they belong to one project (A284)
 const OPTS_KEY = 'cutpoint.exportOptions';
 // Export & Assembly Options for a viewer who changed none; Compress peaks starts from config.json's
 // compress_peaks when it sets one, else Light.
@@ -726,6 +727,7 @@ function resetWorkspace(segments, joins = []) {
   S.shown = null;
   S.filters.source = ''; // a path of the project left
   S.kind = '';
+  $('#optIds').value = ''; // candidate ids belong to the project left (A284)
 }
 
 /** Leave the open project (its folder is no longer listed): back to the empty workspace. */
@@ -6821,6 +6823,9 @@ async function loadRoleModels(role, refresh) {
 }
 
 const SUB_POLL_MS = 1500;
+// ms a subscription login is polled at most: the server's own limit (ui/settings.py LOGIN_TIMEOUT_S, 300 s,
+// after which it answers "login timed out") plus a few polls, so the server's answer normally comes first
+const SUB_LOGIN_MS = 310_000;
 const PROXY_START_FAILED = 'the subscription proxy did not start'; // ui/routes/shared.py proxy_error and ui/routes/settings.py Log in
 const subNote = (...parts) => $('#modelsSubsStatus')?.replaceChildren(...parts);
 
@@ -7023,6 +7028,7 @@ function signInUrl(url) {
 }
 
 async function subLogin(provider) {
+  if (S.loginPending?.has(provider)) return; // already waiting for this sign-in: one poll per provider
   const title = PROVIDER_TITLES[provider] ?? provider;
   if (!(await confirmAction(`Log in with ${title}?`, 'Use at your own risk.', 'Log in', false))) return;
   if (provider === 'antigravity') {
@@ -7054,25 +7060,38 @@ async function subLogin(provider) {
     renderLogins();
     return subNote(`Login failed: ${S.loginErrors[provider]}.`);
   }
+  if (S.loginPending.has(provider)) return; // another click got here first and polls already
   S.loginPending.add(provider);
   window.open(url, '_blank', 'noopener,noreferrer');
   subNote('Finish signing in in the browser tab that opened. ',
     h('a', { href: url, target: '_blank', rel: 'noopener noreferrer', text: 'Open the sign-in page again' }));
   renderLogins();
-  while (S.loginPending.has(provider)) {
-    await new Promise((resolve) => setTimeout(resolve, SUB_POLL_MS));
-    let s;
-    try {
-      s = await api(`/api/assistant/login/status?provider=${encodeURIComponent(provider)}`);
-    } catch (e) {
-      subNote(e.message);
+  let late = false;
+  const deadline = setTimeout(() => (late = true), SUB_LOGIN_MS);
+  try {
+    while (S.loginPending.has(provider)) {
+      await new Promise((resolve) => setTimeout(resolve, SUB_POLL_MS));
+      if (late) {
+        subNote('Login failed: login timed out'); // the server's words for its own deadline
+        break;
+      }
+      let s;
+      try {
+        s = await api(`/api/assistant/login/status?provider=${encodeURIComponent(provider)}`);
+      } catch (e) {
+        subNote(e.message);
+        break;
+      }
+      if (s.state === 'pending') continue;
+      subNote(s.state === 'done' ? 'Logged in.' : `Login failed: ${s.error}`);
       break;
     }
-    if (s.state === 'pending') continue;
-    subNote(s.state === 'done' ? 'Logged in.' : `Login failed: ${s.error}`);
-    break;
+  } finally {
+    // also when a reply is not what the page expects: the provider must not stay waiting
+    clearTimeout(deadline);
+    S.loginPending.delete(provider);
+    renderLogins();
   }
-  S.loginPending.delete(provider);
   await loadLogins();
   await refreshVisionConsent();
   for (const statusId of ['#chatRoleModelsStatus', '#visionRoleModelsStatus']) {
@@ -7406,32 +7425,32 @@ function bindModelsTab() {
   $('#btnSaveModels').addEventListener('click', saveModels);
 }
 
-/** Turn Stats for Nerds on or off: store it in this browser, show or hide the overlay and tick the box to match. */
-function setNerdStats(on) {
-  S.nerdStats = on;
-  try {
-    if (on) localStorage.setItem(NERD_KEY, '1');
-    else localStorage.removeItem(NERD_KEY);
-  } catch {
-    // storage blocked or full: the setting still applies until reload
-  }
-  $('#setNerdStats').checked = on;
-  renderNerdStats();
+/**
+ * A Settings check box kept in this browser's storage, not in config.json (A424): ``key`` holds
+ * '1' while the box is on and is absent for off, or with ``byDefault`` on, '0' while it is off and
+ * absent for on. ``set(on)`` sets ``S[prop]``, stores it, ticks ``box`` and calls ``apply(on)``;
+ * ``load()`` reads ``S[prop]`` from storage (blocked storage: the default), wires the box to
+ * ``set`` and returns it. The box previews on change; Save keeps it and Cancel or Escape puts back
+ * the state the dialog opened with (bindSettings). Without storage it lasts the session.
+ */
+function storedToggle({ key, box, prop, byDefault = false, apply }) {
+  const set = (on) => {
+    S[prop] = on;
+    writeStore(key, on === byDefault ? null : on ? '1' : '0');
+    $(box).checked = on;
+    apply(on);
+  };
+  const load = () => {
+    const v = readStore(key);
+    S[prop] = byDefault ? v !== '0' : v === '1';
+    $(box).addEventListener('change', (e) => set(e.target.checked));
+    return S[prop];
+  };
+  return { set, load };
 }
 
-/**
- * Stats for Nerds is cosmetic, so it lives in this browser's storage, not in config.json. The box
- * previews on change; Save keeps it and Cancel or Escape puts back the state the dialog opened
- * with. Without storage it lasts the session.
- */
-function initNerdStats() {
-  try {
-    S.nerdStats = localStorage.getItem(NERD_KEY) === '1';
-  } catch {
-    // storage blocked: start from the default (off)
-  }
-  $('#setNerdStats').addEventListener('change', (e) => setNerdStats(e.target.checked));
-}
+/** Stats for Nerds (off by default): the scoring overlay on the preview. */
+const NERD = storedToggle({ key: NERD_KEY, box: '#setNerdStats', prop: 'nerdStats', apply: () => renderNerdStats() });
 
 /** Show or hide the Export panel's advanced controls (.adv) and say which hidden ones are in use. */
 function showAdvExport(on) {
@@ -7453,56 +7472,14 @@ function renderAdvInUse() {
   out.textContent = used.length ? `Advanced options in use: ${used.join(', ')}. Settings > Show advanced export options shows them.` : '';
 }
 
-/** Turn Show advanced export options on or off: store it in this browser, show or hide them and tick the box to match. */
-function setAdvExport(on) {
-  S.advExport = on;
-  try {
-    if (on) localStorage.setItem(ADV_KEY, '1');
-    else localStorage.removeItem(ADV_KEY);
-  } catch {
-    // storage blocked or full: the setting still applies until reload
-  }
-  $('#setAdvExport').checked = on;
-  showAdvExport(on);
-}
+/** Show advanced export options (off by default): the Export panel's .adv controls. */
+const ADV = storedToggle({ key: ADV_KEY, box: '#setAdvExport', prop: 'advExport', apply: showAdvExport });
 
-/**
- * Show advanced export options (off by default) is a view choice, so like Stats for Nerds it lives
- * in this browser's storage, previews on change, and Cancel or Escape puts it back.
- */
-function initAdvExport() {
-  try {
-    S.advExport = localStorage.getItem(ADV_KEY) === '1';
-  } catch {
-    // storage blocked: start from the default (off)
-  }
-  showAdvExport(S.advExport);
-  $('#setAdvExport').addEventListener('change', (e) => setAdvExport(e.target.checked));
-}
-
-/** Turn Verbose moment labels on or off: store it in this browser, show or hide the tiles' file, id and times and tick the box to match. */
-function setVerboseMoments(on) {
-  S.verboseMoments = on;
-  try {
-    if (on) localStorage.setItem(VERBOSE_KEY, '1');
-    else localStorage.removeItem(VERBOSE_KEY);
-  } catch {
-    // storage blocked or full: the setting still applies until reload
-  }
-  $('#setVerboseMoments').checked = on;
-  $('#candList').classList.toggle('moments-compact', !on); // CSS hides the parts; the filter still searches them
-}
-
-/** Verbose moment labels (off by default) is a view choice, so like Stats for Nerds it lives in this browser's storage, previews on change, and Cancel or Escape puts it back. */
-function initVerboseMoments() {
-  try {
-    S.verboseMoments = localStorage.getItem(VERBOSE_KEY) === '1';
-  } catch {
-    // storage blocked: start from the default (off)
-  }
-  setVerboseMoments(S.verboseMoments);
-  $('#setVerboseMoments').addEventListener('change', (e) => setVerboseMoments(e.target.checked));
-}
+/** Verbose moment labels (off by default): the tiles' file, id and times. */
+const VERBOSE = storedToggle({
+  key: VERBOSE_KEY, box: '#setVerboseMoments', prop: 'verboseMoments',
+  apply: (on) => $('#candList').classList.toggle('moments-compact', !on), // CSS hides the parts; the filter still searches them
+});
 
 /** Show the keys the page answers to in the accessible names and tooltips; with Single-key shortcuts off, no character key is promised. */
 function renderKeyHints() {
@@ -7516,32 +7493,8 @@ function renderKeyHints() {
   }
 }
 
-/** Turn Single-key shortcuts on or off (#748): store it in this browser (on is stored as no key), update the hints and tick the box to match. */
-function setSingleKeys(on) {
-  S.singleKeys = on;
-  try {
-    if (on) localStorage.removeItem(KEYS_KEY);
-    else localStorage.setItem(KEYS_KEY, '0');
-  } catch {
-    // storage blocked or full: the setting still applies until reload
-  }
-  $('#setSingleKeys').checked = on;
-  renderKeyHints();
-}
-
-/**
- * Single-key shortcuts (M, [, ], I, O; on by default) can be turned off to meet WCAG 2.1.4. Like
- * the theme it lives in this browser's storage, previews on change, and Cancel or Escape puts it back.
- */
-function initSingleKeys() {
-  try {
-    S.singleKeys = localStorage.getItem(KEYS_KEY) !== '0';
-  } catch {
-    // storage blocked: start from the default (on)
-  }
-  setSingleKeys(S.singleKeys);
-  $('#setSingleKeys').addEventListener('change', (e) => setSingleKeys(e.target.checked));
-}
+/** Single-key shortcuts (M, [, ], I, O; on by default, #748) can be turned off to meet WCAG 2.1.4; on is stored as no key. */
+const KEYS = storedToggle({ key: KEYS_KEY, box: '#setSingleKeys', prop: 'singleKeys', byDefault: true, apply: renderKeyHints });
 
 /** The theme in use: index.html set data-theme on <html> before first paint; none is Graphite. */
 function theme() {
@@ -7553,24 +7506,13 @@ function setTheme(name) {
   name = themeFromStored(name);
   if (name === 'graphite') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = name;
-  try {
-    if (name === 'graphite') localStorage.removeItem(THEME_KEY);
-    else localStorage.setItem(THEME_KEY, name);
-  } catch {
-    // storage blocked or full: the theme still applies until reload
-  }
+  writeStore(THEME_KEY, name === 'graphite' ? null : name); // blocked or full: it still applies until reload
   $('#setTheme').value = name;
 }
 
 /** Boot: the stored choice, if index.html's inline script did not apply it (it also drops a stored "dark": Graphite replaced that theme). */
 function initTheme() {
-  let stored = null;
-  try {
-    stored = localStorage.getItem(THEME_KEY);
-  } catch {
-    // storage blocked: Graphite
-  }
-  setTheme(stored);
+  setTheme(readStore(THEME_KEY)); // storage blocked: Graphite
 }
 
 function bindSettings() {
@@ -7582,11 +7524,11 @@ function bindSettings() {
   $('#setTheme').addEventListener('change', (e) => setTheme(e.target.value));
   $('#setDelete').addEventListener('click', deleteProject);
   const undo = () => {
-    setNerdStats(S.nerdStatsWas);
+    NERD.set(S.nerdStatsWas);
     // a field revealed for an out-of-range value (showAdvExport(true)) stays unless the box changed
-    if ($('#setAdvExport').checked !== S.advExportWas) setAdvExport(S.advExportWas);
-    setVerboseMoments(S.verboseMomentsWas);
-    setSingleKeys(S.singleKeysWas);
+    if ($('#setAdvExport').checked !== S.advExportWas) ADV.set(S.advExportWas);
+    VERBOSE.set(S.verboseMomentsWas);
+    KEYS.set(S.singleKeysWas);
     setTheme(S.themeWas);
   };
   $('#settingsCancel').addEventListener('click', () => {
@@ -7638,20 +7580,8 @@ function initSplitters() {
   // and its CSS default follow), then ``first`` once more, as its limit follows the other's width.
   const refresh = (first) => [first, ...applies.filter((a) => a !== first), first].forEach((a) => a());
   const splitter = ({ bar, col, other, prop, key, min, maxW, dir }) => {
-    let pref = null; // dragged width in pixels, or null for the CSS default
-    try {
-      pref = Number(localStorage.getItem(key)) || null;
-    } catch {
-      // storage blocked: start from the default
-    }
-    const store = () => {
-      try {
-        if (pref == null) localStorage.removeItem(key);
-        else localStorage.setItem(key, String(pref));
-      } catch {
-        // storage blocked or full: the width still applies until reload
-      }
-    };
+    let pref = Number(readStore(key)) || null; // dragged width in pixels, or null for the CSS default
+    const store = () => writeStore(key, pref == null ? null : String(pref)); // blocked or full: it still applies until reload
     const max = () => Math.max(min, Math.min(maxW, Math.floor(innerWidth / 2),
       ws.clientWidth - other.offsetWidth - STAGE_MIN));
     const clamp = (w, hi = max()) => Math.round(Math.min(Math.max(w, min), hi));
@@ -7740,22 +7670,12 @@ function initVolume() {
   const vids = [...els, $('#finalVideo')];
   const DEFAULT_VOL = { volume: 1, muted: false }; // the browser default when nothing is stored
   let vol = { ...DEFAULT_VOL };
-  try {
-    const saved = JSON.parse(localStorage.getItem(VOL_KEY));
-    const n = Number(saved?.volume);
-    if (Number.isFinite(n) && n >= 0 && n <= 1) vol.volume = n;
-    if (typeof saved?.muted === 'boolean') vol.muted = saved.muted;
-  } catch {
-    // storage blocked or unreadable: start from the default
-  }
-  const store = () => {
-    try {
-      if (vol.volume === DEFAULT_VOL.volume && vol.muted === DEFAULT_VOL.muted) localStorage.removeItem(VOL_KEY);
-      else localStorage.setItem(VOL_KEY, JSON.stringify(vol));
-    } catch {
-      // storage blocked or full: the setting still applies until reload
-    }
-  };
+  const saved = readStore(VOL_KEY, null, { json: true }); // blocked or unreadable: the default
+  const n = Number(saved?.volume);
+  if (Number.isFinite(n) && n >= 0 && n <= 1) vol.volume = n;
+  if (typeof saved?.muted === 'boolean') vol.muted = saved.muted;
+  // blocked or full: the setting still applies until reload
+  const store = () => writeStore(VOL_KEY, vol.volume === DEFAULT_VOL.volume && vol.muted === DEFAULT_VOL.muted ? null : vol);
   const btn = h('button', { type: 'button', class: 'btn icon-btn', 'aria-label': 'Mute', title: 'Mute', 'aria-keyshortcuts': S.singleKeys ? 'M' : null, 'data-keys': 'M' });
   const range = h('input', { type: 'range', min: 0, max: 100, step: 1, 'aria-label': 'Volume' });
   const apply = () => {
@@ -7834,12 +7754,7 @@ function initSideTabs() {
     }
     if (tab.dataset.tab === 'models' && prev?.dataset.tab !== 'models') openModelsTab();
     if (focus) tab.focus();
-    try {
-      if (tab === tabs[0]) localStorage.removeItem(TAB_KEY);
-      else localStorage.setItem(TAB_KEY, tab.dataset.tab);
-    } catch {
-      // storage blocked or full: the tab still shows until reload
-    }
+    writeStore(TAB_KEY, tab === tabs[0] ? null : tab.dataset.tab); // blocked or full: it still shows until reload
   };
   // Export is not a tab and is not remembered: the tab it hides stays the stored choice and keeps the tab stop
   const openExport = () => {
@@ -7858,12 +7773,7 @@ function initSideTabs() {
     if (exportOpen) select(currentTab);
     exportBtn.focus();
   };
-  let saved = null;
-  try {
-    saved = localStorage.getItem(TAB_KEY);
-  } catch {
-    // storage blocked: start on the first tab
-  }
+  const saved = readStore(TAB_KEY); // storage blocked: the first tab
   const initial = tabs.find((t) => t.dataset.tab === saved) ?? tabs[0]; // an unknown stored tab starts the first
   select(initial);
   for (const t of tabs) t.addEventListener('click', () => select(t));
@@ -7933,23 +7843,14 @@ function initKindFilter() {
  */
 function initMomentOrder() {
   const radios = [...document.querySelectorAll('#filterPop input[name=momentOrder]')];
-  try {
-    const v = localStorage.getItem(ORDER_KEY);
-    if (Object.hasOwn(ORDER_NAMES, v)) S.order = v;
-  } catch {
-    // storage blocked: Score
-  }
+  const v = readStore(ORDER_KEY); // storage blocked: Score
+  if (Object.hasOwn(ORDER_NAMES, v)) S.order = v;
   for (const r of radios) {
     r.checked = r.value === S.order;
     r.addEventListener('change', () => {
       if (!r.checked) return;
       S.order = Object.hasOwn(ORDER_NAMES, r.value) ? r.value : 'score';
-      try {
-        if (S.order === 'score') localStorage.removeItem(ORDER_KEY);
-        else localStorage.setItem(ORDER_KEY, S.order);
-      } catch {
-        // storage blocked or full: the order still applies until reload
-      }
+      writeStore(ORDER_KEY, S.order === 'score' ? null : S.order); // blocked or full: it still applies until reload
       $('#orderLive').textContent = `Moments sorted by ${ORDER_NAMES[S.order]}`;
       renderMoments();
     });
@@ -7968,13 +7869,9 @@ function initMomentFilters() {
   const pop = $('#filterPop');
   const menu = btn.parentElement;
   btn.prepend(icon('funnel'));
-  try {
-    const saved = JSON.parse(localStorage.getItem(FILTERS_KEY));
-    if (['all', 'in', 'out'].includes(saved?.seq)) S.filters.seq = saved.seq;
-    S.filters.ready = saved?.ready === true;
-  } catch {
-    // storage blocked or not JSON: no filters
-  }
+  const saved = readStore(FILTERS_KEY, null, { json: true }); // blocked or not JSON: no filters
+  if (['all', 'in', 'out'].includes(saved?.seq)) S.filters.seq = saved.seq;
+  S.filters.ready = saved?.ready === true;
   const seqRadios = [...pop.querySelectorAll('input[name=filterSeq]')];
   const showFilters = () => {
     for (const r of seqRadios) r.checked = r.value === S.filters.seq;
@@ -7996,13 +7893,8 @@ function initMomentFilters() {
   document.addEventListener('pointerdown', (e) => !pop.hidden && !menu.contains(e.target) && open(false));
   menu.addEventListener('focusout', (e) => !pop.hidden && e.relatedTarget && !menu.contains(e.relatedTarget) && open(false));
   const changed = () => {
-    try {
-      const { seq, ready } = S.filters;
-      if (!filtersOn({ seq, ready })) localStorage.removeItem(FILTERS_KEY);
-      else localStorage.setItem(FILTERS_KEY, JSON.stringify({ seq, ready }));
-    } catch {
-      // storage blocked or full: the filters still apply until reload
-    }
+    const { seq, ready } = S.filters;
+    writeStore(FILTERS_KEY, filtersOn({ seq, ready }) ? { seq, ready } : null); // blocked or full: they still apply until reload
     renderMoments();
     const n = $('#candList').querySelectorAll('.cand').length;
     $('#orderLive').textContent = `${n} of ${cands().length} moments shown`;
@@ -8066,20 +7958,12 @@ function syncFilterMenu(sources, f, shown, anyBit) {
  * (the CLI refuses it on cuts), so it is unavailable with Cut.
  */
 function initExportOptions() {
-  let saved = {};
-  try {
-    const v = JSON.parse(localStorage.getItem(OPTS_KEY));
-    if (v && typeof v === 'object') saved = v;
-  } catch {
-    // storage blocked or unreadable: the defaults
-  }
+  const v = readStore(OPTS_KEY, null, { json: true }); // blocked or unreadable: the defaults
+  const saved = v && typeof v === 'object' ? v : {};
+  delete saved.ids; // candidate ids belong to one project (A284): an older page stored them
   const store = (key, value) => {
     saved[key] = value;
-    try {
-      localStorage.setItem(OPTS_KEY, JSON.stringify(saved));
-    } catch {
-      // storage blocked or full: the choice still applies until reload
-    }
+    writeStore(OPTS_KEY, saved); // blocked or full: the choice still applies until reload
   };
   const checks = { vertical: '#optVertical', captions: '#optCaptions', speech_aware: '#optSpeech', smart_tail: '#optTail', loudnorm: '#optLoudnorm', link: '#optLink' };
   for (const [key, id] of Object.entries(checks)) {
@@ -8093,7 +7977,7 @@ function initExportOptions() {
   for (const [key, id] of Object.entries(OPT_FIELDS)) {
     if (typeof saved[key] === 'string') $(id).value = saved[key];
     $(id).addEventListener('change', (e) => {
-      store(key, e.target.value);
+      if (key !== 'ids') store(key, e.target.value); // ids are per project: never stored (A284)
       syncTiming();
     });
   }
@@ -8303,16 +8187,16 @@ function bind() {
   initTheme();
   bindSettings();
   bindModelsTab();
-  initNerdStats();
+  NERD.load();
   showTab = initSideTabs();
   initMomentOrder();
   initMomentFilters();
   initKindFilter();
   bindAssistant();
   S.savedOpts = initExportOptions();
-  initAdvExport();
-  initVerboseMoments();
-  initSingleKeys();
+  showAdvExport(ADV.load());
+  VERBOSE.set(VERBOSE.load());
+  KEYS.set(KEYS.load());
   showPlaying(false);
   $('#resetBtn').addEventListener('click', () => {
     const c = current();
