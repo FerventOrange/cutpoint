@@ -369,20 +369,6 @@ def test_extend_stops_before_any_export_when_the_recorded_lut_is_gone(tmp_path, 
     assert exports == []
 
 
-def test_extend_reuse_needs_the_same_grade():
-    old = {
-        "source": "a.mp4",
-        "start": 1.0,
-        "end": 2.0,
-        "audio_fade": 0.25,
-        "lut": "/l/a.cube",
-        "lut_strength": 1.0,
-    }
-    assert extend._reusable(old, dict(old), True, 0.25)
-    assert not extend._reusable(old, old | {"lut_strength": 0.5}, True, 0.25)
-    assert not extend._reusable({k: v for k, v in old.items() if k[:3] != "lut"}, old, True, 0.25)
-
-
 # -- real grades ---------------------------------------------------------------------------------
 
 
@@ -530,11 +516,21 @@ def _auto_entry(**over) -> dict:
     return AutoGrade("auto", black=0.05, white=0.9, **over).to_json()
 
 
-def test_extend_reuse_needs_the_same_automatic_grade():
-    old = {"source": "a.mp4", "start": 1.0, "end": 2.0, "audio_fade": 0.25} | _auto_entry()
+@pytest.mark.parametrize(
+    ("grade", "changed"),
+    [
+        ({"lut": "/l/a.cube", "lut_strength": 1.0}, {"lut_strength": 0.5}),
+        (_auto_entry(), _auto_entry(strength=0.5)),
+    ],
+    ids=["lut", "color"],
+)
+def test_extend_reuse_needs_the_same_grade(grade, changed):
+    old = {"source": "a.mp4", "start": 1.0, "end": 2.0, "audio_fade": 0.25} | grade
+    ungraded = {k: v for k, v in old.items() if k not in grade}
     assert extend._reusable(old, dict(old), True, 0.25)
-    assert not extend._reusable(old, old | _auto_entry(strength=0.5), True, 0.25)
-    assert not extend._reusable(old, {k: v for k, v in old.items() if k != "color"}, True, 0.25)
+    assert not extend._reusable(old, old | changed, True, 0.25)
+    assert not extend._reusable(ungraded, old, True, 0.25)
+    assert not extend._reusable(old, ungraded, True, 0.25)
 
 
 def _newer(entry: dict) -> dict:
