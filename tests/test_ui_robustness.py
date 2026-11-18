@@ -22,19 +22,21 @@ from cutpoint.assistant import providers
 from cutpoint.assistant import watch as ai_watch
 from cutpoint.errors import FFmpegError
 from test_assistant_routes import HostedFake, use
-from test_assistant_routes import no_keys as no_keys  # the fixture
 
-PORT = 8765
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
+
 WAIT = 10  # seconds; only a safety net, every wait below ends on an event
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def cpu_encoder(monkeypatch: pytest.MonkeyPatch) -> None:
     patch_ui(monkeypatch, "video_encoder", lambda: ui.VideoEncoder("cpu"))
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+
+
+@pytest.fixture
+def client(cpu_encoder: None, ui_client: TestClient) -> TestClient:
+    """The shared ``ui_client``, made after the encoder probe is stubbed."""
+    return ui_client
 
 
 # -- A265: Jobs._watch -------------------------------------------------------------------------

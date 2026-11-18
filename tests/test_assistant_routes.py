@@ -11,7 +11,6 @@ import logging
 import socket
 import threading
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -20,23 +19,14 @@ import pytest
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
+from assistant_helpers import FakeProvider, FakeRing, Reply, _Resp, call
 from conftest import set_config
 from cutpoint import cache, config, ui
 from cutpoint.assistant import cliproxy, keys, lookfor, providers, session
 from cutpoint.assistant import store as ai_store
 from proxy_helpers import FakeLauncher
-from test_assistant import FakeProvider, Reply, _Resp, call
-from test_assistant_byo import FakeRing, NoRing
 
-PORT = 8765
-
-
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 
 @pytest.fixture
@@ -76,22 +66,22 @@ def use(monkeypatch: pytest.MonkeyPatch, fake: FakeProvider) -> FakeProvider:
     return fake
 
 
-def finish(client: TestClient, tid: str) -> dict[str, Any]:
+def finish(ui_client: TestClient, tid: str) -> dict[str, Any]:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
-        view = client.get(f"/api/projects/cli/assistant/turns/{tid}").json()
+        view = ui_client.get(f"/api/projects/cli/assistant/turns/{tid}").json()
         if view["status"] != "running":
             return view
         time.sleep(0.02)
     raise AssertionError("turn did not finish")
 
 
-def ask(client: TestClient, text: str, segments: list[dict[str, Any]]) -> dict[str, Any]:
-    res = client.post(
+def ask(ui_client: TestClient, text: str, segments: list[dict[str, Any]]) -> dict[str, Any]:
+    res = ui_client.post(
         "/api/projects/cli/assistant/turns", json={"text": text, "segments": segments}
     )
     assert res.status_code == 200, res.text
-    return finish(client, res.json()["id"])
+    return finish(ui_client, res.json()["id"])
 
 
 def files(p: Path) -> dict[str, int]:
@@ -99,7 +89,7 @@ def files(p: Path) -> dict[str, int]:
 
 
 def test_a_proposal_is_applied_rebased_or_refused_and_kept_in_the_history(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
 ) -> None:
     p, seq, ids = proj
     fake = use(
@@ -113,64 +103,64 @@ def test_a_proposal_is_applied_rebased_or_refused_and_kept_in_the_history(
             ]
         ),
     )
-    view = ask(client, "add the fall first", seq)
+    view = ask(ui_client, "add the fall first", seq)
     assert (
         view["status"] == "done" and view["provider"]["label"] == "Fake · fake-model · this machine"
     )
     show, prop = view["events"]
     assert show == {"n": 0, "kind": "show", "ids": [ids[2]], "note": "the fall"}
     assert [s["id"] for s in prop["after"]] == [ids[2], *ids[:2]]
-    poll = client.get(f"/api/projects/cli/assistant/turns/{view['id']}", params={"after": 1})
+    poll = ui_client.get(f"/api/projects/cli/assistant/turns/{view['id']}", params={"after": 1})
     assert poll.json()["events"] == [prop] and poll.json()["next"] == 2
     assert "<<<DATA sequence>>>" in fake.requests[0]["messages"][1]["content"]
 
     # As made: the proposal's own result. On a changed sequence: its ops again. Else 409.
     url = f"/api/projects/cli/assistant/proposals/{prop['id']}/applied"
-    same = client.post(url, json={"segments": seq}).json()
+    same = ui_client.post(url, json={"segments": seq}).json()
     assert same["rebased"] is False and same["after"] == prop["after"]
     # what apply_ops checked is what a review save accepts, unchanged
-    entries = client.app.state.sources.entries(p)
-    assert ui.validate_segments(prop["after"], entries, client.app.state.media) == prop["after"]
-    moved = client.post(url, json={"segments": seq[1:]}).json()
+    entries = ui_client.app.state.sources.entries(p)
+    assert ui.validate_segments(prop["after"], entries, ui_client.app.state.media) == prop["after"]
+    moved = ui_client.post(url, json={"segments": seq[1:]}).json()
     assert moved["rebased"] is True and [s["id"] for s in moved["after"]] == [ids[2], ids[1]]
     taken = [{**seq[0], "id": ids[2], "start": 60.0, "end": 68.0}]
-    res = client.post(url, json={"segments": taken})
+    res = ui_client.post(url, json={"segments": taken})
     assert res.status_code == 409 and "no longer applies" in res.json()["detail"]
-    history = client.get("/api/projects/cli/assistant/history").json()["applied"]
+    history = ui_client.get("/api/projects/cli/assistant/history").json()["applied"]
     assert [(h["proposal"], h["rebased"]) for h in history] == [
         (prop["id"], False),
         (prop["id"], True),
     ]
     assert history[0]["before"] == seq
     assert (
-        client.post(
+        ui_client.post(
             "/api/projects/cli/assistant/proposals/nope/applied", json={"segments": seq}
         ).status_code
         == 404
     )
 
     # Clear chat forgets the turns, not the history; a cleared proposal can't be applied.
-    assert len(client.get("/api/projects/cli/assistant").json()["turns"]) == 1
-    assert client.delete("/api/projects/cli/assistant/chat").status_code == 200
-    assert client.get("/api/projects/cli/assistant").json()["turns"] == []
-    assert len(client.get("/api/projects/cli/assistant/history").json()["applied"]) == 2
-    assert client.post(url, json={"segments": seq}).status_code == 404
+    assert len(ui_client.get("/api/projects/cli/assistant").json()["turns"]) == 1
+    assert ui_client.delete("/api/projects/cli/assistant/chat").status_code == 200
+    assert ui_client.get("/api/projects/cli/assistant").json()["turns"] == []
+    assert len(ui_client.get("/api/projects/cli/assistant/history").json()["applied"]) == 2
+    assert ui_client.post(url, json={"segments": seq}).status_code == 404
     assert not (p / "ui" / "review.json").exists()
 
 
-def test_get_routes_change_nothing(client: TestClient, monkeypatch, proj) -> None:
+def test_get_routes_change_nothing(ui_client: TestClient, monkeypatch, proj) -> None:
     p, seq, _ = proj
     use(monkeypatch, FakeProvider([Reply("Nothing to change.")]))
-    view = ask(client, "anything to fix?", seq)
+    view = ask(ui_client, "anything to fix?", seq)
     assert view["events"][-1] == {"n": 0, "kind": "reply", "text": "Nothing to change."}
     before = files(p)
     for path in ("", f"/turns/{view['id']}", "/history"):
-        assert client.get(f"/api/projects/cli/assistant{path}").status_code == 200
+        assert ui_client.get(f"/api/projects/cli/assistant{path}").status_code == 200
     assert files(p) == before
 
 
 def test_one_turn_at_a_time_and_cancel_saves_it_without_its_reply(
-    client: TestClient, monkeypatch, proj
+    ui_client: TestClient, monkeypatch, proj
 ) -> None:
     _, seq, _ = proj
     asked, release = threading.Event(), threading.Event()
@@ -181,32 +171,34 @@ def test_one_turn_at_a_time_and_cancel_saves_it_without_its_reply(
         return Reply("too late")
 
     use(monkeypatch, FakeProvider([slow, Reply("newer")]))
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     tid = res.json()["id"]
     assert asked.wait(10)
-    again = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    again = ui_client.post(
+        "/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq}
+    )
     assert again.status_code == 409
-    running = client.get("/api/projects/cli/assistant").json()["running"]
+    running = ui_client.get("/api/projects/cli/assistant").json()["running"]
     assert [t["id"] for t in running] == [tid]
     assert (
-        client.post(f"/api/projects/cli/assistant/turns/{tid}/cancel").json()["status"]
+        ui_client.post(f"/api/projects/cli/assistant/turns/{tid}/cancel").json()["status"]
         == "cancelled"
     )
     # A newer turn finishes while the cancelled one's request is still out: the cancelled
     # turn was saved when it was cancelled, so it stays first.
-    assert ask(client, "again", seq)["status"] == "done"
+    assert ask(ui_client, "again", seq)["status"] == "done"
     release.set()
-    turn = client.app.state.assistant.get(str(ui.project_dir("cli")), tid)
+    turn = ui_client.app.state.assistant.get(str(ui.project_dir("cli")), tid)
     assert turn.done.wait(10)
-    saved = client.get("/api/projects/cli/assistant").json()["turns"]
+    saved = ui_client.get("/api/projects/cli/assistant").json()["turns"]
     assert [(t["status"], t["reply"]) for t in saved] == [("cancelled", ""), ("done", "newer")]
     assert saved[0]["events"] == []
 
 
-def test_assistant_routes_take_the_token_header_only(client: TestClient, proj) -> None:
+def test_assistant_routes_take_the_token_header_only(ui_client: TestClient, proj) -> None:
     """``?t=`` is for media URLs; the assistant routes refuse it."""
     _, seq, _ = proj
-    token = client.headers.pop("X-Cutpoint-Token")
+    token = ui_client.headers.pop("X-Cutpoint-Token")
     calls = [
         ("POST", "/turns", {"json": {"text": "hi", "segments": seq}}),
         ("POST", "/proposals/x/applied", {"json": {"segments": seq}}),
@@ -215,20 +207,20 @@ def test_assistant_routes_take_the_token_header_only(client: TestClient, proj) -
     ]
     for method, path, kw in calls:
         url = f"/api/projects/cli/assistant{path}"
-        res = client.request(method, url, params={"t": token}, **kw)
+        res = ui_client.request(method, url, params={"t": token}, **kw)
         assert res.status_code == 403, (method, path, res.text)
 
 
-def test_assistant_routes_need_a_valid_config(client: TestClient, home: Path, proj) -> None:
+def test_assistant_routes_need_a_valid_config(ui_client: TestClient, home: Path, proj) -> None:
     """Like every ``owned`` route, the chat routes answer 409 while config.json is rejected."""
     set_config(home, vision="yes")  # a wrongly typed value: get_config rejects the file
-    assert client.get("/api/projects/cli/assistant").status_code == 409
+    assert ui_client.get("/api/projects/cli/assistant").status_code == 409
     url = "/api/projects/cli/assistant/history/x/revert"
-    assert client.post(url, json={"segments": []}).status_code == 409
+    assert ui_client.post(url, json={"segments": []}).status_code == 409
 
 
 def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
-    client: TestClient, monkeypatch, proj
+    ui_client: TestClient, monkeypatch, proj
 ) -> None:
     """The transcript tells the model to delete files and save the review; a model that obeys
     reaches only unknown tools, and the turn writes nothing but its chat."""
@@ -252,7 +244,7 @@ def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
         ),
     )
     before = files(p)
-    view = ask(client, "tidy up", seq)
+    view = ask(ui_client, "tidy up", seq)
     results = [r["messages"][-1]["content"] for r in fake.requests[1:]]
     assert results[0].count("<<<END DATA>>>") == 1 and "< < <END DATA> > >" in results[0]
     assert all("unknown tool" in r for r in results[1:])
@@ -264,7 +256,7 @@ def test_a_prompt_injection_in_the_transcript_still_only_yields_a_proposal(
 
 
 def test_an_applied_change_is_reverted_through_a_previewed_proposal(
-    client: TestClient, monkeypatch, proj
+    ui_client: TestClient, monkeypatch, proj
 ) -> None:
     """History > Revert this change: a proposal back to the recorded "before", applied and
     recorded like any other; it writes nothing until applied."""
@@ -275,14 +267,16 @@ def test_an_applied_change_is_reverted_through_a_previewed_proposal(
             [call("propose_edit", summary="Drop the jump", ops=[{"op": "remove", "id": "m2"}])]
         ),
     )
-    prop = ask(client, "drop the jump", seq)["events"][0]
+    prop = ask(ui_client, "drop the jump", seq)["events"][0]
     base = "/api/projects/cli/assistant"
-    applied = client.post(f"{base}/proposals/{prop['id']}/applied", json={"segments": seq}).json()
+    applied = ui_client.post(
+        f"{base}/proposals/{prop['id']}/applied", json={"segments": seq}
+    ).json()
     now = applied["after"]
     assert [s["id"] for s in now] == [ids[0]]
 
     before = files(p)
-    res = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": now})
+    res = ui_client.post(f"{base}/history/{applied['id']}/revert", json={"segments": now})
     assert res.status_code == 200, res.text
     revert = res.json()
     assert files(p) == before  # a preview only
@@ -293,28 +287,30 @@ def test_an_applied_change_is_reverted_through_a_previewed_proposal(
     # A sequence changed since the preview needs a new one; then the "before" comes back as it was.
     trimmed = [{**now[0], "end": now[0]["end"] - 2}]
     url = f"{base}/proposals/{revert['id']}/applied"
-    res = client.post(url, json={"segments": trimmed, "base_key": revert["base_key"]})
+    res = ui_client.post(url, json={"segments": trimmed, "base_key": revert["base_key"]})
     assert res.status_code == 409 and "preview it again" in res.json()["detail"]
-    assert client.post(url, json={"segments": now}).status_code == 409  # no base_key
+    assert ui_client.post(url, json={"segments": now}).status_code == 409  # no base_key
     assert files(p) == before
-    again = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": trimmed}).json()
+    again = ui_client.post(
+        f"{base}/history/{applied['id']}/revert", json={"segments": trimmed}
+    ).json()
     assert [r["changes"] for r in again["diff"]] == [["lengthened"], ["added"]]
-    done = client.post(url, json={"segments": trimmed, "base_key": again["base_key"]}).json()
+    done = ui_client.post(url, json={"segments": trimmed, "base_key": again["base_key"]}).json()
     assert done["after"] == seq and done["before"] == trimmed and done["rebased"] is False
     assert done["summary"] == "Revert: Drop the jump"
-    assert [h["proposal"] for h in client.get(f"{base}/history").json()["applied"]] == [
+    assert [h["proposal"] for h in ui_client.get(f"{base}/history").json()["applied"]] == [
         prop["id"],
         revert["id"],
     ]
     # nothing left to revert, unknown changes, and a "before" the project can no longer hold
-    res = client.post(f"{base}/history/{applied['id']}/revert", json={"segments": seq})
+    res = ui_client.post(f"{base}/history/{applied['id']}/revert", json={"segments": seq})
     assert res.status_code == 409 and "already as it was" in res.json()["detail"]
-    assert client.post(f"{base}/history/nope/revert", json={"segments": seq}).status_code == 404
-    res = client.post(f"{base}/proposals/revert-nope/applied", json={"segments": seq})
+    assert ui_client.post(f"{base}/history/nope/revert", json={"segments": seq}).status_code == 404
+    res = ui_client.post(f"{base}/proposals/revert-nope/applied", json={"segments": seq})
     assert res.status_code == 404
     gone = {**seq[0], "source": str(p / "gone.mp4")}
     ai_store.add_applied(p, {"id": "old1", "summary": "x", "before": [gone], "after": seq})
-    res = client.post(f"{base}/history/old1/revert", json={"segments": seq})
+    res = ui_client.post(f"{base}/history/old1/revert", json={"segments": seq})
     assert res.status_code == 409 and "can no longer be reverted" in res.json()["detail"]
     assert not (p / "ui" / "review.json").exists()
 
@@ -324,24 +320,15 @@ def test_an_applied_change_is_reverted_through_a_previewed_proposal(
 SECRET = "plain-secret-key-never-shown-42"
 
 
-@pytest.fixture(autouse=True)
-def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No real key variable or keyring reaches a test."""
-    for name in keys.ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", NoRing)
-    monkeypatch.setattr(keys, "_SEEN", set())
-
-
 class HostedFake(FakeProvider):
     name = "anthropic"
     local = False
     host = "api.anthropic.com"
 
 
-def test_a_local_provider_needs_no_consent(client: TestClient, monkeypatch, proj) -> None:
+def test_a_local_provider_needs_no_consent(ui_client: TestClient, monkeypatch, proj) -> None:
     use(monkeypatch, FakeProvider([]))
-    got = client.get("/api/projects/cli/assistant").json()
+    got = ui_client.get("/api/projects/cli/assistant").json()
     assert got["consent"] == {
         "needed": False,
         "key": None,
@@ -349,12 +336,12 @@ def test_a_local_provider_needs_no_consent(client: TestClient, monkeypatch, proj
         "missing_key": None,
         "missing_kind": None,
     }
-    res = client.post("/api/assistant/consent", json={"key": "fake@localhost"})
+    res = ui_client.post("/api/assistant/consent", json={"key": "fake@localhost"})
     assert res.status_code == 409
 
 
 def test_the_page_learns_whether_the_visual_search_can_run(
-    client: TestClient, monkeypatch, proj, tmp_path: Path
+    ui_client: TestClient, monkeypatch, proj, tmp_path: Path
 ) -> None:
     """#989: ``frame_index`` says why not and what adds it; a light index alone is enough."""
     from cutpoint.events import visual as V  # noqa: PLC0415
@@ -364,24 +351,24 @@ def test_the_page_learns_whether_the_visual_search_can_run(
     weights.write_bytes(b"x")
     monkeypatch.setattr(V.paths, "clip_weights", lambda: weights)
     monkeypatch.setattr(lookfor, "unavailable", lambda: None)
-    got = client.get("/api/projects/cli/assistant").json()["frame_index"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["frame_index"]
     assert got["ok"] is False and "no frame index" in got["why"] and got["fix"]
     src = Path(json.loads((proj[0] / "highlights.json").read_text())["sources"][0]["path"])
     light = V.light_cache_path(src)
     light.parent.mkdir(parents=True, exist_ok=True)
     light.write_bytes(b"")
-    got = client.get("/api/projects/cli/assistant").json()["frame_index"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["frame_index"]
     assert got == {"ok": True, "why": None, "fix": None}
 
 
 def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
-    client: TestClient, monkeypatch, proj, home: Path
+    ui_client: TestClient, monkeypatch, proj, home: Path
 ) -> None:
     p, seq, _ids = proj
     hello = Reply("Hello", [], {"role": "assistant", "content": "Hello"})
     fake = use(monkeypatch, HostedFake([hello]))
     want = "assistant-v3:anthropic@api.anthropic.com"
-    got = client.get("/api/projects/cli/assistant").json()
+    got = ui_client.get("/api/projects/cli/assistant").json()
     assert got["consent"] == {
         "needed": True,
         "key": want,
@@ -393,30 +380,30 @@ def test_a_hosted_provider_gets_nothing_until_the_user_agrees_once(
     assert got["provider"]["label"] == "Anthropic API · fake-model · api.anthropic.com"
 
     turns = "/api/projects/cli/assistant/turns"
-    res = client.post(turns, json={"text": "hi", "segments": seq})
+    res = ui_client.post(turns, json={"text": "hi", "segments": seq})
     assert res.status_code == 409
     detail = res.json()["detail"]
     assert "agree first" in detail and "file names" in detail and "api.anthropic.com" in detail
     assert fake.requests == [] and not (p / "ui" / "assistant").exists()
 
-    bad = client.post("/api/assistant/consent", json={"key": "assistant-v3:anthropic@elsewhere"})
+    bad = ui_client.post("/api/assistant/consent", json={"key": "assistant-v3:anthropic@elsewhere"})
     assert bad.status_code == 409
     for _ in range(2):  # agreeing again keeps one entry
-        ok = client.post("/api/assistant/consent", json={"key": want})
+        ok = ui_client.post("/api/assistant/consent", json={"key": want})
         assert ok.status_code == 200, ok.text
         assert ok.json()["consent"]["needed"] is False
     saved = json.loads((home / "config.json").read_text("utf-8"))
     assert saved["assistant"]["consent"] == [want]
-    assert client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
-    view = ask(client, "hi", seq)
+    assert ui_client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
+    view = ask(ui_client, "hi", seq)
     assert view["status"] == "done" and len(fake.requests) == 1
 
 
 def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
-    res = client.get("/api/settings")
+    res = ui_client.get("/api/settings")
     got = res.json()["assistant"]
     assert SECRET not in res.text
     assert got["provider"] == "ollama" and got["model"] == "" and got["url"] == ""
@@ -446,7 +433,7 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
 
     monkeypatch.setattr(providers.requests, "get", get)
     body = {"assistant": {"provider": "anthropic", "model": "claude-opus-5-5", "url": ""}}
-    res = client.put("/api/settings", json=body)
+    res = ui_client.put("/api/settings", json=body)
     assert res.status_code == 200, res.text
     out = res.json()
     assert out["assistant_check"] is None and out["assistant"]["provider"] == "anthropic"
@@ -461,12 +448,12 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
         "url": "",
     }
     assert SECRET not in text and SECRET not in res.text
-    view = client.get("/api/projects/cli/assistant")
+    view = ui_client.get("/api/projects/cli/assistant")
     assert view.json()["provider"]["label"] == "Anthropic API · claude-opus-5-5 · api.anthropic.com"
     assert view.json()["consent"]["needed"] is False and SECRET not in view.text
 
     # saved even when it cannot answer yet; the check says why
-    res = client.put("/api/settings", json={"assistant": {"provider": "openai", "model": "m"}})
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": "openai", "model": "m"}})
     assert res.status_code == 200 and "No API key for OpenAI" in res.json()["assistant_check"]
 
     for bad in (
@@ -477,60 +464,60 @@ def test_settings_choose_the_provider_and_show_only_where_the_key_comes_from(
         {"key": SECRET},
         {},
     ):
-        res = client.put("/api/settings", json={"assistant": bad})
+        res = ui_client.put("/api/settings", json={"assistant": bad})
         assert res.status_code == 400, bad
     assert SECRET not in (home / "config.json").read_text("utf-8")
 
 
 def test_a_key_is_saved_in_the_keyring_and_never_sent_back(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
-    res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    res = ui_client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
     assert res.status_code == 500 and "did not save the key" in res.json()["detail"]
     assert SECRET not in res.text
 
     ring = FakeRing()
     monkeypatch.setattr(keys, "_keyring", lambda: ring)
-    res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    res = ui_client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
     assert res.status_code == 200, res.text
     official = {"anthropic": "api.anthropic.com", "openai": "api.openai.com", "xai": "api.x.ai"}
     got_keys = {"anthropic": None, "openai": "keyring", "xai": None}
     assert res.json() == {"keys": got_keys, "key_hosts": official}
     assert ring.saved == {("cutpoint", "openai"): SECRET}
-    settings = client.get("/api/settings")
+    settings = ui_client.get("/api/settings")
     assert settings.json()["assistant"]["keys"]["openai"] == "keyring"
     assert SECRET not in settings.text
     assert not (home / "config.json").exists()  # a key is never written there
-    res = client.post("/api/assistant/key/clear", json={"provider": "openai"})
+    res = ui_client.post("/api/assistant/key/clear", json={"provider": "openai"})
     no_keys = {"anthropic": None, "openai": None, "xai": None}
     assert res.json() == {"keys": no_keys, "key_hosts": official}
     assert ring.saved == {}
-    res = client.post("/api/assistant/key", json={"provider": "ollama", "key": "k"})
+    res = ui_client.post("/api/assistant/key", json={"provider": "ollama", "key": "k"})
     assert res.status_code == 400
-    bad = client.post("/api/assistant/key", json={"provider": "openai", "key": "has space"})
+    bad = ui_client.post("/api/assistant/key", json={"provider": "openai", "key": "has space"})
     assert bad.status_code == 400 and "has space" not in bad.text
 
 
 def test_a_key_is_saved_for_the_configured_base_url_host(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     ring = FakeRing()
     monkeypatch.setattr(keys, "_keyring", lambda: ring)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-0123456789abcdef")
     set_config(home, assistant={"provider": "openai", "url": "https://openrouter.ai/api/v1"})
-    view = client.get("/api/settings").json()["assistant"]
+    view = ui_client.get("/api/settings").json()["assistant"]
     openai = next(p for p in view["providers"] if p["name"] == "openai")
     assert openai["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY"]  # OPENAI_API_KEY is not for it
     assert view["keys"]["openai"] is None and view["key_hosts"]["openai"] == "openrouter.ai"
-    res = client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    res = ui_client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
     assert res.status_code == 200, res.text
     assert res.json()["keys"]["openai"] == "keyring"
     assert ring.saved == {("cutpoint", "openai@openrouter.ai"): SECRET}
-    client.post("/api/assistant/key/clear", json={"provider": "openai"})
+    ui_client.post("/api/assistant/key/clear", json={"provider": "openai"})
     assert ring.saved == {}
 
 
-def test_the_app_redacts_keys_from_its_logs(client: TestClient) -> None:
+def test_the_app_redacts_keys_from_its_logs(ui_client: TestClient) -> None:
     """create_app adds the redaction filter to every root handler."""
     handlers = logging.getLogger().handlers
     assert handlers and all(keys._FILTER in h.filters for h in handlers)
@@ -554,8 +541,8 @@ EVIL_URLS = [r"https://evil.example\@api.openai.com/v1", r"http://evil.example\@
 
 
 @pytest.mark.parametrize("url", EVIL_URLS)
-def test_settings_refuse_a_url_whose_host_depends_on_the_parser(client: TestClient, url) -> None:
-    res = client.put("/api/settings", json={"assistant": {"provider": "openai", "url": url}})
+def test_settings_refuse_a_url_whose_host_depends_on_the_parser(ui_client: TestClient, url) -> None:
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": "openai", "url": url}})
     assert res.status_code == 400 and "backslash" in res.json()["detail"]
 
 
@@ -564,20 +551,20 @@ def test_settings_refuse_a_url_whose_host_depends_on_the_parser(client: TestClie
     "url", ["https://evil.example@api.openai.com/v1", "http://user:pw@127.0.0.1:11434"]
 )
 def test_settings_refuse_a_url_with_a_user_name_or_password(
-    client: TestClient, home: Path, provider, url
+    ui_client: TestClient, home: Path, provider, url
 ) -> None:
-    res = client.put("/api/settings", json={"assistant": {"provider": provider, "url": url}})
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": provider, "url": url}})
     assert res.status_code == 400
     assert res.json()["detail"] == "assistant.url must not contain a user name or password"
     assert not (home / "config.json").exists()
 
 
 def test_settings_never_show_the_password_of_a_url(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     monkeypatch.setenv("OLLAMA_HOST", "http://user:s3cretpw@box:11434")
     set_config(home, assistant={"provider": "ollama", "url": "http://me:0therpw@nas:11434"})
-    res = client.get("/api/settings")
+    res = ui_client.get("/api/settings")
     assert res.status_code == 200
     assert "s3cretpw" not in res.text and "0therpw" not in res.text and "user:" not in res.text
     got = res.json()["assistant"]
@@ -586,7 +573,7 @@ def test_settings_never_show_the_password_of_a_url(
 
 
 def test_an_openai_compatible_url_on_the_proxy_port_needs_consent(
-    client: TestClient, monkeypatch, proj, home: Path
+    ui_client: TestClient, monkeypatch, proj, home: Path
 ) -> None:
     """#650: the proxy's port on this machine forwards to hosted models; another local port
     stays local."""
@@ -603,30 +590,30 @@ def test_an_openai_compatible_url_on_the_proxy_port_needs_consent(
     set_config(
         home, assistant={"provider": "openai", "model": "m", "url": f"https://127.0.0.1:{port}/v1"}
     )
-    got = client.get("/api/projects/cli/assistant").json()
+    got = ui_client.get("/api/projects/cli/assistant").json()
     want = f"assistant-v3:openai@127.0.0.1:{port}"
     assert got["consent"]["needed"] is True and got["consent"]["key"] == want
     assert got["provider"]["local"] is False and "127.0.0.1" in got["provider"]["label"]
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409 and "agree first" in res.json()["detail"]
     assert sent == []
     set_config(
         home, assistant={"provider": "openai", "model": "m", "url": "http://127.0.0.1:1234/v1"}
     )
-    got = client.get("/api/projects/cli/assistant").json()
+    got = ui_client.get("/api/projects/cli/assistant").json()
     assert got["consent"]["needed"] is False and got["consent"]["key"] is None
     assert got["provider"]["local"] is True
 
 
 def test_a_saved_key_for_another_host_is_not_called_checked(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     """OpenRouter lists its models without a key: passing the check proves nothing about it."""
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", SECRET)
     set_config(home, assistant={"consent": ["assistant-v3:openai@openrouter.ai"]})
     monkeypatch.setattr(providers.requests, "get", lambda url, **kw: _Resp({"data": []}))
     body = {"provider": "openai", "model": "m", "url": "https://openrouter.ai/api/v1"}
-    out = client.put("/api/settings", json={"assistant": body}).json()
+    out = ui_client.put("/api/settings", json={"assistant": body}).json()
     assert out["assistant_check"] is None
     assert out["assistant_note"] == providers.KEY_CHECKED_LATER
 
@@ -645,7 +632,7 @@ def test_a_saved_key_for_another_host_is_not_called_checked(
     ],
 )
 def test_the_save_check_contacts_no_unconsented_host(
-    client: TestClient, monkeypatch, home: Path, env, body, host
+    ui_client: TestClient, monkeypatch, home: Path, env, body, host
 ) -> None:
     """#504: saving a provider in Settings never contacts a host the user has not agreed to
     in AI Chat, with a key or without one (a remote Ollama); once agreed, Save checks it, with
@@ -660,14 +647,14 @@ def test_the_save_check_contacts_no_unconsented_host(
 
     monkeypatch.setattr(providers.requests, "get", get)
     monkeypatch.setattr(providers.requests, "post", get)
-    out = client.put("/api/settings", json={"assistant": body}).json()
+    out = ui_client.put("/api/settings", json={"assistant": body}).json()
     assert sent == []  # nothing at all went to the host
     assert out["assistant_check"] is None and host in out["assistant_note"]
     assert "AI Chat" in out["assistant_note"] and SECRET not in json.dumps(out)
     # the consent key has the port when it is not the scheme's default (a second Ollama on one host)
     key_host = f"{host}:11434" if body["provider"] == "ollama" else host
     set_config(home, assistant={**body, "consent": [f"assistant-v3:{body['provider']}@{key_host}"]})
-    out = client.put("/api/settings", json={"assistant": body}).json()
+    out = ui_client.put("/api/settings", json={"assistant": body}).json()
     assert sent and all(host in s["url"] for s in sent)  # agreed: now it is checked
     if env:
         assert out["assistant_check"] is None, out
@@ -675,29 +662,29 @@ def test_the_save_check_contacts_no_unconsented_host(
 
 
 def test_a_missing_key_comes_before_the_consent_box(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     set_config(home, assistant={"provider": "anthropic"})
-    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
     assert "No API key for Anthropic" in got["missing_key"]
     assert "ANTHROPIC_API_KEY" in got["missing_key"] and "Models tab" in got["missing_key"]
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
-    got = client.get("/api/projects/cli/assistant")
+    got = ui_client.get("/api/projects/cli/assistant")
     assert got.json()["consent"]["missing_key"] is None and SECRET not in got.text
     assert got.json()["consent"]["missing_kind"] is None
 
 
 def test_a_subscription_provider_misses_a_login_not_a_key(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     set_config(home, assistant={"provider": "codex"})
     why = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
     monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": False, "error": why})
-    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["missing_key"] == why and got["missing_kind"] == "login"
     set_config(home, assistant={"provider": "anthropic"})
-    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["missing_kind"] == "key"
 
 
@@ -705,27 +692,27 @@ def test_a_subscription_provider_misses_a_login_not_a_key(
 
 
 def test_the_models_of_a_subscription_start_the_proxy_only_with_a_saved_login(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     providers.clear_model_cache()
     set_config(home, assistant={"provider": "codex"})
-    launcher = client.app.state.proxies = FakeLauncher(saved=False)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=False)
     monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": False, "error": None})
-    client.get("/api/assistant/models?provider=codex")
+    ui_client.get("/api/assistant/models?provider=codex")
     assert launcher.starts == 0 and launcher.calls == [True]
 
     launcher.saved = True
-    client.get("/api/assistant/models?provider=codex")
+    ui_client.get("/api/assistant/models?provider=codex")
     assert launcher.starts == 1
 
 
 def test_the_models_of_a_subscription_say_why_the_proxy_did_not_start(
-    client: TestClient, home: Path
+    ui_client: TestClient, home: Path
 ) -> None:
     set_config(home, assistant={"provider": "codex"})
-    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
     launcher.error = cliproxy.ProxyError("no binary for this platform")
-    res = client.get("/api/assistant/models?provider=codex")
+    res = ui_client.get("/api/assistant/models?provider=codex")
     assert res.status_code == 200
     assert res.json() == {
         "state": "error",
@@ -735,11 +722,11 @@ def test_the_models_of_a_subscription_say_why_the_proxy_did_not_start(
 
 
 def test_the_models_of_a_key_provider_never_touch_the_proxy(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
-    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
     monkeypatch.setattr(providers.requests, "get", lambda url, **kw: _Resp({"data": []}))
-    client.get("/api/assistant/models?provider=ollama")
+    ui_client.get("/api/assistant/models?provider=ollama")
     assert launcher.calls == []
 
 
@@ -761,47 +748,47 @@ def use_codex(monkeypatch: pytest.MonkeyPatch, home: Path, consent: bool = True)
 
 
 def test_a_turn_with_a_subscription_model_starts_the_proxy_only_with_a_saved_login(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     _, seq, _ = proj
     use_codex(monkeypatch, home)
-    launcher = client.app.state.proxies = FakeLauncher(saved=False)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=False)
     turns = "/api/projects/cli/assistant/turns"
-    res = client.post(turns, json={"text": "hi", "segments": seq})
+    res = ui_client.post(turns, json={"text": "hi", "segments": seq})
     assert res.status_code == 200, res.text
     assert launcher.starts == 0 and launcher.calls == [True]
 
     launcher.saved = True
-    res = client.post(turns, json={"text": "again", "segments": seq})
+    res = ui_client.post(turns, json={"text": "again", "segments": seq})
     assert res.status_code in (200, 409), res.text  # 409: the first turn still runs
     assert launcher.starts == 1
 
 
 def test_a_turn_refused_before_it_starts_leaves_the_proxy_alone(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     _, seq, _ = proj
     use_codex(monkeypatch, home, consent=False)
-    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
     turns = "/api/projects/cli/assistant/turns"
-    res = client.post(turns, json={"text": "hi", "segments": seq})
+    res = ui_client.post(turns, json={"text": "hi", "segments": seq})
     assert res.status_code == 409 and "agree first" in res.json()["detail"]
     assert launcher.calls == []
 
     set_config(home, assistant={"provider": "codex", "consent": [CODEX_CONSENT]})
-    res = client.post(turns, json={"text": "  ", "segments": seq})
+    res = ui_client.post(turns, json={"text": "  ", "segments": seq})
     assert res.status_code == 400
     assert launcher.calls == []
 
 
 def test_a_turn_says_why_the_subscription_proxy_did_not_start(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     _, seq, _ = proj
     use_codex(monkeypatch, home)
-    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
     launcher.error = cliproxy.ProxyError("port 18317 is already in use")
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 503
     assert res.json()["detail"] == (
         "the subscription proxy did not start: port 18317 is already in use"
@@ -809,18 +796,18 @@ def test_a_turn_says_why_the_subscription_proxy_did_not_start(
 
 
 def test_a_turn_with_a_local_model_never_touches_the_proxy(
-    client: TestClient, monkeypatch, proj
+    ui_client: TestClient, monkeypatch, proj
 ) -> None:
     _, seq, _ = proj
-    launcher = client.app.state.proxies = FakeLauncher(saved=True)
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
     use(monkeypatch, FakeProvider([Reply("ok")]))
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 200, res.text
     assert launcher.calls == []
 
 
-def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) -> None:
-    res = client.get("/api/settings")
+def test_settings_view_and_put_vision_assistant(ui_client: TestClient, home: Path) -> None:
+    res = ui_client.get("/api/settings")
     assert res.status_code == 200
     data = res.json()
     assert "vision_assistant" in data
@@ -846,7 +833,7 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
             "url": "",
         }
     }
-    res = client.put("/api/settings", json=put_body)
+    res = ui_client.put("/api/settings", json=put_body)
     assert res.status_code == 200
     out = res.json()
     assert out["vision_assistant"]["provider"] == "codex"
@@ -855,18 +842,18 @@ def test_settings_view_and_put_vision_assistant(client: TestClient, home: Path) 
     assert out["assistant"]["provider"] == "ollama"
 
     # Rejects unsupported provider for vision
-    bad_res = client.put("/api/settings", json={"vision_assistant": {"provider": "bogus"}})
+    bad_res = ui_client.put("/api/settings", json={"vision_assistant": {"provider": "bogus"}})
     assert bad_res.status_code == 400
     assert "vision_assistant.provider must be one of" in bad_res.json()["detail"]
 
 
-def test_models_route_role_parameter(client: TestClient, monkeypatch) -> None:
+def test_models_route_role_parameter(ui_client: TestClient, monkeypatch) -> None:
     # Role validation
-    bad_role = client.get("/api/assistant/models?role=invalid")
+    bad_role = ui_client.get("/api/assistant/models?role=invalid")
     assert bad_role.status_code == 400
 
     # Vision role rejects non-vision provider
-    bad_p = client.get("/api/assistant/models?role=vision&provider=bogus")
+    bad_p = ui_client.get("/api/assistant/models?role=vision&provider=bogus")
     assert bad_p.status_code == 400
     assert "provider must be custom or one of" in bad_p.json()["detail"]
 
@@ -878,7 +865,7 @@ def test_models_route_role_parameter(client: TestClient, monkeypatch) -> None:
         return _Resp({"models": [{"name": "qwen3.5:9b"}]})
 
     monkeypatch.setattr(providers.requests, "get", get)
-    res = client.get("/api/assistant/models?role=vision&provider=ollama&refresh=true")
+    res = ui_client.get("/api/assistant/models?role=vision&provider=ollama&refresh=true")
     assert res.status_code == 200
     assert res.json() == {
         "state": "ok",
@@ -888,7 +875,7 @@ def test_models_route_role_parameter(client: TestClient, monkeypatch) -> None:
     assert len(asked) == 1 and asked[0].endswith("/api/tags")
 
 
-def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home: Path) -> None:
+def test_models_route_role_consent_gating(ui_client: TestClient, monkeypatch, home: Path) -> None:
     set_config(
         home,
         assistant={"provider": "ollama"},
@@ -900,7 +887,7 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
         cliproxy, "list_models", lambda *args, **kwargs: model_requests.append(args) or []
     )
     # Without consent, subscription/hosted provider requires consent and returns consent_needed
-    res = client.get("/api/assistant/models?role=vision&provider=codex")
+    res = ui_client.get("/api/assistant/models?role=vision&provider=codex")
     assert res.status_code == 200
     data = res.json()
     assert data["state"] == "consent_needed"
@@ -918,13 +905,13 @@ def test_models_route_role_consent_gating(client: TestClient, monkeypatch, home:
         "model_list",
         lambda provider, consent, **kwargs: seen.append(consent) or {"state": "ok", "models": []},
     )
-    res2 = client.get("/api/assistant/models?role=vision&provider=codex")
+    res2 = ui_client.get("/api/assistant/models?role=vision&provider=codex")
     assert res2.status_code == 200
     assert seen == [("vision-v2:codex@chatgpt.com",)]
 
 
 def test_vision_models_route_keeps_saved_model_only_for_its_provider(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     set_config(
         home,
@@ -947,24 +934,24 @@ def test_vision_models_route_keeps_saved_model_only_for_its_provider(
             {"id": "gpt-5", "name": "gpt-5"},
         ],
     )
-    got = client.get("/api/assistant/models?role=vision&provider=codex").json()
+    got = ui_client.get("/api/assistant/models?role=vision&provider=codex").json()
     assert [m["id"] for m in got["models"]] == ["gpt-5", "gpt-3.5-turbo"]
     assert got["models"][1]["name"] == "gpt-3.5-turbo (may not accept images)"
 
     providers.clear_model_cache()
-    got = client.get("/api/assistant/models?role=vision&provider=claude-code").json()
+    got = ui_client.get("/api/assistant/models?role=vision&provider=claude-code").json()
     assert "gpt-3.5-turbo" not in [m["id"] for m in got["models"]]
     providers.clear_model_cache()
 
 
-def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path) -> None:
+def test_role_aware_consent_endpoint(ui_client: TestClient, monkeypatch, home: Path) -> None:
     set_config(
         home,
         assistant={"provider": "ollama"},
         vision_assistant={"provider": "codex", "consent": []},
     )
     # Grant consent for vision
-    res = client.post(
+    res = ui_client.post(
         "/api/assistant/consent", json={"key": "vision-v2:codex@chatgpt.com", "role": "vision"}
     )
     assert res.status_code == 200
@@ -978,7 +965,7 @@ def test_role_aware_consent_endpoint(client: TestClient, monkeypatch, home: Path
 
 
 def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     """Consent under the old Vision wording (``<provider>@<host>``) and the assistant's consent
     do not let frames go out: the Models tab asks again with the ``vision-v2:`` key."""
@@ -988,11 +975,13 @@ def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
         assistant={"provider": "codex", "consent": ["assistant-v3:codex@chatgpt.com"]},
         vision_assistant={"provider": "codex", "consent": ["codex@chatgpt.com"]},
     )
-    got = client.get("/api/settings").json()["vision_consent"]
+    got = ui_client.get("/api/settings").json()["vision_consent"]
     assert got["needed"] is True and got["key"] == "vision-v2:codex@chatgpt.com"
-    old = client.post("/api/assistant/consent", json={"key": "codex@chatgpt.com", "role": "vision"})
+    old = ui_client.post(
+        "/api/assistant/consent", json={"key": "codex@chatgpt.com", "role": "vision"}
+    )
     assert old.status_code == 409
-    ok = client.post(
+    ok = ui_client.post(
         "/api/assistant/consent", json={"key": "vision-v2:codex@chatgpt.com", "role": "vision"}
     )
     assert ok.status_code == 200 and ok.json()["consent"]["needed"] is False
@@ -1005,7 +994,7 @@ def test_vision_consent_is_versioned_and_not_given_by_the_assistant_s(
 
 
 def test_vision_consent_does_not_unlock_the_assistant(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     vision_key = "vision-v2:codex@chatgpt.com"
@@ -1015,12 +1004,12 @@ def test_vision_consent_does_not_unlock_the_assistant(
         assistant={"provider": "codex", "consent": [vision_key]},
         vision_assistant={"provider": "codex", "consent": [vision_key]},
     )
-    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "assistant-v3:codex@chatgpt.com"
     _, seq, _ = proj
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409
-    wrong = client.post("/api/assistant/consent", json={"key": vision_key})
+    wrong = ui_client.post("/api/assistant/consent", json={"key": vision_key})
     assert wrong.status_code == 409
     assert config.load_config_data()["assistant"]["consent"] == [vision_key]
 
@@ -1033,48 +1022,48 @@ def test_consent_keys_differ_by_role() -> None:
 
 
 def test_an_old_unprefixed_consent_no_longer_counts_for_the_assistant(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     """Consent given under the older, shorter AI Chat wording (``<provider>@<host>``) does not
     let project text go out: the AI Chat tab asks again with the ``assistant-v3:`` key."""
     p, seq, _ids = proj
     fake = use(monkeypatch, HostedFake([]))
     set_config(home, assistant={"consent": ["anthropic@api.anthropic.com"]})
-    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409
-    old = client.post("/api/assistant/consent", json={"key": "anthropic@api.anthropic.com"})
+    old = ui_client.post("/api/assistant/consent", json={"key": "anthropic@api.anthropic.com"})
     assert old.status_code == 409
     assert fake.requests == [] and not (p / "ui" / "assistant").exists()
     assert config.load_config_data()["assistant"]["consent"] == ["anthropic@api.anthropic.com"]
 
 
 def test_an_assistant_v3_consent_lets_the_assistant_run(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     _, seq, _ = proj
     hello = Reply("Hello", [], {"role": "assistant", "content": "Hello"})
     fake = use(monkeypatch, HostedFake([hello]))
     set_config(home, assistant={"consent": ["assistant-v3:anthropic@api.anthropic.com"]})
-    assert client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
-    view = ask(client, "hi", seq)
+    assert ui_client.get("/api/projects/cli/assistant").json()["consent"]["needed"] is False
+    view = ask(ui_client, "hi", seq)
     assert view["status"] == "done" and len(fake.requests) == 1
 
 
 def test_an_assistant_v2_consent_no_longer_counts(
-    client: TestClient, monkeypatch, home: Path, proj
+    ui_client: TestClient, monkeypatch, home: Path, proj
 ) -> None:
     """v3 names the whole transcripts the dialogue reader sends: consent given under the v2
     wording asks again with the ``assistant-v3:`` key and sends nothing."""
     p, seq, _ids = proj
     fake = use(monkeypatch, HostedFake([]))
     set_config(home, assistant={"consent": ["assistant-v2:anthropic@api.anthropic.com"]})
-    got = client.get("/api/projects/cli/assistant").json()["consent"]
+    got = ui_client.get("/api/projects/cli/assistant").json()["consent"]
     assert got["needed"] is True and got["key"] == "assistant-v3:anthropic@api.anthropic.com"
-    res = client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
+    res = ui_client.post("/api/projects/cli/assistant/turns", json={"text": "hi", "segments": seq})
     assert res.status_code == 409
-    old = client.post(
+    old = ui_client.post(
         "/api/assistant/consent", json={"key": "assistant-v2:anthropic@api.anthropic.com"}
     )
     assert old.status_code == 409
@@ -1082,7 +1071,7 @@ def test_an_assistant_v2_consent_no_longer_counts(
 
 
 def test_the_assistant_s_consent_does_not_unlock_vision(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     monkeypatch.setattr(cliproxy, "status", lambda _name: {"logged_in": True})
     assistant_key = "assistant-v3:codex@chatgpt.com"
@@ -1092,9 +1081,9 @@ def test_the_assistant_s_consent_does_not_unlock_vision(
         assistant={"provider": "codex", "consent": [assistant_key]},
         vision_assistant={"provider": "codex", "consent": [assistant_key]},
     )
-    got = client.get("/api/settings").json()["vision_consent"]
+    got = ui_client.get("/api/settings").json()["vision_consent"]
     assert got["needed"] is True and got["key"] == "vision-v2:codex@chatgpt.com"
-    wrong = client.post("/api/assistant/consent", json={"key": assistant_key, "role": "vision"})
+    wrong = ui_client.post("/api/assistant/consent", json={"key": assistant_key, "role": "vision"})
     assert wrong.status_code == 409
     assert config.load_config_data()["vision_assistant"]["consent"] == [assistant_key]
 
@@ -1117,8 +1106,8 @@ def test_the_model_list_needs_the_role_s_own_versioned_consent(monkeypatch) -> N
     assert providers.model_list(codex, (v_key,), role="vision")["state"] == "ok"
 
 
-def test_subscription_host_pin_rejects_custom_url(client: TestClient) -> None:
-    res = client.put(
+def test_subscription_host_pin_rejects_custom_url(ui_client: TestClient) -> None:
+    res = ui_client.put(
         "/api/settings",
         json={"assistant": {"provider": "claude-code", "url": "https://evil.example.com"}},
     )
@@ -1129,7 +1118,7 @@ def test_subscription_host_pin_rejects_custom_url(client: TestClient) -> None:
         providers.SubscriptionProvider("claude-code", url="https://evil.example.com")
 
 
-def test_malformed_consent_does_not_500(client: TestClient, home: Path) -> None:
+def test_malformed_consent_does_not_500(ui_client: TestClient, home: Path) -> None:
     cfg_file = home / "config.json"
     cfg_file.parent.mkdir(parents=True, exist_ok=True)
     raw = {
@@ -1138,7 +1127,7 @@ def test_malformed_consent_does_not_500(client: TestClient, home: Path) -> None:
         "vision_assistant": {"provider": "ollama", "consent": 123},
     }
     cfg_file.write_text(json.dumps(raw), encoding="utf-8")
-    res = client.get("/api/settings")
+    res = ui_client.get("/api/settings")
     assert res.status_code == 200
     data = res.json()
     assert data["vision_consent"]["needed"] is False
@@ -1151,30 +1140,32 @@ API_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com", "xai"
 
 @pytest.mark.parametrize("name", list(API_HOSTS))
 def test_the_vision_consent_of_an_api_provider_has_its_own_key(
-    client: TestClient, home: Path, name: str
+    ui_client: TestClient, home: Path, name: str
 ) -> None:
     host = API_HOSTS[name]
     set_config(
         home, vision_assistant={"provider": name, "consent": [f"assistant-v3:{name}@{host}"]}
     )
-    got = client.get("/api/settings").json()["vision_consent"]
+    got = ui_client.get("/api/settings").json()["vision_consent"]
     assert got["needed"] is True and got["key"] == f"vision-v2:{name}@{host}"
     assert got["host"] == host and got["missing_kind"] == "key"
     set_config(home, vision_assistant={"provider": name, "consent": [got["key"]]})
-    assert client.get("/api/settings").json()["vision_consent"]["needed"] is False
+    assert ui_client.get("/api/settings").json()["vision_consent"]["needed"] is False
 
 
-def test_ollama_needs_no_vision_consent(client: TestClient, home: Path) -> None:
+def test_ollama_needs_no_vision_consent(ui_client: TestClient, home: Path) -> None:
     set_config(home, vision_assistant={"provider": "ollama"})
-    got = client.get("/api/settings").json()["vision_consent"]
+    got = ui_client.get("/api/settings").json()["vision_consent"]
     assert got["needed"] is False and got["key"] is None and got["missing_key"] is None
 
 
 @pytest.mark.parametrize("name", ["anthropic", "openai", "xai"])
 def test_settings_accept_an_api_provider_for_vision(
-    client: TestClient, home: Path, name: str
+    ui_client: TestClient, home: Path, name: str
 ) -> None:
-    res = client.put("/api/settings", json={"vision_assistant": {"provider": name, "model": "m"}})
+    res = ui_client.put(
+        "/api/settings", json={"vision_assistant": {"provider": name, "model": "m"}}
+    )
     assert res.status_code == 200, res.text
     assert res.json()["vision_assistant"]["provider"] == name
     assert config.load_config_data()["vision_assistant"]["provider"] == name
@@ -1182,7 +1173,7 @@ def test_settings_accept_an_api_provider_for_vision(
 
 
 def test_the_vision_model_list_needs_a_key_then_the_vision_consent(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     providers.clear_model_cache()
     asked: list[str] = []
@@ -1195,24 +1186,24 @@ def test_the_vision_model_list_needs_a_key_then_the_vision_consent(
     url = "/api/assistant/models?role=vision&provider=openai"
     host = API_HOSTS["openai"]
     set_config(home, vision_assistant={"provider": "openai", "consent": []})
-    got = client.get(url).json()
+    got = ui_client.get(url).json()
     assert got["state"] == "key_needed" and "OPENAI_API_KEY" in got["message"]
 
     monkeypatch.setenv("OPENAI_API_KEY", SECRET)
-    assert client.get(url).json()["state"] == "consent_needed"
+    assert ui_client.get(url).json()["state"] == "consent_needed"
     # the chat consent does not count, for either role's list
     set_config(
         home,
         assistant={"provider": "openai", "consent": [f"assistant-v3:openai@{host}"]},
         vision_assistant={"provider": "openai", "consent": []},
     )
-    assert client.get(url).json()["state"] == "consent_needed"
+    assert ui_client.get(url).json()["state"] == "consent_needed"
     assert asked == []  # nothing went to the host so far
 
     set_config(
         home, vision_assistant={"provider": "openai", "consent": [f"vision-v2:openai@{host}"]}
     )
-    got = client.get(url)
+    got = ui_client.get(url)
     assert got.json() == {
         "state": "ok",
         "models": [{"id": "gpt-x", "name": "gpt-x"}],
@@ -1222,7 +1213,7 @@ def test_the_vision_model_list_needs_a_key_then_the_vision_consent(
 
 
 def test_a_vision_key_is_saved_for_the_vision_section_s_host(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     ring = FakeRing()
     monkeypatch.setattr(keys, "_keyring", lambda: ring)
@@ -1232,37 +1223,37 @@ def test_a_vision_key_is_saved_for_the_vision_section_s_host(
         assistant={"provider": "openai"},
         vision_assistant={"provider": "openai", "url": "https://llm.example.com/v1"},
     )
-    res = client.post(
+    res = ui_client.post(
         "/api/assistant/key", json={"provider": "openai", "key": SECRET, "role": "vision"}
     )
     assert res.status_code == 200, res.text
     assert ring.saved == {("cutpoint", "openai@llm.example.com"): SECRET}
     assert res.json()["key_hosts"]["openai"] == "llm.example.com"
     assert res.json()["keys"]["openai"] == "keyring" and SECRET not in res.text
-    view = client.get("/api/settings").json()
+    view = ui_client.get("/api/settings").json()
     assert view["vision_assistant"]["keys"]["openai"] == "keyring"
     assert view["assistant"]["keys"]["openai"] is None  # another host: not the chat's key
 
-    res = client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "vision"})
+    res = ui_client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "vision"})
     assert res.status_code == 200 and res.json()["keys"]["openai"] is None
     assert ring.saved == {}
 
 
 def test_a_vision_key_for_an_official_host_serves_the_chat_too(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     ring = FakeRing()
     monkeypatch.setattr(keys, "_keyring", lambda: ring)
     set_config(home, vision_assistant={"provider": "anthropic"})
-    res = client.post(
+    res = ui_client.post(
         "/api/assistant/key", json={"provider": "anthropic", "key": SECRET, "role": "vision"}
     )
     assert res.status_code == 200 and ring.saved == {("cutpoint", "anthropic"): SECRET}
-    assert client.get("/api/settings").json()["assistant"]["keys"]["anthropic"] == "keyring"
+    assert ui_client.get("/api/settings").json()["assistant"]["keys"]["anthropic"] == "keyring"
 
 
 def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
-    client: TestClient, monkeypatch, home: Path
+    ui_client: TestClient, monkeypatch, home: Path
 ) -> None:
     ring = FakeRing()
     monkeypatch.setattr(keys, "_keyring", lambda: ring)
@@ -1272,12 +1263,12 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
         vision_assistant={"provider": "openai", "url": "https://vision.example.com/v1"},
     )
     for route in ("/api/assistant/key", "/api/assistant/key/clear"):
-        bad = client.post(route, json={"provider": "openai", "key": SECRET, "role": "admin"})
+        bad = ui_client.post(route, json={"provider": "openai", "key": SECRET, "role": "admin"})
         assert bad.status_code == 400 and "role" in bad.json()["detail"]
     assert ring.saved == {}
-    client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
+    ui_client.post("/api/assistant/key", json={"provider": "openai", "key": SECRET})
     assert ring.saved == {("cutpoint", "openai@chat.example.com"): SECRET}  # no role: the chat
-    client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "assistant"})
+    ui_client.post("/api/assistant/key/clear", json={"provider": "openai", "role": "assistant"})
     assert ring.saved == {}
 
 
@@ -1309,13 +1300,13 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
     ],
 )
 def test_more_edit_phrasings_get_the_nudge_and_advice_questions_do_not(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, text: str, nudged: bool
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, text: str, nudged: bool
 ) -> None:
     _, seq, _ = proj
     said = Reply("The jump would work well.")
     add = call("propose_edit", summary="Add the fall", ops=[{"op": "add", "id": "m3"}])
     fake = use(monkeypatch, FakeProvider([said, add]))
-    view = ask(client, text, seq)
+    view = ask(ui_client, text, seq)
     assert view["events"][-1]["kind"] == ("proposal" if nudged else "reply")
     assert len(fake.requests) == (2 if nudged else 1)
     if nudged:
@@ -1393,7 +1384,7 @@ def _every_tool() -> list[Reply]:
 
 
 def test_the_chat_lists_the_project_files_and_the_page_gets_their_folders(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
 ) -> None:
     p, seq, _ = proj
     _with_files(p)
@@ -1406,9 +1397,9 @@ def test_the_chat_lists_the_project_files_and_the_page_gets_their_folders(
         {"name": "clips/", "target": "clips"},
     ]
     use(monkeypatch, FakeProvider([]))
-    assert client.get("/api/projects/cli/assistant").json()["files"] == want
+    assert ui_client.get("/api/projects/cli/assistant").json()["files"] == want
     fake = use(monkeypatch, FakeProvider([Reply("It is transcript.txt.")]))
-    view = ask(client, "where is the transcript?", seq)
+    view = ask(ui_client, "where is the transcript?", seq)
     assert view["files"] == want
     ctx = fake.requests[0]["messages"][1]["content"]
     block = ctx[ctx.index("<<<DATA files>>>") :]
@@ -1419,7 +1410,7 @@ def test_the_chat_lists_the_project_files_and_the_page_gets_their_folders(
 
 
 def test_no_path_user_or_host_name_reaches_a_hosted_model(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, tmp_path: Path
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, tmp_path: Path
 ) -> None:
     """Owner rule (#1010): host information only to a model on this machine. Every prompt and
     every tool result of a hosted model's turn, over every tool, has names only; sources of
@@ -1433,22 +1424,22 @@ def test_no_path_user_or_host_name_reaches_a_hosted_model(
     said = f"It is {p / 'transcript.txt'}. The dive is in {ann}/clip.mp4, not {bo}\\clip.mp4."
     local = use(monkeypatch, FakeProvider([Reply(said)]))
     local.context_tokens = 64000  # room for every moment
-    assert ask(client, "where is the transcript?", seq)["status"] == "done"
+    assert ask(ui_client, "where is the transcript?", seq)["status"] == "done"
     shown = json.dumps(local.requests, default=str)
     assert f"{ann}/clip.mp4" in shown and f"{bo}/clip.mp4" in shown  # local: as it was
     fake = use(monkeypatch, HostedFake(_every_tool()))
     fake.context_tokens = 64000  # room for the earlier turns
     monkeypatch.setattr(lookfor, "indexed", lambda _sources: True)  # look_for is offered
-    ok = client.post(
+    ok = ui_client.post(
         "/api/assistant/consent", json={"key": "assistant-v3:anthropic@api.anthropic.com"}
     )
     assert ok.status_code == 200, ok.text
-    view = ask(client, "where is the transcript and the final video on my computer?", seq)
+    view = ask(ui_client, "where is the transcript and the final video on my computer?", seq)
     assert view["status"] == "done" and view["events"][-1]["kind"] == "proposal"
     names = [e.get("name") for e in view["events"] if e["kind"] == "tool"]
     assert {"find_moments", "get_moment", "get_transcript", "find_words", "look_for"} <= set(names)
     assert len(fake.requests) == 3  # every tool result went back to the model
-    ranked = ask(client, "rank it as funny", seq)  # the earlier turn's reply goes along too
+    ranked = ask(ui_client, "rank it as funny", seq)  # the earlier turn's reply goes along too
     assert ranked["status"] == "done" and ranked["events"][-1]["kind"] == "ranking"
 
     sent = json.dumps(fake.requests, default=str)
@@ -1467,7 +1458,7 @@ def test_no_path_user_or_host_name_reaches_a_hosted_model(
 
 
 def test_an_earlier_reply_with_the_folder_reaches_only_a_model_on_this_machine(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
 ) -> None:
     """A local model's reply naming the full path stays in chat.json and goes back to a later
     local turn, but a hosted model the user switched to gets only the file names (#1010)."""
@@ -1482,11 +1473,11 @@ def test_an_earlier_reply_with_the_folder_reaches_only_a_model_on_this_machine(
         ai_store.add_turn(p, {"user": "where?", "reply": r})
     fake = use(monkeypatch, HostedFake([Reply("Fine.")]))
     fake.context_tokens = 64000  # room for the earlier turns
-    ok = client.post(
+    ok = ui_client.post(
         "/api/assistant/consent", json={"key": "assistant-v3:anthropic@api.anthropic.com"}
     )
     assert ok.status_code == 200, ok.text
-    assert ask(client, "and now?", seq)["status"] == "done"
+    assert ask(ui_client, "and now?", seq)["status"] == "done"
     sent = json.dumps(fake.requests, default=str)
     assert "It is transcript.txt" in sent and "Or events.txt and final.mp4 in " in sent
     for spelling in {str(p), p.as_posix(), windows, str(p.parent)}:
@@ -1496,16 +1487,16 @@ def test_an_earlier_reply_with_the_folder_reaches_only_a_model_on_this_machine(
 
     local = use(monkeypatch, FakeProvider([Reply("Yes.")]))
     local.context_tokens = 64000
-    assert ask(client, "and locally?", seq)["status"] == "done"
+    assert ask(ui_client, "and locally?", seq)["status"] == "done"
     assert json.dumps(replies[0])[1:-1] in json.dumps(local.requests, default=str)
 
 
 def test_a_model_on_this_machine_gets_the_project_folder(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
 ) -> None:
     p, seq, _ = proj
     fake = use(monkeypatch, FakeProvider([Reply("It is in the project folder.")]))
-    ask(client, "where is the project?", seq)
+    ask(ui_client, "where is the project?", seq)
     sent = json.dumps(fake.requests, default=str)
     # the folder sits in the files data block (JSON-escaped once), then in the dumped requests
     assert json.dumps(json.dumps(str(p))[1:-1])[1:-1] in sent

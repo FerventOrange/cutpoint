@@ -13,74 +13,23 @@ from typing import Any
 
 import pytest
 
+from assistant_helpers import (
+    CANDS,
+    SEQ,
+    A,
+    B,
+    FakeProvider,
+    _chunks,
+    _Resp,
+    call,
+    durations,
+    project,
+    run,
+)
 from conftest import set_config
 from cutpoint import config
 from cutpoint.assistant import context, ops, providers, session
 from cutpoint.assistant.providers import Capabilities, Reply, ToolCall
-
-A, B = "/v/a.mp4", "/v/b.mp4"
-CANDS = [
-    {"id": "c1", "source": A, "start": 10.0, "end": 20.0, "score": 90, "label": "big laugh"},
-    {"id": "c2", "source": A, "start": 40.0, "end": 50.0, "score": 70, "label": "jump"},
-    {"id": "c3", "source": B, "start": 5.0, "end": 9.0, "score": 80, "label": "crash"},
-]
-SEQ = [
-    {"id": "c2", "source": A, "start": 40.0, "end": 50.0, "label": "jump"},
-    {"id": "c3", "source": B, "start": 5.0, "end": 9.0, "label": "crash"},
-    {"id": "x9", "source": A, "start": 60.0, "end": 70.0, "label": "kept by hand"},
-]
-TOOLS_AND_JSON = Capabilities(True, True)
-
-
-def durations() -> ops.Durations:
-    return ops.Durations({A: 100.0, B: 30.0}, lambda _p: None)
-
-
-class FakeProvider:
-    """A model that answers with ``script`` in order (a :class:`Reply` or a callable taking the
-    messages) and records every request."""
-
-    name = "fake"
-    model = "fake-model"
-    local = True
-    host = "localhost"
-    context_tokens = 8192
-
-    def __init__(self, script: list[Any], caps: Capabilities = TOOLS_AND_JSON) -> None:
-        self.script = list(script)
-        self.caps = caps
-        self.requests: list[dict[str, Any]] = []
-
-    def capabilities(self) -> Capabilities:
-        return self.caps
-
-    def chat(self, messages, *, tools=None, schema=None, cancelled=None) -> Reply:
-        self.requests.append({"messages": list(messages), "tools": tools, "schema": schema})
-        step = self.script.pop(0) if self.script else call("find_moments", query="laugh")
-        return step(messages) if callable(step) else step
-
-    def tool_result(self, call: ToolCall, content: str) -> dict[str, Any]:
-        return {"role": "tool", "tool_name": call.name, "content": content}
-
-
-def call(name: str, **args: Any) -> Reply:
-    """A reply with one tool call."""
-    raw = {"function": {"name": name, "arguments": args}}
-    return Reply(
-        "", [ToolCall(name, args)], {"role": "assistant", "content": "", "tool_calls": [raw]}
-    )
-
-
-def project(segments=SEQ, transcript: str = "") -> session.Project:
-    return session.Project(list(CANDS), list(segments), durations(), transcript, "key0")
-
-
-def run(provider: FakeProvider, text: str = "tidy up", **kw: Any) -> session.Turn:
-    turn = session.Turn(provider, kw.pop("proj", None) or project(), text)
-    turn.start()
-    assert turn.done.wait(10)
-    return turn
-
 
 # -- ops -------------------------------------------------------------------------------------
 
@@ -136,35 +85,6 @@ def test_durations_probe_a_source_only_when_an_op_needs_it() -> None:
 
 
 # -- providers -------------------------------------------------------------------------------
-
-
-class _Resp:
-    """A ``requests`` response; ``lines``: the streamed body, read by ``iter_lines``."""
-
-    def __init__(self, body: Any = None, status: int = 200, lines: list | None = None) -> None:
-        self.body, self.status_code, self.lines = body, status, lines or []
-        self.text, self.reason = json.dumps(body), "x"
-        self.closed = False
-
-    def json(self) -> Any:
-        return self.body
-
-    def iter_lines(self):
-        for line in self.lines:
-            yield json.dumps(line).encode()
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _chunks(content: str = "", calls: list | None = None) -> list[dict]:
-    """A streamed /api/chat reply: the text in two pieces, then the tool calls and done."""
-    half = len(content) // 2
-    return [
-        {"message": {"role": "assistant", "content": content[:half]}, "done": False},
-        {"message": {"role": "assistant", "content": content[half:]}, "done": False},
-        {"message": {"role": "assistant", "content": "", "tool_calls": calls or []}, "done": True},
-    ]
 
 
 def test_ollama_streams_native_chat_with_tools_format_and_num_ctx(monkeypatch) -> None:

@@ -12,12 +12,12 @@ from typing import Any
 
 import pytest
 
+from assistant_helpers import CANDS, SEQ, A, B, FakeProvider, call, durations, run
 from conftest import media_info, needs_ffmpeg, write
 from cutpoint import clips, planning, sources, ui
 from cutpoint.assistant import context, ops, session, words
 from cutpoint.assistant.providers import Capabilities, Reply
 from cutpoint.ffmpeg_utils import probe
-from test_assistant import CANDS, SEQ, A, B, FakeProvider, call, durations, run
 
 
 def said(*items: tuple[str, float, float]) -> list[dict[str, Any]]:

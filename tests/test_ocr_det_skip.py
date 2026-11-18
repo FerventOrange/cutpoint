@@ -17,7 +17,7 @@ from cutpoint.events import cli as events_cli
 from cutpoint.events import killfeed, ocr_raw
 from cutpoint.events.killfeed import OcrParams, OcrReader, scaled
 from cutpoint.events.regions import preset_from_dict
-from test_ocr_raw import _dirs, _Engine, _run, _Stop
+from ocr_raw_helpers import _dirs, _Engine, _run, _Stop
 
 RECT = (320, 160, 320, 160)  # the notice region (reference px = frame px at 1080p)
 H, W = RECT[3], RECT[2]

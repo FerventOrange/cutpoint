@@ -16,6 +16,23 @@ from typing import Any
 import numpy as np
 import pytest
 
+from assistant_helpers import (
+    KEY,
+    XKEY,
+    FakeProvider,
+    Wire,
+    _chunks,
+    _Resp,
+    an_reply,
+    call,
+    durations,
+    oa_call,
+    oa_reply,
+    rs_call,
+    rs_reply,
+    rs_text,
+    tool_use,
+)
 from cutpoint.assistant import context, lookfor, providers, session, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
@@ -27,21 +44,9 @@ from cutpoint.assistant.providers import (
     XAIProvider,
 )
 from overlap import Overlap
-from test_assistant import FakeProvider, _chunks, _Resp, call, durations
-from test_assistant_byo import (
-    KEY,
-    XKEY,
-    Wire,
-    an_reply,
-    oa_call,
-    oa_reply,
-    rs_call,
-    rs_reply,
-    rs_text,
-    tool_use,
-)
-from test_assistant_byo import no_keys as no_keys  # the autouse fixture
 from test_assistant_lookfor import clip as clip  # CLIP stubbed: look_for guesses
+
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 cv2 = pytest.importorskip("cv2")
 

@@ -8,7 +8,6 @@ import re
 import shutil
 import sys
 import threading
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,16 +21,7 @@ from conftest import link_dir, link_file, write
 from cutpoint import folders, projectdelete, rerank, runstate, ui
 from cutpoint.ui.routes import jobs as jobs_routes
 
-PORT = 8765
 REAL_TRASH_BLOCKER = projectdelete.trash_blocker
-
-
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
 
 
 @pytest.fixture(autouse=True)
@@ -76,12 +66,12 @@ def make(name: str = "trip") -> Path:
     return p
 
 
-def test_the_plan_names_the_size_and_what_stays(client: TestClient) -> None:
+def test_the_plan_names_the_size_and_what_stays(ui_client: TestClient) -> None:
     p = make()
     write(p / "notes.txt", "mine")
     write(p / "clips" / "hand-made.mp4")
     write(p / "staged" / "copy.mp4")
-    got = client.get("/api/projects/trip/delete-plan").json()
+    got = ui_client.get("/api/projects/trip/delete-plan").json()
     assert got["name"] == "My Trip"
     assert got["size"] >= 1600
     assert got["kept_count"] == 3
@@ -91,45 +81,47 @@ def test_the_plan_names_the_size_and_what_stays(client: TestClient) -> None:
 
 
 def test_delete_trashes_cutpoints_files_and_keeps_the_rest(
-    client: TestClient, bin_dir: Path
+    ui_client: TestClient, bin_dir: Path
 ) -> None:
     p = make()
     write(p / "notes.txt", "mine")
     write(p / "clips" / "hand-made.mp4")
     write(p / "staged" / "copy.mp4")
-    res = client.request("DELETE", "/api/projects/trip", json={})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={})
     assert res.status_code == 200, res.text
     assert res.json() == {"deleted": "trip", "kept": 3}
     left = sorted(f.relative_to(p).as_posix() for f in p.rglob("*") if f.is_file())
     assert left == ["clips/hand-made.mp4", "notes.txt", "staged/copy.mp4"]
     assert any("final" in f.name for f in bin_dir.iterdir())
-    assert client.get("/api/projects/trip").status_code == 404  # no longer a project
+    assert ui_client.get("/api/projects/trip").status_code == 404  # no longer a project
 
 
-def test_a_project_with_only_cutpoint_files_goes_whole(client: TestClient, bin_dir: Path) -> None:
+def test_a_project_with_only_cutpoint_files_goes_whole(
+    ui_client: TestClient, bin_dir: Path
+) -> None:
     p = make()
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert not p.exists()  # the folder goes once it is empty, the run lock file included
     assert {f.name.split("-", 1)[1] for f in bin_dir.iterdir()} >= {"ui", "clips", "final.mp4"}
-    assert client.get("/api/projects").json()["projects"] == []
+    assert ui_client.get("/api/projects").json()["projects"] == []
     assert not ui.DELETING
 
 
-def test_permanent_deletes_without_the_trash(client: TestClient, bin_dir: Path) -> None:
+def test_permanent_deletes_without_the_trash(ui_client: TestClient, bin_dir: Path) -> None:
     p = make()
     write(p / "notes.txt", "mine")
-    res = client.request("DELETE", "/api/projects/trip", json={"permanent": True})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={"permanent": True})
     assert res.status_code == 200, res.text
     assert not list(bin_dir.iterdir())
     assert [f.name for f in p.iterdir()] == ["notes.txt"]
 
 
 def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_one(
-    client: TestClient,
+    ui_client: TestClient,
 ) -> None:
     make()
     make("other")
-    app = client.app
+    app = ui_client.app
     old, other = ui.project_dir("trip"), ui.project_dir("other")
     previews, planners = app.state.previews, app.state.planners
     for q in (old, other):
@@ -139,7 +131,7 @@ def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_o
         previews.ready_memo[q] = (0.0, "sig", {})
         previews.pruned.add(q)
         planners[q] = object()
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     make()
     p = ui.project_dir("trip")
     assert (p, "h001") not in previews.outcomes and (p, "h001") not in previews.done
@@ -151,14 +143,14 @@ def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_o
     assert other in previews.pruned and other in planners
 
 
-def test_permanent_must_be_a_boolean(client: TestClient) -> None:
+def test_permanent_must_be_a_boolean(ui_client: TestClient) -> None:
     make()
-    res = client.request("DELETE", "/api/projects/trip", json={"permanent": "yes"})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={"permanent": "yes"})
     assert res.status_code == 400
 
 
 def test_no_trash_answers_with_a_code_and_deletes_nothing_more(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     p = make()
 
@@ -166,38 +158,38 @@ def test_no_trash_answers_with_a_code_and_deletes_nothing_more(
         raise projectdelete.send2trash.TrashPermissionError(paths[0])
 
     monkeypatch.setattr(projectdelete.send2trash, "send2trash", refuse)
-    res = client.request("DELETE", "/api/projects/trip", json={})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={})
     assert res.status_code == 409
     assert res.json()["code"] == "no_trash"
     assert "Trash" in res.json()["detail"]
     assert not ui.DELETING
     assert (p / "highlights.json").is_file()
-    res = client.request("DELETE", "/api/projects/trip", json={"permanent": True})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={"permanent": True})
     assert res.status_code == 200, res.text
     assert not p.exists()
 
 
-def test_a_foreign_manifest_keeps_its_folder(client: TestClient) -> None:
+def test_a_foreign_manifest_keeps_its_folder(ui_client: TestClient) -> None:
     p = make()
     write(p / "mine" / "manifest.json", json.dumps({"generator": "other", "clips": []}))
     write(p / "mine" / "a.mp4")
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert (p / "mine" / "a.mp4").is_file() and (p / "mine" / "manifest.json").is_file()
 
 
 def test_a_manifest_cannot_name_a_file_outside_its_folder(
-    client: TestClient, tmp_path: Path
+    ui_client: TestClient, tmp_path: Path
 ) -> None:
     p = make()
     outside = write(tmp_path / "outside.mp4")
     manifest(p / "clips", ["../../outside.mp4", "001_a.mp4"])
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert outside.is_file()
 
 
 @pytest.mark.parametrize("what", ["run", "clips", "job", "progress"])
 def test_a_running_job_or_lock_refuses_with_409(
-    client: TestClient, what: str, monkeypatch: pytest.MonkeyPatch
+    ui_client: TestClient, what: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     p = make()
     if what == "run":
@@ -206,7 +198,7 @@ def test_a_running_job_or_lock_refuses_with_409(
         ctx = folders.swap_lock(p / "clips")
     elif what == "job":
         job = ui.Job("trip", "clips")  # running until it ends
-        client.app.state.jobs.jobs[job.id] = job
+        ui_client.app.state.jobs.jobs[job.id] = job
         ctx = None
     else:
         ctx = None
@@ -216,21 +208,21 @@ def test_a_running_job_or_lock_refuses_with_409(
         )
     if ctx is not None:
         with ctx:
-            res = client.request("DELETE", "/api/projects/trip")
+            res = ui_client.request("DELETE", "/api/projects/trip")
     else:
-        res = client.request("DELETE", "/api/projects/trip")
+        res = ui_client.request("DELETE", "/api/projects/trip")
     assert res.status_code == 409, res.text
     assert (p / "highlights.json").is_file() and (p / "clips" / "001_a.mp4").is_file()
 
 
-def test_a_job_of_another_project_does_not_refuse(client: TestClient) -> None:
+def test_a_job_of_another_project_does_not_refuse(ui_client: TestClient) -> None:
     make()
     job = ui.Job("other", "clips")
-    client.app.state.jobs.jobs[job.id] = job
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    ui_client.app.state.jobs.jobs[job.id] = job
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
 
 
-def test_a_link_out_of_the_project_is_not_followed(client: TestClient, tmp_path: Path) -> None:
+def test_a_link_out_of_the_project_is_not_followed(ui_client: TestClient, tmp_path: Path) -> None:
     p = make()
     elsewhere = tmp_path / "elsewhere"
     write(elsewhere / "precious.mp4")
@@ -238,32 +230,32 @@ def test_a_link_out_of_the_project_is_not_followed(client: TestClient, tmp_path:
     link_dir(p / "ui" / "linked", elsewhere)  # inside a folder Cutpoint owns
     link_dir(p / "pano_paths", elsewhere)  # a Cutpoint folder that is itself a link
     link_file(p / "events.json", elsewhere / "highlights.json")
-    plan = client.get("/api/projects/trip/delete-plan").json()
+    plan = ui_client.get("/api/projects/trip/delete-plan").json()
     assert {"ui/linked/", "pano_paths/", "events.json"} <= set(plan["kept"])
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert (elsewhere / "precious.mp4").is_file() and (elsewhere / "highlights.json").is_file()
     assert (p / "ui" / "linked").exists() and not (p / "ui" / "meta.json").exists()
     assert not (p / "highlights.json").exists() and not (p / "clips").exists()
 
 
-def test_a_linked_clips_folder_is_not_followed(client: TestClient, tmp_path: Path) -> None:
+def test_a_linked_clips_folder_is_not_followed(ui_client: TestClient, tmp_path: Path) -> None:
     p = make()
     elsewhere = tmp_path / "elsewhere"
     write(elsewhere / "001_a.mp4")
     manifest(elsewhere, ["001_a.mp4"])
     link_dir(p / "more_clips", elsewhere)
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert (elsewhere / "001_a.mp4").is_file() and (elsewhere / "manifest.json").is_file()
 
 
-def test_unknown_project_is_404(client: TestClient) -> None:
-    assert client.request("DELETE", "/api/projects/nope").status_code == 404
-    assert client.get("/api/projects/nope/delete-plan").status_code == 404
+def test_unknown_project_is_404(ui_client: TestClient) -> None:
+    assert ui_client.request("DELETE", "/api/projects/nope").status_code == 404
+    assert ui_client.get("/api/projects/nope/delete-plan").status_code == 404
 
 
-def test_delete_needs_the_session_token(client: TestClient) -> None:
+def test_delete_needs_the_session_token(ui_client: TestClient) -> None:
     make()
-    res = client.request("DELETE", "/api/projects/trip", headers={"X-Cutpoint-Token": "wrong"})
+    res = ui_client.request("DELETE", "/api/projects/trip", headers={"X-Cutpoint-Token": "wrong"})
     assert res.status_code == 403
 
 
@@ -273,7 +265,7 @@ def test_the_ui_folder_name_is_the_one_the_server_uses() -> None:
 
 
 def test_a_plain_permission_error_is_not_a_missing_trash(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     p = make()
 
@@ -281,7 +273,7 @@ def test_a_plain_permission_error_is_not_a_missing_trash(
         raise PermissionError(13, "Access is denied", paths[0])
 
     monkeypatch.setattr(projectdelete.send2trash, "send2trash", locked)
-    res = client.request("DELETE", "/api/projects/trip")
+    res = ui_client.request("DELETE", "/api/projects/trip")
     assert res.status_code == 409
     assert "code" not in res.json() and "in use" in res.json()["detail"]
     assert (p / "highlights.json").is_file() and (p / "clips" / "001_a.mp4").is_file()
@@ -432,7 +424,7 @@ def test_a_real_subst_drive_is_refused(tmp_path: Path) -> None:
 
 
 def test_two_items_over_the_limit_together_ask_first_and_move_nothing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, windows_probe: SimpleNamespace
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, windows_probe: SimpleNamespace
 ) -> None:
     p = make()
     write(p / "ui" / "proxy" / "big.mp4", b"x" * 700)
@@ -468,7 +460,7 @@ def test_macos_volume_without_a_trash_is_a_missing_trash(
 
 
 def test_a_list_filename_names_the_file_in_use(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     p = make()
 
@@ -476,61 +468,61 @@ def test_a_list_filename_names_the_file_in_use(
         raise PermissionError(13, "Access is denied", paths)  # a list, as a batch call gives
 
     monkeypatch.setattr(projectdelete.send2trash, "send2trash", locked)
-    res = client.request("DELETE", "/api/projects/trip")
+    res = ui_client.request("DELETE", "/api/projects/trip")
     assert res.status_code == 409 and "in use" in res.json()["detail"]
     assert (p / "highlights.json").is_file()
 
 
 @pytest.mark.parametrize("reason", ["on a network share", "a drive is not fixed", "too big"])
 def test_a_blocked_trash_asks_first_and_removes_nothing(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, reason: str
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, reason: str
 ) -> None:
     p = make()
     moved: list[str] = []
     monkeypatch.setattr(projectdelete.send2trash, "send2trash", moved.extend)
     monkeypatch.setattr(projectdelete, "trash_blocker", lambda items: reason)
-    res = client.request("DELETE", "/api/projects/trip", json={})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={})
     assert res.status_code == 409 and res.json()["code"] == "no_trash"
     assert reason in res.json()["detail"]
     assert moved == [] and (p / "highlights.json").is_file() and (p / "ui" / "meta.json").is_file()
     # the second, explicit confirm deletes for good without the probe
-    res = client.request("DELETE", "/api/projects/trip", json={"permanent": True})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={"permanent": True})
     assert res.status_code == 200 and not p.exists()
 
 
-def test_a_container_has_no_trash(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_container_has_no_trash(ui_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     p = make()
     monkeypatch.setattr(projectdelete, "trash_blocker", REAL_TRASH_BLOCKER)
     monkeypatch.setattr(projectdelete, "in_container", lambda: True)
-    res = client.request("DELETE", "/api/projects/trip", json={})
+    res = ui_client.request("DELETE", "/api/projects/trip", json={})
     assert res.status_code == 409 and res.json()["code"] == "no_trash"
     assert "container" in res.json()["detail"] and (p / "highlights.json").is_file()
 
 
-def test_a_source_video_of_any_project_is_never_deleted(client: TestClient) -> None:
+def test_a_source_video_of_any_project_is_never_deleted(ui_client: TestClient) -> None:
     p = make()
     other = ui.projects_dir() / "other"
     meta = {"name": "Other", "source": str(p / "ui" / "proxy")}
     write(other / "ui" / "meta.json", json.dumps(meta))
-    plan = client.get("/api/projects/trip/delete-plan").json()
+    plan = ui_client.get("/api/projects/trip/delete-plan").json()
     assert "ui/ (used as a source by project Other)" in plan["kept"]
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert (p / "ui" / "proxy" / "a.mp4").is_file()
     assert not (p / "highlights.json").exists() and not (p / "clips").exists()
 
 
-def test_a_source_listed_by_an_analysis_stays_too(client: TestClient) -> None:
+def test_a_source_listed_by_an_analysis_stays_too(ui_client: TestClient) -> None:
     p = make()
     other = ui.projects_dir() / "cli"
     hl = {"sources": [{"path": str(p / "final.mp4")}], "settings": {}}
     write(other / "highlights.json", json.dumps(hl))
-    plan = client.get("/api/projects/trip/delete-plan").json()
+    plan = ui_client.get("/api/projects/trip/delete-plan").json()
     assert "final.mp4 (used as a source by project cli)" in plan["kept"]
     assert plan["deleted"] == ["trip-final.mp4"]
 
 
 def test_the_run_lock_is_held_while_files_go_and_the_project_is_marked(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     p = make()
     seen: dict[str, bool] = {}
@@ -545,19 +537,19 @@ def test_the_run_lock_is_held_while_files_go_and_the_project_is_marked(
         real(plan, permanent=permanent)
 
     monkeypatch.setattr(projectdelete, "remove_items", spy)
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert seen == {"locked": True, "marked": True, "409": True}
     assert not ui.DELETING and not p.exists()
 
 
 def test_the_jobs_lock_is_free_while_files_go_and_no_job_starts(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # Moving GBs to the trash must not hold the jobs lock (#1085, A272); a job request that
     # resolved the folder just before the delete marked it is still refused.
     footage = tmp_path / "footage"
     write(footage / "a.mp4", "x")
-    res = client.post("/api/projects", json={"name": "Trip", "source": str(footage)})
+    res = ui_client.post("/api/projects", json={"name": "Trip", "source": str(footage)})
     assert res.status_code == 200, res.text
     pid = res.json()["id"]
     moving, release = threading.Event(), threading.Event()
@@ -580,17 +572,19 @@ def test_the_jobs_lock_is_free_while_files_go_and_no_job_starts(
     monkeypatch.setattr(jobs_routes, "project_dir", lambda p: ui.projects_dir() / p)
     out: dict[str, int] = {}
     t = threading.Thread(
-        target=lambda: out.update(code=client.request("DELETE", f"/api/projects/{pid}").status_code)
+        target=lambda: out.update(
+            code=ui_client.request("DELETE", f"/api/projects/{pid}").status_code
+        )
     )
     t.start()
     try:
         assert moving.wait(10)
-        lock = client.app.state.jobs.lock
+        lock = ui_client.app.state.jobs.lock
         free = lock.acquire(timeout=1)
         if free:
             lock.release()
         assert free, "the jobs lock is held while the files are moved"
-        res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+        res = ui_client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
         assert res.status_code == 409, res.text
         assert not spawned
     finally:
@@ -601,13 +595,13 @@ def test_the_jobs_lock_is_free_while_files_go_and_no_job_starts(
 
 
 def test_a_job_for_a_folder_deleted_after_it_was_resolved_is_refused(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # A job request that resolved the folder before a delete and reaches the jobs lock after
     # the delete ended (the mark is gone) must not start on the vanished folder.
     footage = tmp_path / "footage"
     write(footage / "a.mp4", "x")
-    res = client.post("/api/projects", json={"name": "Trip", "source": str(footage)})
+    res = ui_client.post("/api/projects", json={"name": "Trip", "source": str(footage)})
     assert res.status_code == 200, res.text
     pid = res.json()["id"]
     spawned: list[list[str]] = []
@@ -617,7 +611,7 @@ def test_a_job_for_a_folder_deleted_after_it_was_resolved_is_refused(
         raise OSError("not in tests")
 
     def deleted_meanwhile() -> None:
-        assert client.request("DELETE", f"/api/projects/{pid}").status_code == 200
+        assert ui_client.request("DELETE", f"/api/projects/{pid}").status_code == 200
 
     monkeypatch.setattr(ui.Jobs, "_popen", staticmethod(no_spawn))
     real_start = ui.Jobs.start
@@ -627,29 +621,29 @@ def test_a_job_for_a_folder_deleted_after_it_was_resolved_is_refused(
         return real_start(self, *args, **kwargs)
 
     monkeypatch.setattr(ui.Jobs, "start", start_after_delete)
-    res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
+    res = ui_client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 404, res.text
     assert not spawned
     assert not (ui.projects_dir() / pid).exists()
 
 
-def test_qa_folders_go_and_hud_presets_stay_with_a_reason(client: TestClient) -> None:
+def test_qa_folders_go_and_hud_presets_stay_with_a_reason(ui_client: TestClient) -> None:
     p = make()
     write(p / "clips_qa" / "qa.json", "{}")
     write(p / "clips_qa" / "flagged_01.jpg")
     write(p / "clips_qa" / "mine.txt")
     write(p / "hud_presets" / "game.json", "{}")
-    plan = client.get("/api/projects/trip/delete-plan").json()
+    plan = ui_client.get("/api/projects/trip/delete-plan").json()
     assert sorted(plan["kept"]) == [
         "clips_qa/mine.txt",
         "hud_presets/ (HUD presets you may have edited)",
     ]
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     assert sorted(f.name for f in p.rglob("*") if f.is_file()) == ["game.json", "mine.txt"]
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="NTFS junctions")
-def test_junctions_are_listed_and_never_followed(client: TestClient, tmp_path: Path) -> None:
+def test_junctions_are_listed_and_never_followed(ui_client: TestClient, tmp_path: Path) -> None:
     import _winapi  # noqa: PLC0415
 
     p = make()
@@ -659,9 +653,9 @@ def test_junctions_are_listed_and_never_followed(client: TestClient, tmp_path: P
     manifest(elsewhere, ["001_a.mp4"])
     _winapi.CreateJunction(str(elsewhere), str(p / "ui" / "j"))
     _winapi.CreateJunction(str(elsewhere), str(p / "more_clips"))
-    plan = client.get("/api/projects/trip/delete-plan").json()
+    plan = ui_client.get("/api/projects/trip/delete-plan").json()
     assert {"ui/j/", "more_clips/"} <= set(plan["kept"])
-    assert client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
     survivors = sorted(f.name for f in elsewhere.iterdir())
     assert survivors == ["001_a.mp4", "manifest.json", "precious.mp4"]
     assert (p / "ui" / "j").exists() and (p / "more_clips").exists()

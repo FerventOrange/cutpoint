@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -19,10 +18,7 @@ import pytest
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
-from cutpoint import cache, ui
-from cutpoint.assistant import context, edges, lookfor, ops, providers, session, topup
-from cutpoint.clips import EXACT_KEYS
-from test_assistant import (
+from assistant_helpers import (
     CANDS,
     SEQ,
     A,
@@ -35,7 +31,9 @@ from test_assistant import (
     project,
     run,
 )
-from test_assistant_routes import PORT
+from cutpoint import cache
+from cutpoint.assistant import context, edges, lookfor, ops, providers, session, topup
+from cutpoint.clips import EXACT_KEYS
 from test_assistant_routes import proj as proj
 
 
@@ -597,25 +595,17 @@ def test_a_sequence_that_cannot_be_planned_keeps_its_raw_ranges(
 # -- the route the page asks for the planned edges ----------------------------------------------------
 
 
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
-
-
 def test_the_edges_route_returns_each_rows_exported_range(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, planning
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj, planning
 ) -> None:
     p, seq, _ids = proj
     before = {f: f.stat().st_mtime_ns for f in p.rglob("*") if f.is_file()}
-    res = client.post("/api/projects/cli/edges", json={"segments": seq})
+    res = ui_client.post("/api/projects/cli/edges", json={"segments": seq})
     assert res.status_code == 200, res.text
     edges_ = res.json()["edges"]
     assert edges_[seq[0]["id"]] == {"start": seq[0]["start"] - 0.5, "end": seq[0]["end"] + 1.5}
     assert planning["calls"][0]["tail"].enabled and planning["calls"][0]["speech"].enabled
-    off = client.post(
+    off = ui_client.post(
         "/api/projects/cli/edges",
         json={"segments": seq, "smart_tail": False, "speech_aware": False},
     )
@@ -624,12 +614,12 @@ def test_the_edges_route_returns_each_rows_exported_range(
     assert {
         f: f.stat().st_mtime_ns for f in p.rglob("*") if f.is_file()
     } == before  # writes nothing
-    assert client.post("/api/projects/cli/edges", json={"segments": "x"}).status_code == 400
-    no_reason = client.post("/api/projects/cli/edges", json={"segments": seq}).json()["edges"]
+    assert ui_client.post("/api/projects/cli/edges", json={"segments": "x"}).status_code == 400
+    no_reason = ui_client.post("/api/projects/cli/edges", json={"segments": seq}).json()["edges"]
     assert all("reason" not in e for e in no_reason.values())  # fake plans carry no tail record
-    bad = client.post("/api/projects/cli/edges", json={"segments": seq, "smart_tail": "yes"})
+    bad = ui_client.post("/api/projects/cli/edges", json={"segments": seq, "smart_tail": "yes"})
     assert bad.status_code == 400
-    assert client.post(
+    assert ui_client.post(
         "/api/projects/cli/edges", json={}, headers={"X-Cutpoint-Token": "no"}
     ).status_code in (
         401,
@@ -709,10 +699,10 @@ def test_the_other_export_settings_reach_the_plan(tmp_path: Path, explained) -> 
 
 
 def test_the_edges_route_sends_the_reason_and_takes_the_export_settings(
-    client: TestClient, proj, explained
+    ui_client: TestClient, proj, explained
 ) -> None:
     _p, seq, _ids = proj
-    res = client.post(
+    res = ui_client.post(
         "/api/projects/cli/edges",
         json={
             "segments": seq,
@@ -735,10 +725,10 @@ def test_the_edges_route_sends_the_reason_and_takes_the_export_settings(
         {"extend_end": 99},
     ):
         assert (
-            client.post("/api/projects/cli/edges", json={"segments": seq, **body}).status_code
+            ui_client.post("/api/projects/cli/edges", json={"segments": seq, **body}).status_code
             == 400
         )
-    shown = client.post("/api/projects/cli/edges", json={"segments": seq}).json()["edges"]
+    shown = ui_client.post("/api/projects/cli/edges", json={"segments": seq}).json()["edges"]
     reasons = {k: v.get("reason") for k, v in shown.items()}
     assert "event tail" in reasons.values()
 

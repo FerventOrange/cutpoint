@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
+from assistant_helpers import A, FakeProvider, call
 from cutpoint.assistant import ops, pacing, session
-from test_assistant import A, FakeProvider, call
 
 FAST, LAUGH, VIEW = "fast", "laugh", "stunning-mountain-views"
 TURN = (

@@ -24,7 +24,6 @@ from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import get_style, style_name
 from cutpoint.transcribe import transcript_name
-from test_analyze_steps import run  # noqa: F401 (the fixture: analyze with its fakes)
 
 SPAN = 240.0
 WORDS = ("haha", "no", "way", "that", "worked", "go", "nice", "wow", "okay", "run")
@@ -754,7 +753,7 @@ def test_reanalyze_with_a_style_passes_the_earlier_ids(home, tmp_path, monkeypat
     assert got["last_candidate_id"] == 300
 
 
-def test_rerank_analyze_keeps_the_ids_of_unchanged_spans(run, monkeypatch):  # noqa: F811
+def test_rerank_analyze_keeps_the_ids_of_unchanged_spans(run, monkeypatch):
     """#902 F1: the analysis --analyze runs keeps the id of an unchanged span and gives a new
     span the next id after settings.last_candidate_id, as the fast path does."""
     run.go("funny")  # one candidate, 10-20 s
@@ -787,7 +786,7 @@ def test_rerank_analyze_keeps_the_ids_of_unchanged_spans(run, monkeypatch):  # n
     assert rerank.changes(res.before, res.after) == (["h041"], [])
 
 
-def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypatch):  # noqa: F811
+def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypatch):
     """#1006: the re-analysis of cutpoint events keeps the id of an unchanged span, gives a
     new span the next id after settings.last_candidate_id and never lowers it."""
     run.go("funny")  # one candidate, 10-20 s
@@ -818,7 +817,7 @@ def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypa
     assert after["settings"]["last_candidate_id"] == 41
 
 
-def test_a_fresh_analyze_into_a_project_keeps_the_ids_and_never_lowers_the_last(run, monkeypatch):  # noqa: F811
+def test_a_fresh_analyze_into_a_project_keeps_the_ids_and_never_lowers_the_last(run, monkeypatch):
     """#1009: analyze/edit again into a project (no ids given) keeps the id of an unchanged
     span, gives a new span the next id after settings.last_candidate_id, never lowers it."""
     run.go("funny")  # one candidate, 10-20 s
@@ -849,7 +848,7 @@ def test_a_fresh_analyze_into_a_project_keeps_the_ids_and_never_lowers_the_last(
     assert after["settings"]["last_candidate_id"] == 41
 
 
-def test_a_fresh_analyze_gives_a_span_its_id_from_the_linked_backup(run, monkeypatch):  # noqa: F811
+def test_a_fresh_analyze_gives_a_span_its_id_from_the_linked_backup(run, monkeypatch):
     """#1009 review F1: analyze again into a re-ranked project: a span highlights.json lacks
     gets its id from the backup it is linked to, and the backup's last id counts."""
     run.go("funny")  # one candidate, 10-20 s
@@ -909,7 +908,7 @@ def _link_backup(proj: Path, raw: bytes, *, link: bool = True) -> None:
 
 
 def test_a_fresh_analyze_carries_the_link_so_a_second_one_still_gets_backup_ids(
-    run,  # noqa: F811
+    run,
     monkeypatch,
 ):
     """#1009 (W1): action -> rerank -> analyze -> analyze: the backup keeps giving its ids."""
@@ -938,7 +937,7 @@ def test_a_fresh_analyze_carries_the_link_so_a_second_one_still_gets_backup_ids(
 
 
 def test_action_rerank_sport_analyze_sport_analyze_action_gives_the_original_ids(
-    run,  # noqa: F811
+    run,
     monkeypatch,
 ):
     """#1009 (W1), the whole chain for real: action analysed, a real rerank to sport, a fresh
@@ -961,7 +960,7 @@ def test_action_rerank_sport_analyze_sport_analyze_action_gives_the_original_ids
     assert {c["start"]: c["id"] for c in read(run.proj)["candidates"]} == first
 
 
-def test_a_fresh_analyze_records_no_link_for_a_stale_or_unlinked_backup(run, monkeypatch):  # noqa: F811
+def test_a_fresh_analyze_records_no_link_for_a_stale_or_unlinked_backup(run, monkeypatch):
     run.go("funny")
     _link_backup(run.proj, b"{}", link=False)
     run.go("funny", layers=False)
@@ -974,7 +973,7 @@ def test_a_fresh_analyze_records_no_link_for_a_stale_or_unlinked_backup(run, mon
 
 
 @pytest.mark.parametrize("raw", ["not json", "[1, 2]", '{"no": "analysis"}', b"\xff\xfe"])
-def test_a_fresh_analyze_over_an_unreadable_highlights_numbers_from_h001(run, raw):  # noqa: F811
+def test_a_fresh_analyze_over_an_unreadable_highlights_numbers_from_h001(run, raw):
     run.go("funny")
     path = run.proj / "highlights.json"
     path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())

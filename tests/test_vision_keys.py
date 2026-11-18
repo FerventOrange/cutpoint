@@ -10,32 +10,21 @@ import json
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
-import test_ui as tui
 import test_vlm_vision as tvv
+from assistant_helpers import KEY, FakeRing, Wire, _Resp, oa_reply
 from conftest import set_config
 from cutpoint import ui, vision
 from cutpoint.assistant import keys, providers
 from cutpoint.config import AssistantSettings
 from cutpoint.events import pipeline
 from cutpoint.pano import vlcheck
-from test_assistant import _Resp
-from test_assistant_byo import KEY, FakeRing, NoRing, Wire, oa_reply
+
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 OPENROUTER = "https://openrouter.ai/api/v1"
 OTHER_HOST = "https://llm.example.com/v1"
 LOCAL = "http://localhost:1234/v1"
-
-
-@pytest.fixture(autouse=True)
-def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No real key variable or keyring reaches a test."""
-    for name in keys.ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", NoRing)
-    monkeypatch.setattr(keys, "_SEEN", set())
-    monkeypatch.setattr(keys, "_CAPTURED", {})
 
 
 def _vision(provider: str, url: str = "", model: str = "m") -> AssistantSettings:
@@ -308,21 +297,16 @@ def test_a_vision_key_the_keyring_refuses_names_the_variable_for_the_command_lin
         keys.save("openai", KEY, "api.openai.com")  # the assistant's: unchanged
 
 
-def test_the_vision_key_route_uses_the_vision_hint(home) -> None:
+def test_the_vision_key_route_uses_the_vision_hint(home, ui_client) -> None:
     set_config(
         home,
         assistant={"provider": "openai", "url": OPENROUTER},
         vision_assistant={"provider": "openai", "url": OTHER_HOST},
     )
-    app = ui.create_app(tui.PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{tui.PORT}") as client:
-        client.headers["X-Cutpoint-Token"] = app.state.token
-        res = client.post(
-            "/api/assistant/key", json={"provider": "openai", "key": KEY, "role": "vision"}
-        )
-        assert res.status_code == 500 and KEY not in res.text
-        assert res.json()["detail"].endswith(
-            "need the keyring"
-        )  # the shared key: not for this host
-        res = client.post("/api/assistant/key", json={"provider": "openai", "key": KEY})
-        assert "before starting cutpoint ui" in res.json()["detail"]
+    res = ui_client.post(
+        "/api/assistant/key", json={"provider": "openai", "key": KEY, "role": "vision"}
+    )
+    assert res.status_code == 500 and KEY not in res.text
+    assert res.json()["detail"].endswith("need the keyring")  # the shared key: not for this host
+    res = ui_client.post("/api/assistant/key", json={"provider": "openai", "key": KEY})
+    assert "before starting cutpoint ui" in res.json()["detail"]

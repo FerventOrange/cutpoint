@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cutpoint.events.killfeed import feed_stacks, menu_rules
-from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _lobby, _moving_records, _run
+from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _lobby, _moving_records, _run
 
 KILL = [("Orrin", 1410, 60), ("destroyed", 1500, 60), ("Pell", 1640, 60)]
 

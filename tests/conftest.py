@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import warnings
+from collections.abc import Iterator
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,15 @@ import pytest
 
 from cutpoint import analyze, clips, config, paths, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
+
+# Fixtures moved out of test_analyze_steps, test_batch_size, test_event_candidates and
+# test_planning, registered here so no test module imports them from those files.
+pytest_plugins = [
+    "analyze_steps_helpers",
+    "batch_size_helpers",
+    "event_candidates_helpers",
+    "planning_helpers",
+]
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -163,6 +173,42 @@ def patch_ui(monkeypatch: pytest.MonkeyPatch, name: str, value) -> None:
             patched += 1
     if not patched:
         raise AssertionError(f"patch_ui: no cutpoint.ui module holds {name!r}")
+
+
+@pytest.fixture
+def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No real key variable, keyring, remembered key or cached model list reaches a test.
+
+    Opt in by name or with ``pytestmark = pytest.mark.usefixtures("no_keys")``.
+    """
+    from assistant_helpers import NoRing  # noqa: PLC0415
+    from cutpoint.assistant import keys, providers  # noqa: PLC0415
+
+    for name in keys.ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(keys, "_keyring", NoRing)
+    monkeypatch.setattr(keys, "_SEEN", set())
+    monkeypatch.setattr(keys, "_CAPTURED", {})
+    monkeypatch.setattr(providers, "_MODELS", {})
+
+
+@pytest.fixture
+def ui_client() -> Iterator:
+    """A ``cutpoint ui`` app on port 8765 and a ``TestClient`` with its token header.
+
+    ``with`` runs the app's shutdown (jobs.shutdown kills any job still running). A test file
+    that needs stubs in place before the app exists builds its own ``client`` on this one,
+    listing the stub fixtures first.
+    """
+    from fastapi.testclient import TestClient  # noqa: PLC0415
+
+    from cutpoint import ui  # noqa: PLC0415
+
+    port = 8765
+    app = ui.create_app(port)
+    with TestClient(app, base_url=f"http://127.0.0.1:{port}") as c:
+        c.headers["X-Cutpoint-Token"] = app.state.token
+        yield c
 
 
 def write(path: Path, text: str | bytes = "x") -> Path:

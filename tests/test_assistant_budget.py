@@ -11,6 +11,21 @@ from typing import Any
 
 import pytest
 
+from assistant_helpers import (
+    KEY,
+    FakeProvider,
+    Wire,
+    _Resp,
+    an_reply,
+    call,
+    durations,
+    oa_call,
+    oa_reply,
+    project,
+    rs_reply,
+    rs_text,
+    run,
+)
 from cutpoint.assistant import context, providers, session, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
@@ -21,9 +36,8 @@ from cutpoint.assistant.providers import (
     ToolCall,
     TruncatedError,
 )
-from test_assistant import FakeProvider, _Resp, call, durations, project, run
-from test_assistant_byo import KEY, Wire, an_reply, oa_call, oa_reply, rs_reply, rs_text
-from test_assistant_byo import no_keys as no_keys  # the autouse fixture
+
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 HI = [{"role": "user", "content": "hi"}]
 PROPOSE = {"summary": "Add the laugh", "ops": [{"op": "add", "id": "m1", "at": 1}]}

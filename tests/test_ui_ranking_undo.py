@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -28,17 +28,18 @@ from test_ui_ranking import (  # noqa: F401 (torch_imports: a fixture)
 )
 from test_untrusted_paths import flushed_before_replace, fsyncs  # noqa: F401 (a fixture)
 
-PORT = 8765
 URL = "/api/projects/p/ranking/undo"
 
 
 @pytest.fixture
-def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def no_cuda(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_ui(monkeypatch, "cuda_probe", lambda: False)
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+
+
+@pytest.fixture
+def client(no_cuda: None, ui_client: TestClient) -> TestClient:
+    """The shared ``ui_client``, made after the CUDA probe is stubbed."""
+    return ui_client
 
 
 def page(client: TestClient) -> dict[str, Any]:

@@ -8,7 +8,6 @@ from __future__ import annotations
 import shutil
 import struct
 import time
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -21,12 +20,11 @@ from fastapi.testclient import TestClient
 from conftest import media_info, patch_ui
 from cutpoint import projectdelete, stage, ui
 
-PORT = 8765
 DATA = b"0123456789" * 100
 
 
 @pytest.fixture
-def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def stand_ins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bin_ = tmp_path / "bin"
     bin_.mkdir()
     # never trash a real file: deletes move into a stand-in bin; never probe the host's trash
@@ -37,10 +35,12 @@ def client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClie
     )
     monkeypatch.setattr(projectdelete, "trash_blocker", lambda items: None)
     patch_ui(monkeypatch, "probe", lambda path: media_info(Path(path), duration=10.0))
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+
+
+@pytest.fixture
+def client(stand_ins: None, ui_client: TestClient) -> TestClient:
+    """The shared ``ui_client``, made after the trash and probe stand-ins are in place."""
+    return ui_client
 
 
 @pytest.fixture

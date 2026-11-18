@@ -13,9 +13,9 @@ import pytest
 
 pytest.importorskip("httpx")
 
+from assistant_helpers import FakeProvider, Reply, call, run
 from cutpoint.assistant import session
 from cutpoint.assistant.providers import Capabilities
-from test_assistant import FakeProvider, Reply, call, run
 from test_assistant_words import chat_project
 
 ISSUE = (

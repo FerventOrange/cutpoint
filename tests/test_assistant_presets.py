@@ -8,31 +8,20 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
 
+from assistant_helpers import KEY, OTHER, XKEY, Wire, _Resp, oa_reply
 from conftest import set_config
 from cutpoint.assistant import keys, providers
 from cutpoint.config import AssistantSettings
-from test_assistant import _Resp
-from test_assistant_byo import KEY, OTHER, XKEY, NoRing, Wire, oa_reply
+
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
-
-
-@pytest.fixture(autouse=True)
-def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No real key variable, keyring or cached model list reaches a test."""
-    for name in keys.ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", NoRing)
-    monkeypatch.setattr(keys, "_SEEN", set())
-    monkeypatch.setattr(keys, "_CAPTURED", {})
-    monkeypatch.setattr(providers, "_MODELS", {})
 
 
 # -- presets: provider, base URL, host -------------------------------------------------------
@@ -135,24 +124,12 @@ def test_a_missing_grok_key_names_the_xai_variable(home) -> None:
 
 # -- Settings routes: presets round-trip, custom kept, model lists -----------------------------
 
-PORT = 8765
-
 
 def _ui():
     pytest.importorskip("httpx")
     from cutpoint import ui  # noqa: PLC0415
 
     return ui
-
-
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    from fastapi.testclient import TestClient  # noqa: PLC0415
-
-    app = _ui().create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
 
 
 @pytest.fixture
@@ -178,7 +155,7 @@ def saved(home: Path) -> dict:
     ],
 )
 def test_each_preset_round_trips_through_settings(
-    client: TestClient, home: Path, checked, name, model, cls, url
+    ui_client: TestClient, home: Path, checked, name, model, cls, url
 ) -> None:
     # Save checks only then (#504)
     agreed = [f"assistant-v3:{n}@{h}" for n, h in keys.OFFICIAL_HOST.items()]
@@ -186,20 +163,20 @@ def test_each_preset_round_trips_through_settings(
         home,
         assistant={"provider": "openai", "url": "https://openrouter.ai/api/v1", "consent": agreed},
     )
-    assert client.get("/api/settings").json()["assistant"]["custom"] is True
+    assert ui_client.get("/api/settings").json()["assistant"]["custom"] is True
     body = {"assistant": {"provider": name, "model": model, "url": ""}}
-    res = client.put("/api/settings", json=body)
+    res = ui_client.put("/api/settings", json=body)
     assert res.status_code == 200, res.text
     want = {"provider": name, "model": model, "url": "", "consent": agreed}
     assert saved(home) == want  # the URL is the preset's
-    got = client.get("/api/settings").json()["assistant"]
+    got = ui_client.get("/api/settings").json()["assistant"]
     assert (got["provider"], got["model"], got["url"], got["custom"]) == (name, model, "", False)
     p = checked[-1]
     assert type(p) is cls and p.url == url
 
 
-def test_settings_offer_the_presets_with_their_model_fields(client: TestClient) -> None:
-    got = client.get("/api/settings").json()["assistant"]
+def test_settings_offer_the_presets_with_their_model_fields(ui_client: TestClient) -> None:
+    got = ui_client.get("/api/settings").json()["assistant"]
     offers = {p["name"]: p for p in got["providers"]}
     assert [p["name"] for p in got["providers"]] == [
         "ollama",
@@ -232,31 +209,31 @@ def test_settings_offer_the_presets_with_their_model_fields(client: TestClient) 
     ],
 )
 def test_a_legacy_custom_url_is_shown_as_custom_and_kept(
-    client: TestClient, home: Path, monkeypatch, section
+    ui_client: TestClient, home: Path, monkeypatch, section
 ) -> None:
     set_config(home, assistant=section)
-    got = client.get("/api/settings").json()["assistant"]
+    got = ui_client.get("/api/settings").json()["assistant"]
     assert got["custom"] is True and got["url"] == section["url"]
     assert got["provider"] == section["provider"]
     p = providers.make()
     assert p.host == providers.host_of(section["url"])  # still the URL in use
-    res = client.put("/api/settings", json={"vision": True})  # another setting: kept as is
+    res = ui_client.put("/api/settings", json={"vision": True})  # another setting: kept as is
     assert res.status_code == 200 and saved(home) == section
     monkeypatch.setattr(providers, "check", lambda p: None)
-    res = client.put("/api/settings", json={"assistant": {"model": "other-model"}})  # Custom
+    res = ui_client.put("/api/settings", json={"assistant": {"model": "other-model"}})  # Custom
     assert res.status_code == 200 and saved(home) == {**section, "model": "other-model"}
     assert res.json()["assistant"]["custom"] is True
 
 
-def test_custom_vision_url_is_shown_as_custom_and_kept(client: TestClient, home: Path) -> None:
+def test_custom_vision_url_is_shown_as_custom_and_kept(ui_client: TestClient, home: Path) -> None:
     section = {"provider": "ollama", "url": "http://gpu-box:11434", "model": "llava:7b"}
     set_config(home, vision_assistant=section)
-    got = client.get("/api/settings").json()["vision_assistant"]
+    got = ui_client.get("/api/settings").json()["vision_assistant"]
     assert got["custom"] is True
     assert got["url"] == "http://gpu-box:11434"
     assert got["provider"] == "ollama"
 
-    res = client.put("/api/settings", json={"vision_assistant": {"model": "llava:13b"}})
+    res = ui_client.put("/api/settings", json={"vision_assistant": {"model": "llava:13b"}})
     assert res.status_code == 200
     out = res.json()["vision_assistant"]
     assert out["custom"] is True
@@ -269,11 +246,11 @@ def test_custom_vision_url_is_shown_as_custom_and_kept(client: TestClient, home:
 
 
 def test_chat_save_does_not_create_vision_assistant_on_legacy_config(
-    client: TestClient, home: Path, monkeypatch
+    ui_client: TestClient, home: Path, monkeypatch
 ) -> None:
     set_config(home, assistant={"provider": "ollama", "model": "llama3.2"})
     monkeypatch.setattr(providers, "check", lambda p: None)
-    res = client.put(
+    res = ui_client.put(
         "/api/settings",
         json={"assistant": {"provider": "ollama", "model": "llama3.3", "url": ""}},
     )
@@ -292,10 +269,10 @@ def test_the_shared_key_can_be_left_out_of_a_lookup(monkeypatch) -> None:
     assert keys.lookup("xai", "proxy.example", shared=False) == (None, None)
 
 
-def test_a_custom_url_keeps_its_key_host(client: TestClient, home: Path, monkeypatch) -> None:
+def test_a_custom_url_keeps_its_key_host(ui_client: TestClient, home: Path, monkeypatch) -> None:
     monkeypatch.setenv("XAI_API_KEY", XKEY)
     set_config(home, assistant={"provider": "xai", "model": "g", "url": "https://proxy.example"})
-    got = client.get("/api/settings").json()["assistant"]
+    got = ui_client.get("/api/settings").json()["assistant"]
     xai = next(p for p in got["providers"] if p["name"] == "xai")
     assert got["custom"] and got["key_hosts"]["xai"] == "proxy.example"
     assert xai["key_env"] == ["CUTPOINT_ASSISTANT_API_KEY"] and got["keys"]["xai"] is None
@@ -304,30 +281,30 @@ def test_a_custom_url_keeps_its_key_host(client: TestClient, home: Path, monkeyp
 # -- model lists ------------------------------------------------------------------------------
 
 
-def models(client: TestClient, provider: str, **params) -> dict:
-    res = client.get("/api/assistant/models", params={"provider": provider, **params})
+def models(ui_client: TestClient, provider: str, **params) -> dict:
+    res = ui_client.get("/api/assistant/models", params={"provider": provider, **params})
     assert res.status_code == 200, res.text
     return res.json()
 
 
 @pytest.mark.parametrize("name", ["anthropic", "openai", "xai"])
 def test_no_hosted_model_list_is_asked_without_a_key_or_consent(
-    client: TestClient, home: Path, monkeypatch, name
+    ui_client: TestClient, home: Path, monkeypatch, name
 ) -> None:
     wire = Wire(monkeypatch)  # any request fails the test
-    got = models(client, name)
+    got = models(ui_client, name)
     assert got["state"] == "key_needed" and got["models"] == [] and "No API key" in got["message"]
     monkeypatch.setenv(keys.PROVIDER_ENV[name], KEY)
-    got = models(client, name)
+    got = models(ui_client, name)
     assert got["state"] == "consent_needed" and got["models"] == []
     # another host's consent
     set_config(home, assistant={"consent": [f"assistant-v3:{name}@other.example"]})
-    assert models(client, name)["state"] == "consent_needed"
+    assert models(ui_client, name)["state"] == "consent_needed"
     assert wire.sent == []
 
 
 def test_a_preset_not_saved_never_gets_the_shared_key(
-    client: TestClient, home: Path, monkeypatch
+    ui_client: TestClient, home: Path, monkeypatch
 ) -> None:
     """CUTPOINT_ASSISTANT_API_KEY may be the saved provider's (an OpenRouter key): choosing
     another preset in Settings never sends it to that preset's host."""
@@ -347,16 +324,16 @@ def test_a_preset_not_saved_never_gets_the_shared_key(
     wire = Wire(monkeypatch)  # any request fails the test
     shared_only = "CUTPOINT_ASSISTANT_API_KEY is only for custom base URLs"
     for name in ("anthropic", "openai", "xai"):  # openai too: the saved URL is custom
-        got = models(client, name)
+        got = models(ui_client, name)
         assert got["state"] == "key_needed" and got["models"] == [], name
         assert keys.PROVIDER_ENV[name] in got["message"] and shared_only in got["message"]
     set_config(
         home,
         assistant={"provider": "ollama", "consent": ["assistant-v3:anthropic@api.anthropic.com"]},
     )
-    assert shared_only in models(client, "anthropic")["message"]  # Ollama saved, Claude picked
+    assert shared_only in models(ui_client, "anthropic")["message"]  # Ollama saved, Claude picked
     monkeypatch.delenv("CUTPOINT_ASSISTANT_API_KEY")
-    got = models(client, "anthropic")  # no key at all: how to add one
+    got = models(ui_client, "anthropic")  # no key at all: how to add one
     assert got["state"] == "key_needed" and "ANTHROPIC_API_KEY" in got["message"]
     assert wire.sent == []
     monkeypatch.setenv("CUTPOINT_ASSISTANT_API_KEY", KEY)
@@ -364,7 +341,7 @@ def test_a_preset_not_saved_never_gets_the_shared_key(
 
 
 def test_the_saved_preset_never_gets_the_shared_key_but_its_own(
-    client: TestClient, home: Path, monkeypatch
+    ui_client: TestClient, home: Path, monkeypatch
 ) -> None:
     """#504: the saved, agreed-to official host never gets CUTPOINT_ASSISTANT_API_KEY, even
     as a fallback; its own key wins."""
@@ -377,14 +354,16 @@ def test_the_saved_preset_never_gets_the_shared_key_but_its_own(
         },
     )
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "claude-z"}], "has_more": False}))
-    assert models(client, "anthropic")["state"] == "key_needed" and wire.sent == []
+    assert models(ui_client, "anthropic")["state"] == "key_needed" and wire.sent == []
     monkeypatch.setenv("ANTHROPIC_API_KEY", OTHER)
-    assert models(client, "anthropic")["models"] == [{"id": "claude-z", "name": "claude-z"}]
+    assert models(ui_client, "anthropic")["models"] == [{"id": "claude-z", "name": "claude-z"}]
     assert wire.sent[0]["headers"]["x-api-key"] == OTHER
     assert KEY not in json.dumps(wire.sent)
 
 
-def test_the_anthropic_list_reads_every_page(client: TestClient, home: Path, monkeypatch) -> None:
+def test_the_anthropic_list_reads_every_page(
+    ui_client: TestClient, home: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
     set_config(home, assistant={"consent": ["assistant-v3:anthropic@api.anthropic.com"]})
     page1 = {
@@ -394,7 +373,7 @@ def test_the_anthropic_list_reads_every_page(client: TestClient, home: Path, mon
     }
     page2 = {"data": [{"id": "claude-c", "display_name": "Claude C"}], "has_more": False}
     wire = Wire(monkeypatch, _Resp(page1), _Resp(page2))
-    res = client.get("/api/assistant/models", params={"provider": "anthropic"})
+    res = ui_client.get("/api/assistant/models", params={"provider": "anthropic"})
     got = res.json()
     assert got["state"] == "ok"
     assert got["models"] == [
@@ -412,7 +391,7 @@ def test_the_anthropic_list_reads_every_page(client: TestClient, home: Path, mon
 
 
 def test_the_openai_list_leaves_out_models_that_do_not_chat(
-    client: TestClient, home: Path, monkeypatch
+    ui_client: TestClient, home: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", KEY)
     set_config(home, assistant={"consent": ["assistant-v3:openai@api.openai.com"]})
@@ -437,7 +416,7 @@ def test_the_openai_list_leaves_out_models_that_do_not_chat(
         "model-a",
     ]
     wire = Wire(monkeypatch, _Resp({"data": [{"id": i} for i in ids]}))
-    got = models(client, "openai")  # *-codex chats over the Responses API (#536)
+    got = models(ui_client, "openai")  # *-codex chats over the Responses API (#536)
     assert [m["id"] for m in got["models"]] == [
         "chat-x-codex",
         "codex-mini-latest",
@@ -449,23 +428,23 @@ def test_the_openai_list_leaves_out_models_that_do_not_chat(
 
 
 def test_the_xai_list_is_asked_at_api_x_ai_with_the_xai_key(
-    client: TestClient, home: Path, monkeypatch
+    ui_client: TestClient, home: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("XAI_API_KEY", XKEY)
     set_config(home, assistant={"consent": ["assistant-v3:xai@api.x.ai"]})
     rows = [{"id": i} for i in ("grok-one", "grok-x-image", "grok-imagine-video", "grok-codex")]
     wire = Wire(monkeypatch, _Resp({"data": rows}))  # xAI's image and codex models are left out too
-    res = client.get("/api/assistant/models", params={"provider": "xai"})
+    res = ui_client.get("/api/assistant/models", params={"provider": "xai"})
     assert res.json()["models"] == [{"id": "grok-one", "name": "grok-one"}]
     assert wire.sent[0]["url"] == "https://api.x.ai/v1/models"
     assert wire.sent[0]["headers"] == {"Authorization": f"Bearer {XKEY}"}
     assert XKEY not in res.text
 
 
-def test_the_ollama_list_is_its_pulled_models(client: TestClient, monkeypatch) -> None:
+def test_the_ollama_list_is_its_pulled_models(ui_client: TestClient, monkeypatch) -> None:
     tags = {"models": [{"name": "qwen3.5:9b"}, {"name": "llama3.2:3b"}, {"size": 1}]}
     wire = Wire(monkeypatch, _Resp(tags))
-    got = models(client, "ollama")  # this machine: no key, no consent
+    got = models(ui_client, "ollama")  # this machine: no key, no consent
     assert got == {
         "state": "ok",
         "models": [
@@ -478,7 +457,7 @@ def test_the_ollama_list_is_its_pulled_models(client: TestClient, monkeypatch) -
     assert wire.sent[0]["allow_redirects"] is False
 
 
-def test_a_list_is_kept_ten_minutes_unless_refreshed(client: TestClient, monkeypatch) -> None:
+def test_a_list_is_kept_ten_minutes_unless_refreshed(ui_client: TestClient, monkeypatch) -> None:
     now = [1000.0]
     monkeypatch.setattr(providers, "_clock", lambda: now[0])
     wire = Wire(
@@ -487,47 +466,47 @@ def test_a_list_is_kept_ten_minutes_unless_refreshed(client: TestClient, monkeyp
         _Resp({"models": [{"name": "b"}]}),
         _Resp({"models": [{"name": "c"}]}),
     )
-    assert models(client, "ollama")["models"][0]["id"] == "a"
+    assert models(ui_client, "ollama")["models"][0]["id"] == "a"
     now[0] += providers.MODELS_TTL_S - 1
-    assert models(client, "ollama")["models"][0]["id"] == "a" and len(wire.sent) == 1
-    assert models(client, "ollama", refresh=1)["models"][0]["id"] == "b"
+    assert models(ui_client, "ollama")["models"][0]["id"] == "a" and len(wire.sent) == 1
+    assert models(ui_client, "ollama", refresh=1)["models"][0]["id"] == "b"
     now[0] += providers.MODELS_TTL_S + 1
-    assert models(client, "ollama")["models"][0]["id"] == "c" and len(wire.sent) == 3
+    assert models(ui_client, "ollama")["models"][0]["id"] == "c" and len(wire.sent) == 3
 
 
 def test_a_failed_list_says_why_never_the_key(
-    client: TestClient, home: Path, monkeypatch, caplog
+    ui_client: TestClient, home: Path, monkeypatch, caplog
 ) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", OTHER)
     set_config(home, assistant={"consent": ["assistant-v3:anthropic@api.anthropic.com"]})
     answer = _Resp({"error": {"message": f"invalid x-api-key {OTHER}"}}, status=401)
     Wire(monkeypatch, answer, _Resp({"data": [{"id": "claude-z"}]}))
     caplog.set_level(logging.DEBUG)
-    res = client.get("/api/assistant/models", params={"provider": "anthropic"})
+    res = ui_client.get("/api/assistant/models", params={"provider": "anthropic"})
     got = res.json()
     assert got["state"] == "error" and got["models"] == []
     assert "rejected the API key" in got["message"] and "[redacted]" in got["message"]
     assert OTHER not in res.text and OTHER not in caplog.text
-    assert models(client, "anthropic")["models"] == [{"id": "claude-z", "name": "claude-z"}]
+    assert models(ui_client, "anthropic")["models"] == [{"id": "claude-z", "name": "claude-z"}]
 
 
-def test_an_unreachable_ollama_is_an_error_state(client: TestClient, monkeypatch) -> None:
+def test_an_unreachable_ollama_is_an_error_state(ui_client: TestClient, monkeypatch) -> None:
     import requests  # noqa: PLC0415
 
     Wire(monkeypatch, requests.ConnectionError("refused"))
-    got = models(client, "ollama")
+    got = models(ui_client, "ollama")
     assert got["state"] == "error" and "not reachable" in got["message"]
 
 
 def test_the_models_route_takes_presets_or_custom_and_the_token(
-    client: TestClient, home: Path, monkeypatch
+    ui_client: TestClient, home: Path, monkeypatch
 ) -> None:
-    assert client.get("/api/assistant/models", params={"provider": "gemini"}).status_code == 400
-    bare = client.get("/api/assistant/models", headers={"X-Cutpoint-Token": "wrong"})
+    assert ui_client.get("/api/assistant/models", params={"provider": "gemini"}).status_code == 400
+    bare = ui_client.get("/api/assistant/models", headers={"X-Cutpoint-Token": "wrong"})
     assert bare.status_code == 403
     set_config(home, assistant={"provider": "openai", "url": "http://127.0.0.1:1234/v1"})
     wire = Wire(monkeypatch, _Resp({"data": [{"id": "local-model"}]}))
-    got = models(client, "custom")  # the configured server on this machine: no key needed
+    got = models(ui_client, "custom")  # the configured server on this machine: no key needed
     assert got["models"] == [{"id": "local-model", "name": "local-model"}]
     assert wire.sent[0]["url"] == "http://127.0.0.1:1234/v1/models"
 

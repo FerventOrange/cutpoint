@@ -35,7 +35,7 @@ def _screen_of(shows: list[tuple[str, float, float, float, float]]) -> Any:
 
 
 def _run_feed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shows: list, **kw: Any) -> tuple:
-    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
+    from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
 
     preset = _feed_preset() | {"feed": {"row_notices": True}}
     return _run(tmp_path, monkeypatch, _Engine(_screen_of(shows), (NOTICE, FEED)), preset, **kw)
@@ -359,7 +359,7 @@ def test_an_icon_kill_read_once_and_kept_under_a_still_screen_survives(
     partly under a still screen: no label, whatever the time on moving frames."""
     a, b = still
     shows = [("Zander", 1410, 300, 18.0, gone_s), ("Boxer7", 1640, 300, 18.0, gone_s)]
-    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
+    from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
 
     preset = _feed_preset() | {"feed": {"row_notices": True}}
     notes = [(f"Option {w} here", 500, 300 + 40 * i) for i, w in enumerate(("one", "two", "three"))]
@@ -380,7 +380,7 @@ def test_a_preset_naming_a_removed_feed_entry_runs_as_auto(
 ) -> None:
     """``"paren"`` and ``"two_line"`` are no entry names any more (#1085 A18, A21): a hand
     preset that still names them loads, runs and reads the feed as ``"auto"``."""
-    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
+    from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
 
     shows = [
         ("Zander destroyed Boxer7 (Jet)", 1410, 100, 5.0, 12.0),
@@ -414,7 +414,7 @@ def test_an_icon_kill_in_a_second_feed_survives_a_still_stretch(
     """Feed 1 shows a plain row all along (read once, then kept on every frame); an icon kill
     is read in feed 2 at 32 s, partway through a still stretch: the kill stays and the still
     stretch is judged on its reads."""
-    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
+    from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
 
     feed2 = (1400, 500, 480, 300)
     x, y, w, h = feed2
@@ -564,7 +564,7 @@ def test_drop_labels_keeps_lines_with_two_team_colours() -> None:
 
 
 def _menu_with_kill(start: float) -> Any:
-    from test_ocr_menus import _menu  # noqa: PLC0415
+    from ocr_menus_helpers import _menu  # noqa: PLC0415
 
     def screen(t: float) -> list[tuple[str, float, float]]:
         out = _menu() if 20 <= t < 30 else [("Hold", 900, 820)]
@@ -586,7 +586,7 @@ def _menu_with_kill(start: float) -> Any:
 def test_a_two_colour_kill_line_survives_a_menu_but_plain_rows_do_not(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: float, coloured: bool, kills: list
 ) -> None:
-    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
+    from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _run  # noqa: PLC0415
 
     def paint(t: float, frame: np.ndarray) -> None:
         if (
@@ -614,7 +614,7 @@ def test_a_two_colour_kill_line_survives_a_menu_but_plain_rows_do_not(
 def test_a_log_kill_read_only_inside_a_menu_is_dropped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shown: tuple, kills: list
 ) -> None:
-    from test_ocr_menus import FEED, NOTICE, _Engine, _feed_preset, _menu, _run  # noqa: PLC0415
+    from ocr_menus_helpers import FEED, NOTICE, _Engine, _feed_preset, _menu, _run  # noqa: PLC0415
 
     def screen(t: float) -> list[tuple[str, float, float]]:
         out = _menu() if 20 <= t < 30 else [("Hold", 900, 820)]
