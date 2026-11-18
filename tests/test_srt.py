@@ -15,6 +15,7 @@ import pytest
 from conftest import media_info, needs_ffmpeg
 from cutpoint import assemble, cache, clips, planning, sources, srt
 from cutpoint.ffmpeg_utils import MediaInfo
+from export_helpers import install_fake_export
 
 
 def _words(*items: tuple[float, float, str]) -> list[dict]:
@@ -136,14 +137,10 @@ def _project(home: Path) -> tuple[Path, Path, Path]:
     return project, seg, project / "clips"
 
 
-def _fake_export(src, info, start, end, out, *_a, **_kw) -> None:
-    out.write_bytes(b"new")
-
-
 def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, caplog):
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     assert (out / "001_a.srt").read_text(encoding="utf-8").startswith("1\n00:00:01,000 --> ")
@@ -190,7 +187,7 @@ def test_clips_force_removes_the_listed_srt_of_a_clip_deleted_during_review(home
     """Like an in-place extend (#239): the new manifest no longer lists it."""
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     (out / "001_a.mp4").unlink()  # rejected during review
@@ -206,7 +203,7 @@ def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeyp
     remove it on a case-insensitive file system: it stays, with the Kept warning."""
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     if not (out / "001_A.mp4").exists():
@@ -330,7 +327,7 @@ def _two_language_projects(home: Path, **seg: Any) -> dict[str | None, Path]:
 
 def _export(project: Path, monkeypatch, **kw: Any) -> Path:
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    install_fake_export(monkeypatch, clips)
     clips.export_clips(project, segments=project / "seg.json", **kw)
     return project / "clips"
 

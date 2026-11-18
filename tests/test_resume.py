@@ -14,11 +14,11 @@ import pytest
 
 import cutpoint.analyze
 from conftest import envelope, write
-from cutpoint import cache, cli, folders, memguard, procs, progress, runstate
+from cutpoint import cache, cli, folders, memguard, procs, runstate
 from cutpoint.errors import FolderBusyError
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.utils import command_line
-from resume_helpers import _Resp
+from resume_helpers import _Resp, fake_events, read_progress
 
 LOCK = ".analysis.run.cutpoint-lock"
 
@@ -34,10 +34,6 @@ def project(home: Path, tmp_path: Path, monkeypatch) -> Path:
     return p
 
 
-def _read(project: Path) -> dict:
-    return json.loads((project / runstate.FILE).read_text(encoding="utf-8"))
-
-
 def _record(project: Path, **over: Any) -> dict:
     """A progress.json of an interrupted ``events p`` run, as runstate writes it."""
     rec = runstate.Recorder("events", ["events", "p"], project, {})
@@ -51,22 +47,6 @@ def _events_key(*argv: str) -> str:
     return runstate.options_key(vars(cli._parse(cli.build_parser(), ["events", "p", *argv])))
 
 
-def _fake_events(monkeypatch, body=None) -> list[dict]:
-    """``cutpoint events`` as a fake with one progress step; returns what each call saw
-    (cwd, its argv in progress.json, the parsed namespace)."""
-    calls: list[dict] = []
-
-    def cmd(a):
-        project = runstate._ACTIVE.project
-        calls.append({"cwd": Path.cwd(), "record": _read(project), "args": a})
-        with progress.run(("vlm",)) as steps, steps.step("vlm"):
-            if body is not None:
-                body(project)
-
-    monkeypatch.setattr(cli, "_cmd_events", cmd)
-    return calls
-
-
 def _resume(capsys, *argv: str) -> tuple[int, dict]:
     code = cli.main(["resume", "p", *argv, "--json"])
     return code, envelope(capsys.readouterr().out)
@@ -76,7 +56,7 @@ def _resume(capsys, *argv: str) -> tuple[int, dict]:
 
 
 def test_resume_replays_the_recorded_command_from_its_cwd(project, tmp_path, monkeypatch, capsys):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, steps={"vlm": {"state": "failed", "done": 3, "total": 8, "pct": 40}})
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
@@ -94,7 +74,7 @@ def test_resume_replays_the_recorded_command_from_its_cwd(project, tmp_path, mon
     assert call["cwd"] == tmp_path and Path.cwd() == elsewhere  # cwd restored
     # the replayed run records as the command it replays, not as resume
     assert call["record"]["argv"] == ["events", "p"] and call["record"]["command"] == "events"
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == "done" and rec["command"] == "events"
     assert rec["options_key"] == _events_key()
     assert rec["steps"]["vlm"]["state"] == "done"
@@ -103,43 +83,43 @@ def test_resume_replays_the_recorded_command_from_its_cwd(project, tmp_path, mon
 
 def test_resume_replays_a_recorded_force_and_json(project, monkeypatch, capsys):
     """resume replays the command line as recorded (its --force too); --json is resume's."""
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, argv=["-v", "events", "p", "--force", "vlm", "--json"])
     assert cli.main(["resume", "p"]) == 0
     assert capsys.readouterr().out == ""  # no --json on resume: no envelope
     (call,) = calls
     assert call["args"].force == ["vlm"] and call["args"].json_result is False
-    assert _read(project)["argv"] == ["-v", "events", "p", "--force", "vlm", "--json"]
+    assert read_progress(project)["argv"] == ["-v", "events", "p", "--force", "vlm", "--json"]
 
 
 def test_resume_has_no_force(project, monkeypatch, capsys):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project)
     with pytest.raises(SystemExit) as exc:
         cli.main(["resume", "p", "--force", "--json"])
     assert exc.value.code == 2
     doc = envelope(capsys.readouterr().out)
     assert doc["command"] == "resume" and doc["error"]["code"] == "bad_args"
-    assert calls == [] and _read(project)["status"] == "interrupted"
+    assert calls == [] and read_progress(project)["status"] == "interrupted"
 
 
 def test_a_failing_replay_keeps_its_exit_code_and_error(project, monkeypatch, capsys):
     def body(project):
         raise KeyboardInterrupt
 
-    _fake_events(monkeypatch, body)
+    fake_events(monkeypatch, body)
     _record(project)
     code, doc = _resume(capsys)
     assert code == 130 and doc["error"]["code"] == "interrupted"
     assert doc["command"] == "events" and doc["outputs"]["resumed"] is True
-    assert _read(project)["status"] == "interrupted"  # resumable again
+    assert read_progress(project)["status"] == "interrupted"  # resumable again
 
 
 # -- nothing to resume ------------------------------------------------------------------------
 
 
 def test_a_finished_run_is_not_resumed(project, monkeypatch, capsys):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, status="done", exit_code=0, error=None)
     code, doc = _resume(capsys)
     assert code == 0 and doc["ok"] and doc["command"] == "events"
@@ -150,7 +130,7 @@ def test_a_finished_run_is_not_resumed(project, monkeypatch, capsys):
 
 @pytest.mark.parametrize("content", [None, "not json"], ids=["missing", "unreadable"])
 def test_no_record_is_not_found(project, monkeypatch, capsys, content):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     if content is not None:
         (project / runstate.FILE).write_text(content, encoding="utf-8")
     code, doc = _resume(capsys)
@@ -162,7 +142,7 @@ def test_no_record_is_not_found(project, monkeypatch, capsys, content):
 def test_a_missing_recorded_cwd_is_not_found_and_not_resumed(
     project, tmp_path, monkeypatch, capsys
 ):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, cwd=str(tmp_path / "gone"))
     code, doc = _resume(capsys)
     assert code == 1 and doc["error"]["code"] == "not_found"
@@ -174,7 +154,7 @@ def test_a_copied_project_does_not_replay_on_the_original(
     project, monkeypatch, capsys, caplog, json_flag
 ):
     """After copying p to p2, p2's record names p: resume p2 stops instead of running on p."""
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, argv=["events", "p", "--force", "vlm"])
     copy = project.parent / "p2"
     copy.mkdir()
@@ -192,7 +172,7 @@ def test_a_copied_project_does_not_replay_on_the_original(
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors == [f"{copy / runstate.FILE} records a run on {project}"]
     assert not any("Resuming in" in r.getMessage() for r in caplog.records)
-    assert _read(project)["status"] == "interrupted" and not (project / LOCK).exists()
+    assert read_progress(project)["status"] == "interrupted" and not (project / LOCK).exists()
 
 
 @pytest.mark.parametrize(
@@ -204,7 +184,7 @@ def test_a_record_of_another_command_line_is_not_replayed(
     project, monkeypatch, capsys, caplog, command, argv
 ):
     """A hand-edited progress.json whose argv is not a run of its ``command`` (A662)."""
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, command=command, argv=argv)
     code, doc = _resume(capsys)
     assert code == 1 and calls == []
@@ -212,12 +192,12 @@ def test_a_record_of_another_command_line_is_not_replayed(
     assert doc["outputs"]["resumed"] is False
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert len(errors) == 1 and "not resumed" in errors[0]
-    assert _read(project)["status"] == "interrupted"
+    assert read_progress(project)["status"] == "interrupted"
 
 
 def test_resume_of_a_relative_project_path_from_the_projects_folder(project, monkeypatch, capsys):
     """``resume p`` inside the projects folder names the same project: it is replayed."""
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project)
     monkeypatch.chdir(project.parent)
     code, doc = _resume(capsys)
@@ -229,7 +209,7 @@ def test_resume_of_a_relative_project_path_from_the_projects_folder(project, mon
 def test_a_relative_copy_does_not_replay_on_the_original(project, tmp_path, monkeypatch, capsys):
     """A copy ``./p`` of a project whose run was recorded from the projects folder: its
     record's ``p`` is the original there, so resume stops instead of running on it."""
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     _record(project, cwd=str(project.parent))
     elsewhere = tmp_path / "elsewhere"
     copy = elsewhere / "p"
@@ -241,7 +221,7 @@ def test_a_relative_copy_does_not_replay_on_the_original(project, tmp_path, monk
     assert f"records a run on {project}" in doc["error"]["message"]
     assert doc["project"] == str(copy)
     assert doc["outputs"]["resumed"] is False and calls == []
-    assert _read(project)["status"] == "interrupted" and not (project / LOCK).exists()
+    assert read_progress(project)["status"] == "interrupted" and not (project / LOCK).exists()
 
 
 def test_a_missing_project_is_not_found(home, capsys):
@@ -252,7 +232,7 @@ def test_a_missing_project_is_not_found(home, capsys):
 
 def test_a_live_run_is_folder_busy(project, monkeypatch, capsys):
     """A record still running (its process alive), or a live lock: folder_busy, nothing run."""
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: True)
     _record(project, status="running", pid=4242, exit_code=None)
     code, doc = _resume(capsys)
@@ -267,11 +247,11 @@ def test_a_live_run_is_folder_busy(project, monkeypatch, capsys):
     )
     code, doc = _resume(capsys)
     assert code == 1 and doc["error"]["code"] == "folder_busy"
-    assert calls == [] and lock.exists() and _read(project)["status"] == "interrupted"
+    assert calls == [] and lock.exists() and read_progress(project)["status"] == "interrupted"
 
 
 def test_a_running_record_of_a_dead_process_is_resumed(project, monkeypatch, capsys):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: False)
     _record(project, status="running", pid=4242, exit_code=None)
     code, doc = _resume(capsys)
@@ -283,7 +263,7 @@ def test_a_running_record_of_a_dead_process_is_resumed(project, monkeypatch, cap
 
 
 def test_dry_run_prints_the_command_and_counts(project, monkeypatch, capsys):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     steps = {
         "transcribe": {"state": "failed", "done": 1, "total": 3, "pct": 40},
         "reactions": {"state": "pending", "done": None, "total": None, "pct": None},
@@ -301,14 +281,14 @@ def test_dry_run_prints_the_command_and_counts(project, monkeypatch, capsys):
         "done": 1,
         "total": 3,
     }
-    assert calls == [] and _read(project)["status"] == "interrupted"
+    assert calls == [] and read_progress(project)["status"] == "interrupted"
 
 
 # -- warnings ---------------------------------------------------------------------------------
 
 
 def test_resume_warns_about_sources_that_are_gone(project, tmp_path, monkeypatch, capsys):
-    calls = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch)
     there = tmp_path / "videos" / "a.mp4"
     gone = tmp_path / "videos" / "b.mp4"
     _record(project, sources=[str(there), str(gone), "videos/c.mp4", "videos/a.mp4"])
@@ -320,7 +300,7 @@ def test_resume_warns_about_sources_that_are_gone(project, tmp_path, monkeypatch
 
 
 def test_a_rerun_with_other_options_warns_resume_args_changed(project, monkeypatch, capsys, caplog):
-    _fake_events(monkeypatch)
+    fake_events(monkeypatch)
     _record(project)
     with caplog.at_level("INFO"):
         assert cli.main(["events", "p", "--window", "12", "--json"]) == 0
@@ -328,11 +308,11 @@ def test_a_rerun_with_other_options_warns_resume_args_changed(project, monkeypat
     (w,) = [w for w in doc["warnings"] if w["code"] == "resume_args_changed"]
     assert w["files"] == [str(project / runstate.FILE)]
     assert any("this run with other options replaces it" in m for m in caplog.messages)
-    assert _read(project)["argv"] == ["events", "p", "--window", "12", "--json"]
+    assert read_progress(project)["argv"] == ["events", "p", "--window", "12", "--json"]
 
 
 def test_a_run_of_another_command_names_it_in_resume_args_changed(project, monkeypatch, capsys):
-    _fake_events(monkeypatch)
+    fake_events(monkeypatch)
     _record(project, command="analyze", argv=["analyze", "videos/a.mp4", "--out", "p"])
     assert cli.main(["events", "p", "--json"]) == 0
     doc = envelope(capsys.readouterr().out)
@@ -347,7 +327,7 @@ def test_a_run_of_another_command_names_it_in_resume_args_changed(project, monke
 )
 def test_no_resume_args_changed_otherwise(project, monkeypatch, capsys, status, argv):
     """The same options continue the record; a finished record is no loss."""
-    _fake_events(monkeypatch)
+    fake_events(monkeypatch)
     _record(project, status=status)
     assert cli.main([*argv, "--json"]) == 0
     assert "resume_args_changed" not in [
@@ -518,7 +498,7 @@ def test_events_resumed_after_a_vlm_window_equal_an_uninterrupted_run(
     else:
         s.ollama.stop = 3  # the third window's request is in flight
     assert cli.main(argv) == 130
-    assert _read(s.project)["status"] == "interrupted"
+    assert read_progress(s.project)["status"] == "interrupted"
     assert not (s.project / "events.json").exists()
     s.stop_frames = s.ollama.stop = None
     asked = len(s.ollama.asked)
@@ -527,7 +507,7 @@ def test_events_resumed_after_a_vlm_window_equal_an_uninterrupted_run(
     assert len(s.ollama.asked) == 4  # the two described windows are not asked again
     assert asked == (2 if where == "boundary" else 3)
     assert _events_json(s.project) == reference  # the action-cam path: reasons kept too
-    assert _read(s.project)["status"] == "done"
+    assert read_progress(s.project)["status"] == "done"
 
 
 @pytest.mark.parametrize(("size", "unloads"), [("0", 1), ("1", 2), ("2", 2), ("4", 1)])
@@ -550,7 +530,7 @@ def test_events_batch_size_unloads_ollama_per_source_with_the_same_events(
     assert s.ollama.unloads == unloads
     done = [m for m in caplog.messages if m.startswith("vlm: ")]
     assert done == (["vlm: 3/6 done, continuing"] if unloads == 2 else [])
-    rec = _read(s.project)
+    rec = read_progress(s.project)
     assert rec["steps"]["vlm"]["state"] == "done" and rec["steps"]["vlm"]["total"] == 6
 
 
@@ -574,7 +554,7 @@ def test_events_batch_size_interrupted_resumes_to_the_same_events(vlm_project, w
     assert cli.main(["resume", "p"]) == 0
     assert len(s.ollama.asked) == (2 if where == "boundary" else 5)
     assert _events_json(s.project) == reference
-    assert _read(s.project)["argv"] == [*argv, "--batch-size", "4"]
+    assert read_progress(s.project)["argv"] == [*argv, "--batch-size", "4"]
 
 
 # -- analyze: interrupted while transcribing source 2 of 3 -----------------------------------
@@ -618,7 +598,7 @@ def test_analyze_resumed_mid_transcribe_transcribes_only_the_rest(home, tmp_path
     argv = ["analyze", "videos", "--style", "funny", "--no-vision", "--out", "p"]
     assert cli.main(argv) == 130
     project = home / "projects" / "p"
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == "interrupted" and rec["argv"] == argv
     assert rec["steps"]["transcribe"]["state"] == "failed"
     assert not (project / "highlights.json").exists()
@@ -633,7 +613,7 @@ def test_analyze_resumed_mid_transcribe_transcribes_only_the_rest(home, tmp_path
     assert [s["path"] for s in cache.load_json(project / "highlights.json")["sources"]] == [
         str(v) for v in videos
     ]
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == "done" and rec["command"] == "analyze" and rec["argv"] == argv
     assert rec["sources"] == [str(v) for v in videos]
 
@@ -665,7 +645,7 @@ def edit_run(project, tmp_path, monkeypatch):
     monkeypatch.setattr(cutpoint.edit, "export_clips", export_clips)
     monkeypatch.setattr(cutpoint.edit, "assemble", assemble)
     assert cli.main(["edit", "videos/a.mp4", "--out", "p", "--no-vision"]) == 130
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == "interrupted" and rec["steps"]["clips"]["state"] == "done"
     assert rec["steps"]["clips"]["manifest"]["path"] == str(project / "clips" / "manifest.json")
     return calls
@@ -680,7 +660,7 @@ def test_edit_resume_skips_the_finished_clips(edit_run, project, capsys, caplog)
     assert doc["outputs"]["count"] == 1
     assert any("clips of the interrupted run are kept" in m for m in caplog.messages)
     assert (project / "a-final.mp4").read_bytes() == b"final"
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == "done" and rec["steps"]["clips"]["state"] == "done"
     assert "manifest" in rec["steps"]["clips"]  # a later resume can keep them again
 
@@ -714,7 +694,7 @@ def _edit_key(style: str | None) -> str:
 
 def test_edit_without_style_records_the_kind_style(edit_run, project):
     """#899: a flagless edit records the style it ran (auto), not an empty --style."""
-    assert _read(project)["options_key"] == _edit_key("auto") != _edit_key(None)
+    assert read_progress(project)["options_key"] == _edit_key("auto") != _edit_key(None)
 
 
 def test_edit_resume_of_a_record_from_before_auto_does_not_keep_its_clips(
@@ -722,7 +702,7 @@ def test_edit_resume_of_a_record_from_before_auto_does_not_keep_its_clips(
 ):
     """#899: an edit recorded before Auto was the default (no style in its options) ran its
     clips with action; its resume runs Auto, so it warns and keeps none of them."""
-    rec = _read(project)
+    rec = read_progress(project)
     cache.save_json(project / runstate.FILE, {**rec, "options_key": _edit_key(None)})
     code, doc = _resume(capsys)
     assert "resume_args_changed" in [w["code"] for w in doc["warnings"]]

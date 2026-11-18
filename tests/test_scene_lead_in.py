@@ -14,6 +14,7 @@ import pytest
 from conftest import media_info, needs_ffmpeg
 from cutpoint import analyze, ffmpeg_utils
 from cutpoint.errors import FFmpegError
+from scene_helpers import concat_clip, late_copy, near
 
 
 # ----------------------------------------------------------------- first_frame_time
@@ -256,35 +257,7 @@ CUT_TIMES = [4.0, 8.0, 11.0, 15.0, 19.0]  # of the 24 s clip
 
 def make_clip(out: Path, *codec: str, fmt: str | None = None) -> Path:
     """The 24 s 160x120 10 fps clip with hard cuts at CUT_TIMES, encoded with ``codec``."""
-    args: list[str] = []
-    for name, dur in CUT_PARTS:
-        sep = ":" if "=" in name else "="
-        args += ["-f", "lavfi", "-i", f"{name}{sep}size=160x120:rate=10:duration={dur}"]
-    graph = "".join(f"[{i}]" for i in range(len(CUT_PARTS))) + f"concat=n={len(CUT_PARTS)}:v=1[v]"
-    fmt_args = ["-f", fmt] if fmt else []
-    subprocess.run(
-        [shutil.which("ffmpeg"), "-v", "error", *args, "-filter_complex", graph, "-map", "[v]",
-         *codec, *fmt_args, str(out)],
-        check=True,
-    )  # fmt: skip
-    return out
-
-
-def late_copy(src: Path, out: Path, acodec: str) -> Path:
-    """``src`` plus a sine audio track, its video 0.25 s late."""
-    subprocess.run(
-        [shutil.which("ffmpeg"), "-v", "error", "-itsoffset", "0.25", "-i", str(src), "-f",
-         "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=24", "-map", "0:v",
-         "-map", "1:a", "-c:v", "copy", "-c:a", acodec, str(out)],
-        check=True,
-    )  # fmt: skip
-    return out
-
-
-def near(got: list[float], want: list[float]) -> bool:
-    return len(got) == len(want) and all(
-        abs(a - b) <= analyze.SCENE_GRID_S + 1e-6 for a, b in zip(got, want, strict=True)
-    )
+    return concat_clip(out, CUT_PARTS, *codec, fmt=fmt)
 
 
 def scene(src: Path, cdir: Path, duration: float, offset: float = 0.0) -> list[float]:

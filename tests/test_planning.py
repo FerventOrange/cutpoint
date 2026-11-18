@@ -22,6 +22,7 @@ from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.planning import Padding, manifest_parts, pad, select_moments, speech_pass
 from cutpoint.styles import get_style
 from cutpoint.tail import TailSettings
+from export_helpers import install_fake_export
 from planning_helpers import SRC_A, SRC_B, _moment
 
 
@@ -598,11 +599,7 @@ def test_export_line_says_smart_tail_off_when_no_clip_gets_one(
         json.dumps([{"source": str(src), "start": 0.0, "end": 2.0, "label": "a", **extra}]),
     )
     monkeypatch.setattr(clips, "probe", media_info)
-
-    def export(src, info, start, end, out, *_a, **_kw):
-        out.write_bytes(b"n")
-
-    monkeypatch.setattr(clips, "export_clip_checked", export)
+    install_fake_export(monkeypatch, clips, content=b"n")
     monkeypatch.setattr(clips.sources, "source_words", lambda _src, _lang=None: None)
     monkeypatch.setattr(clips.sources, "audio_window", lambda *a: None)
     clips.export_clips(
@@ -636,12 +633,9 @@ def _deleted_style_project(home: Path, **extra: Any) -> Path:
 
 
 def _fake_export(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``clips`` run without ffmpeg: probe and the encoder faked, no transcript or audio."""
     monkeypatch.setattr(clips, "probe", media_info)
-
-    def export(src, info, start, end, out, *_a, **_kw):
-        out.write_bytes(b"n")
-
-    monkeypatch.setattr(clips, "export_clip_checked", export)
+    install_fake_export(monkeypatch, clips, content=b"n")
     monkeypatch.setattr(clips.sources, "source_words", lambda _src, _lang=None: None)
     monkeypatch.setattr(clips.sources, "audio_window", lambda *a: None)
 

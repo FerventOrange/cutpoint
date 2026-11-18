@@ -14,7 +14,6 @@ import time
 import types
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, needs_ffmpeg, write
@@ -23,6 +22,7 @@ from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import RunCancelled
 from cutpoint.styles import get_style
 from cutpoint.transcribe import transcript_name
+from scene_helpers import fake_source_io
 
 ENV = "CUTPOINT_ANALYZE_SCENE_OVERLAP"
 WAIT_S = 15  # a broken implementation fails after this long instead of hanging
@@ -97,13 +97,8 @@ def world(home, tmp_path, monkeypatch):
 
     w.scene = scene
     w.real_scene_cuts = analyze.scene_cuts
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0, audio_streams=1))
+    fake_source_io(monkeypatch)  # 60 s, one loud burst at 20 s
     monkeypatch.setattr(analyze, "Transcriber", FakeTr)
-    monkeypatch.setattr(analyze, "extract_audio", lambda io, wav, *a, **k: write(wav, "wav"))
-    monkeypatch.setattr(analyze, "check_read", lambda *a, **k: None)
-    times = np.arange(0.0, 60.0, 0.5)
-    lufs = -50.0 + 35.0 * np.exp(-(((times - 20.0) / 3.0) ** 2))  # one loud burst at 20 s
-    monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (times, lufs))
     monkeypatch.setattr(analyze, "scene_cuts", scene)
     w.source = lambda use_scenes=True, timings=None: analyze.analyze_source(
         src, get_style("gaming"), w.tr, use_scenes, None, {} if timings is None else timings

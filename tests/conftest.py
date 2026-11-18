@@ -26,6 +26,7 @@ pytest_plugins = [
     "analyze_steps_helpers",
     "batch_size_helpers",
     "event_candidates_helpers",
+    "export_helpers",
     "planning_helpers",
 ]
 
