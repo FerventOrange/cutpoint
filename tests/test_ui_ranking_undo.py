@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,13 @@ from conftest import patch_ui
 from cutpoint import analyze, rerank, ui
 from cutpoint.styles import get_style
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
-from test_ui_ranking import apply, hold_lock, preview, snapshot
+from test_ui_ranking import (  # noqa: F401 (torch_imports: a fixture)
+    apply,
+    hold_lock,
+    preview,
+    snapshot,
+    torch_imports,
+)
 from test_untrusted_paths import flushed_before_replace, fsyncs  # noqa: F401 (a fixture)
 
 PORT = 8765
@@ -356,7 +361,13 @@ def test_the_swap_flushes_both_files_before_their_rename(
 
 
 # --------------------------------------------------------------------------- no torch
-def test_the_ui_process_never_imports_torch_to_undo(home, tmp_path, client, monkeypatch):
+def test_the_ui_process_never_imports_torch_to_undo(
+    home,
+    tmp_path,
+    client,
+    monkeypatch,
+    torch_imports,  # noqa: F811
+):
     project = make_project(home, tmp_path)
     applied(client)
 
@@ -364,8 +375,7 @@ def test_the_ui_process_never_imports_torch_to_undo(home, tmp_path, client, monk
         raise AssertionError("torch's own CUDA check ran in the UI process")
 
     monkeypatch.setattr(analyze, "_cuda", boom)
-    had_torch = "torch" in sys.modules
     assert swap(client).status_code == 200
     assert swap(client).status_code == 200
-    assert ("torch" in sys.modules) == had_torch
+    assert torch_imports == []
     assert read(project)["style"] == "funny"

@@ -3,6 +3,7 @@ write, apply it after a click, the refusals, and no torch in the UI process."""
 
 from __future__ import annotations
 
+import builtins
 import json
 import subprocess
 import sys
@@ -34,6 +35,23 @@ def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
         c.headers["X-Cutpoint-Token"] = app.state.token
         yield c
+
+
+@pytest.fixture
+def torch_imports(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Every ``import torch`` (or of a ``torch.`` module) from here on, recorded; the import
+    then fails as without torch, also when an earlier test on this worker imported it."""
+    tried: list[str] = []
+    real = builtins.__import__
+
+    def spy(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name == "torch" or name.startswith("torch."):
+            tried.append(name)
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", spy)
+    monkeypatch.setitem(sys.modules, "torch", None)
+    return tried
 
 
 def snapshot(project: Path) -> dict[str, bytes]:
@@ -302,7 +320,9 @@ def test_apply_keeps_no_ollama_login_and_writes_highlights_durably(
 
 
 # --------------------------------------------------------------------------- no torch
-def test_the_ui_process_never_imports_torch_to_rank(home, tmp_path, client, monkeypatch):
+def test_the_ui_process_never_imports_torch_to_rank(
+    home, tmp_path, client, monkeypatch, torch_imports
+):
     project = make_project(home, tmp_path)
     monkeypatch.setattr(rerank, "_events_extra", lambda: True)  # the events extra "installed"
     monkeypatch.setattr(analyze, "EVENTS_MODULES", ())
@@ -313,13 +333,12 @@ def test_the_ui_process_never_imports_torch_to_rank(home, tmp_path, client, monk
     monkeypatch.setattr(analyze, "_cuda", boom)
     asked: list[int] = []
     patch_ui(monkeypatch, "cuda_probe", lambda: asked.append(1) or False)
-    had_torch = "torch" in sys.modules
     got = preview(client, "action")  # plans the visual layer: asks the probe
     assert got.status_code == 200, got.text
     assert asked, "the injected probe was not asked"
     base = preview(client).json()["base"]
     assert apply(client, base).status_code == 200
-    assert ("torch" in sys.modules) == had_torch
+    assert torch_imports == []
     assert read(project)["style"] == "funny"
 
 
@@ -361,8 +380,9 @@ def test_the_cuda_probe_answers_from_the_child(monkeypatch, returncode, raises, 
     assert len(fake.calls) == 1  # the answer, a failure too, is kept for the session
 
 
-def test_the_cuda_probe_runs_this_python_with_a_timeout_and_never_imports_torch(monkeypatch):
-    had_torch = "torch" in sys.modules
+def test_the_cuda_probe_runs_this_python_with_a_timeout_and_never_imports_torch(
+    monkeypatch, torch_imports
+):
     fake = FakeRun(0)
     monkeypatch.setattr(subprocess, "run", fake)
     assert ui.CudaProbe()() is True
@@ -371,7 +391,7 @@ def test_the_cuda_probe_runs_this_python_with_a_timeout_and_never_imports_torch(
     assert cmd[1] == "-c"
     assert "torch.cuda.is_available" in cmd[2]
     assert kwargs["timeout"] == ui.CUDA_PROBE_S
-    assert ("torch" in sys.modules) == had_torch
+    assert torch_imports == []
 
 
 def test_concurrent_cuda_probes_run_one_child(monkeypatch):
