@@ -9,7 +9,6 @@ import math
 import re
 import threading
 import time
-from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from cutpoint.ffmpeg_utils import ChildScope, child_scope
 from cutpoint.pano import project as pano_project
 from cutpoint.ui.common import SOURCES_CACHE_MAX, SOURCES_CACHE_S, UI_DIR, finite_number, logger
 from cutpoint.ui.files import _inside, _own, _ui_folder
+from cutpoint.ui.lanes import Lane
 from cutpoint.ui.media import PROXY_PRUNE_GRACE_S, Media, _idle, _mark_used
 from cutpoint.utils import file_stamp
 
@@ -162,10 +162,16 @@ class PanoPreviews:
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.wake = threading.Condition(self.lock)
-        self.queue: deque[PanoPreview] = deque()
-        self.running: PanoPreview | None = None
-        self.lane: threading.Thread | None = None
+        # the one render worker; ``run`` looks ``_render`` up per job, and the lane outlives
+        # a render that raises past its own handlers
+        self.lane: Lane[PanoPreview] = Lane(
+            self.lock,
+            lambda job: self._render(job),
+            name="cutpoint-pano",
+            started=self._started,
+            ended=self._ended,
+            failed=lambda job: logger.exception("director preview lane: %s failed", job.cid),
+        )
         self.closing = False
         # (project, cid) -> {"state": failed | cancelled, "reason", "ident"}
         self.outcomes: dict[tuple[Path, str], dict[str, Any]] = {}
@@ -315,7 +321,7 @@ class PanoPreviews:
         if not info["clip"].lrv:
             return {"state": "failed", "reason": "no .lrv proxy to render this camera path from"}
         with self.lock:
-            run = self.running
+            run = self.lane.running
             if run is not None and run.key == key and not run.cancelled:
                 elapsed = round(time.time() - run.started, 1) if run.started else 0.0
                 planned = run.name is not None
@@ -325,7 +331,7 @@ class PanoPreviews:
                     "seconds": round(run.hi - run.lo, 1) if planned else None,
                     "progress": None if run.progress is None else round(run.progress, 3),
                 }
-            if any(j.key == key and not j.cancelled for j in self.queue):
+            if any(j.key == key and not j.cancelled for j in self.lane.queue):
                 return {"state": "queued"}
             failed = self.outcomes.get(key)
             done = self.done.get(key)
@@ -384,19 +390,16 @@ class PanoPreviews:
         with self.lock:
             if self.closing:
                 return
-            for queued in self.queue:
+            for queued in self.lane.queue:
                 queued.cancelled = True  # superseded: the user moved on (no outcome to show)
-            self.queue.clear()
-            self.queue.append(job)
+            self.lane.queue.clear()
+            self.lane.queue.append(job)
             self.rev += 1
-            run = self.running
+            run = self.lane.running
             if run is not None and not run.cancelled:
                 run.cancelled = True
                 stop = run.scope
-            if self.lane is None:
-                self.lane = threading.Thread(target=self._lane, name="cutpoint-pano", daemon=True)
-                self.lane.start()
-            self.wake.notify()
+            self.lane.wake()
         if stop is not None:
             stop.kill()
 
@@ -404,11 +407,11 @@ class PanoPreviews:
         """Stop the queued or running preview of ``cid`` (its partial file goes); False if none."""
         key, stop, ident = (project, cid), None, None
         with self.lock:
-            for job in [j for j in self.queue if j.key == key]:
+            for job in [j for j in self.lane.queue if j.key == key]:
                 job.cancelled = True
-                self.queue.remove(job)
+                self.lane.queue.remove(job)
                 ident = job.ident
-            run = self.running
+            run = self.lane.running
             if run is not None and run.key == key and not run.cancelled:
                 run.cancelled = True
                 stop, ident = run.scope, run.ident
@@ -419,22 +422,12 @@ class PanoPreviews:
             stop.kill()
         return ident is not None
 
-    def _lane(self) -> None:
-        while True:
-            with self.lock:
-                while not self.queue and not self.closing:
-                    self.wake.wait()
-                if self.closing:
-                    return
-                job = self.running = self.queue.popleft()
-                self.rev += 1
-                job.started = time.time()
-            try:
-                self._render(job)
-            finally:
-                with self.lock:
-                    self.running = None
-                    self.rev += 1
+    def _started(self, job: PanoPreview) -> None:  # the lane took ``job``, under the lock
+        self.rev += 1
+        job.started = time.time()
+
+    def _ended(self, _job: PanoPreview) -> None:  # ``job`` ended, under the lock
+        self.rev += 1
 
     def _render(self, job: PanoPreview) -> None:
         """Plan ``job``'s path (``preview_path``) and render it from the clip's .lrv
@@ -550,7 +543,8 @@ class PanoPreviews:
                 newest[prefix] = (ident[2], f.stem)
         keep |= {name for _, name in newest.values()}
         with self.lock:
-            busy = {j.name for j in (self.running, *self.queue) if j is not None and j.name}
+            jobs = (self.lane.running, *self.lane.queue)
+            busy = {j.name for j in jobs if j is not None and j.name}
             keep |= {d["name"] for k, d in self.done.items() if k[0] == project}
         cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
         drop = []
@@ -578,9 +572,8 @@ class PanoPreviews:
     def shutdown(self) -> None:
         with self.lock:
             self.closing = True
-            jobs = [j for j in (self.running, *self.queue) if j is not None]
-            self.queue.clear()
-            self.wake.notify_all()
+            jobs = [j for j in (self.lane.running, *self.lane.queue) if j is not None]
+            self.lane.close()
         for job in jobs:
             job.cancelled = True
             job.scope.kill()

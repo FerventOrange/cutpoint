@@ -410,7 +410,8 @@ def delete_blocker(app: FastAPI, pid: str, p: Path) -> str | None:
     if p in RERANKING:
         return "A ranking is being applied to this project; wait a moment"
     with previews.lock:
-        if any(v is not None and v.project == p for v in (previews.running, *previews.queue)):
+        lane = previews.lane
+        if any(v is not None and v.project == p for v in (lane.running, *lane.queue)):
             return "A 360 preview is rendering for this project; wait for it to finish"
     if media.encoding_for(p) or any(t.status == "running" for t in turns.of(str(p))):
         return "The project is still preparing videos or answering in AI Chat; wait a moment"
