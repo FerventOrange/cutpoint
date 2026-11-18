@@ -130,6 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `cutpoint ui` frees the memory of the CLIP text model the AI Chat's visual search loads (the text half of CLIP ViT-L/14, on the CPU) after 10 minutes without a search; the next search loads it again, which takes about 1-2 s (#1085).
 - The AI Chat rules search "casual riding" is now "steady action", and the visual-candidates paragraph of `docs/commands.md` says "steady motion" (#1085, A303 follow-up). The search itself (high speed, carve or fast_open, without airtime or crash) is unchanged.
 - AI Chat pacing no longer uses sport words (#1085, A303): which clips are action comes from a moment's `kind` (`crew` and `cruise` of the visual pool, `airtime`, `speed` and `carve` of action-cam picks, a crash) and cues, not from words such as "ski", "ride" or "mtb" in its label, also in the Moments grid's kind; a mix request reads "between the action clips", "in between the action" or "between the <any word> runs" (a bare "between the action" is none); and the summary says "Spread ... clips between the action clips" and "replacing N action clips" instead of "riding runs" and "riding clips". A moment with such a label, speech over it and no action cue or kind is now dialogue.
 - `events --sheets` is kept and marked as a debugging aid (contact sheets to check the visual layer by eye) in its help and the docs (#1085).

@@ -1566,11 +1566,14 @@ class SubscriptionProvider(OpenAIProvider):
 
     @property
     def has_key(self) -> bool:
-        st = cliproxy.status(self.name)
+        st = cliproxy.cached_status(self.name)
         return bool(st.get("logged_in"))
 
     def _need_key(self) -> None:
-        st = cliproxy.status(self.name)
+        st = cliproxy.cached_status(self.name)
+        if not st.get("logged_in"):
+            # a cached logout may predate a login in another process: ask once more first
+            st = cliproxy.status(self.name)
         if not st.get("logged_in"):
             err = st.get("error") or f"{self.title}: run cutpoint login {self.name} first"
             raise ProviderError(err)

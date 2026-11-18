@@ -29,10 +29,10 @@ from typing import Any
 
 import requests
 
-from cutpoint import folders, paths
+from cutpoint import folders, paths, state
 from cutpoint.assistant import keys, proxy_tls
 from cutpoint.assistant.keys import KeyringError
-from cutpoint.assistant.private_files import private_directory, private_file
+from cutpoint.assistant.private_files import Checked, private_directory, private_file
 from cutpoint.assistant.proxy_credentials import checkpoint
 from cutpoint.errors import FolderBusyError
 
@@ -56,6 +56,15 @@ DEFAULT_PORT = 18317
 # what a request says while no Cutpoint proxy runs (``cutpoint ui`` starts one when needed)
 NOT_RUNNING = "cutpoint proxy not running; run 'cutpoint proxy' to authenticate"
 PINNED_VERSION = "8.0.47"
+# How long a subscription's login status (:func:`cached_status`) is reused: a model list and a
+# chat turn ask for it several times, each a management request to the proxy (up to 3 s). A
+# login, logout or proxy start or stop in this process forgets it at once, and every
+# :func:`statuses` call (the logins list of ``cutpoint ui``) asks the proxy again and refreshes
+# it, so only a change made outside this process (a ``cutpoint login`` or ``logout`` in a
+# terminal, a token the proxy finds expired) can show up to this late: 30 s is under the time
+# it takes to switch to the page and send a message, and a stale "logged in" only makes the
+# next request report the proxy's own error.
+STATUS_TTL_S = 30.0
 
 PLATFORM_ASSETS: dict[tuple[str, str], tuple[str, str]] = {
     ("linux", "x86_64"): (
@@ -183,8 +192,8 @@ def port() -> int:
         return _validate_port(env_port)
     kp = keys_path()
     if kp.exists() or kp.is_symlink():
-        private_directory(kp.parent)
-        private_file(kp)
+        _checked_private(kp.parent, directory=True)
+        _checked_private(kp)
         try:
             with kp.open(encoding="utf-8") as f:
                 data = json.load(f)
@@ -226,6 +235,18 @@ def redact(text: str) -> str:
     return text
 
 
+# Private files and folders this process checked for a read (#1085 A758), see _checked_private
+_CHECKED = state.register_container(__name__, "_CHECKED", Checked())
+
+
+def _checked_private(path: Path, *, directory: bool = False) -> None:
+    """:func:`private_directory` (``directory``) or :func:`private_file` of ``path`` before a
+    read: once per process while ``path`` stays the object that was checked; replaced,
+    rewritten or (on POSIX) chmod-ed since, it is checked again (:class:`Checked`). Writes
+    (:func:`_write_private_file`) always check."""
+    _CHECKED.check(path, private_directory if directory else private_file, directory=directory)
+
+
 def _write_private_file(path: Path, content: str) -> None:
     private_directory(path.parent)
     if path.exists() or path.is_symlink():
@@ -251,8 +272,8 @@ def _read_keys_file() -> tuple[str, str, int] | None:
     kp = keys_path()
     if not kp.exists() and not kp.is_symlink():
         return None
-    private_directory(kp.parent)
-    private_file(kp)
+    _checked_private(kp.parent, directory=True)
+    _checked_private(kp)
     try:
         with kp.open(encoding="utf-8") as f:
             data = json.load(f)
@@ -294,7 +315,7 @@ def _load_keys() -> tuple[str, str]:
 def _session() -> requests.Session:
     cert_path = cliproxy_dir() / "proxy-cert.pem"
     try:
-        private_file(cert_path)
+        _checked_private(cert_path)
     except OSError as err:
         raise ProxyError("local proxy TLS identity is unavailable; restart the proxy") from err
     s = requests.Session()
@@ -442,8 +463,32 @@ def _ensure_credential_prefixes() -> None:
             )
 
 
+# The last statuses() answer of a running proxy, per proxy folder: (when, statuses); see
+# cached_status. _status_gen counts forget_statuses calls, so an answer asked for before one is
+# not kept after it.
+_STATUSES: dict[str, tuple[float, list[dict[str, Any]]]] = state.register_container(
+    __name__, "_STATUSES", {}
+)
+_STATUS_LOCK = threading.Lock()
+_status_gen = 0
+_clock = time.monotonic  # tests pass a fake clock
+
+
+def forget_statuses() -> None:
+    """Drop the statuses :func:`cached_status` reuses: a login, logout or proxy start or stop
+    changed them."""
+    global _status_gen
+    with _STATUS_LOCK:
+        _status_gen += 1
+        _STATUSES.clear()
+
+
 def statuses() -> list[dict[str, Any]]:
-    """Return status dictionaries for all supported subscription providers in one call."""
+    """Return status dictionaries for all supported subscription providers in one call.
+
+    Always asks the proxy; an answer it gives is kept for :func:`cached_status`."""
+    with _STATUS_LOCK:
+        gen = _status_gen
     try:
         _load_keys()
         data = _management_request("GET", "/v8/management/credentials", timeout=3.0)
@@ -550,7 +595,23 @@ def statuses() -> list[dict[str, Any]]:
                 "error": error_msg,
             }
         )
+    with _STATUS_LOCK:
+        if gen == _status_gen:  # no login, logout, start or stop since it was asked
+            _STATUSES[str(cliproxy_dir())] = (_clock(), [dict(s) for s in out])
     return out
+
+
+def cached_status(provider: str) -> dict[str, Any]:
+    """:func:`status`, reusing the proxy's last answer for up to :data:`STATUS_TTL_S` while a
+    Cutpoint proxy runs. Only an answer of the proxy is reused: an error (no proxy, a
+    rejected request) is asked again each time."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
+    with _STATUS_LOCK:
+        held = _STATUSES.get(str(cliproxy_dir()))
+    if held is not None and _clock() - held[0] < STATUS_TTL_S and _is_daemon_owned():
+        return dict(next(s for s in held[1] if s.get("provider") == provider))
+    return status(provider)
 
 
 def status(provider: str) -> dict[str, Any]:
@@ -592,17 +653,21 @@ def poll_login(state: str) -> dict[str, Any]:
     if status_str == "wait":
         return {"state": "pending", "error": None}
     elif status_str == "ok":
+        forget_statuses()  # the proxy has the new login
         try:
-            _ensure_credential_prefixes()
-        except ProxyError as err:
-            return {
-                "state": "error",
-                "error": redact(f"failed to configure credential prefix: {err}"),
-            }
-        try:
-            checkpoint(cliproxy_dir())
-        except (KeyringError, OSError, ValueError) as err:
-            raise _credential_store_error(err) from None
+            try:
+                _ensure_credential_prefixes()
+            except ProxyError as err:
+                return {
+                    "state": "error",
+                    "error": redact(f"failed to configure credential prefix: {err}"),
+                }
+            try:
+                checkpoint(cliproxy_dir())
+            except (KeyringError, OSError, ValueError) as err:
+                raise _credential_store_error(err) from None
+        finally:
+            forget_statuses()  # and its prefix: an answer asked meanwhile is not kept
         return {"state": "done", "error": None}
     elif status_str == "error":
         err_msg = _error_message(resp.get("error")) or "login failed"
@@ -667,20 +732,23 @@ def logout(provider: str) -> None:
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}; must be one of {PROVIDERS}")
     cli_p = CLI_PROVIDERS[provider]
-    data = _management_request("GET", "/v8/management/credentials")
-    files = data.get("files") or []
-    for f in files:
-        if not isinstance(f, dict):
-            continue
-        p = f.get("provider") or f.get("type")
-        if p == cli_p:
-            filename = f.get("name") or f.get("id")
-            if filename:
-                _management_request(
-                    "DELETE",
-                    "/v8/management/credentials",
-                    params={"name": filename},
-                )
+    try:
+        data = _management_request("GET", "/v8/management/credentials")
+        files = data.get("files") or []
+        for f in files:
+            if not isinstance(f, dict):
+                continue
+            p = f.get("provider") or f.get("type")
+            if p == cli_p:
+                filename = f.get("name") or f.get("id")
+                if filename:
+                    _management_request(
+                        "DELETE",
+                        "/v8/management/credentials",
+                        params={"name": filename},
+                    )
+    finally:
+        forget_statuses()  # also after a partial logout
     try:
         checkpoint(cliproxy_dir())
     except (KeyringError, OSError, ValueError) as err:
@@ -1173,6 +1241,7 @@ class ProxyProcess:
                 raise ProxyError("proxy supervisor failed during cleanup")
         finally:
             self._lock.close()
+            forget_statuses()
 
 
 def start(port: int | None = None, *, cancel: threading.Event | None = None) -> ProxyProcess:
@@ -1208,7 +1277,9 @@ def start(port: int | None = None, *, cancel: threading.Event | None = None) -> 
             logger.warning("proxy supervisor cleanup failed: %s", err)
         finally:
             lock.close()
+            forget_statuses()
         raise
+    forget_statuses()  # a new proxy, with new keys
     return ProxyProcess(proc, lock)
 
 

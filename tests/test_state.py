@@ -91,7 +91,15 @@ def _fill_torch_home(tmp: Path, mp: pytest.MonkeyPatch) -> None:
 # conftest stubs config._drive_remote per test; keep the real cached function to fill.
 _REAL_DRIVE_REMOTE = config._drive_remote
 
+
+def _fill_checked(tmp: Path, mp: pytest.MonkeyPatch) -> None:
+    f = tmp / "private.json"
+    f.write_text("{}", encoding="utf-8")
+    importlib.import_module("cutpoint.assistant.cliproxy")._checked_private(f)
+
+
 # How to put one item into each registered lru/functools cache.
+
 CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.config.get_config": lambda t, m: config.get_config(),
     "cutpoint.config._prefix_forms": lambda t, m: config._prefix_forms(str(t)),
@@ -120,6 +128,10 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.pano.candidates.code_id": lambda t, m: importlib.import_module(
         "cutpoint.pano.candidates"
     ).code_id(),
+    "cutpoint.assistant.cliproxy._CHECKED": _fill_checked,
+    "cutpoint.assistant.context._transcript_rows": lambda t, m: importlib.import_module(
+        "cutpoint.assistant.context"
+    )._transcript_rows("# a.mp4"),
 }
 
 

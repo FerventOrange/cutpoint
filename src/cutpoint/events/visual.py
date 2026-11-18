@@ -40,6 +40,7 @@ import io
 import logging
 import re
 import sys
+import threading
 import time
 import zipfile
 from collections.abc import Callable, Iterator, Sequence
@@ -875,31 +876,52 @@ def _prompt_file(prompts: tuple[str, ...]) -> Path:
     return paths.clip_dir() / f"text-{digest}.npy"
 
 
-# CPU CLIP model (text use) and tokenizer by (arch, weights): kept by ``reset_state()``.
+# CPU CLIP model (text use) and tokenizer by (arch, weights): kept by ``reset_state()``, dropped
+# after TEXT_IDLE_S without a use (the AI Chat's visual search loads it in the ``cutpoint ui``
+# server, #1085 A763; the next use loads it again, about 1-2 s).
 _TEXT_MODEL: dict[tuple[str, str], tuple[Any, Any]] = state.register_container(
     __name__, "_TEXT_MODEL", {}, model=True
 )
+TEXT_IDLE_S = 600.0
+_TEXT_LOCK = threading.Lock()  # held while the model loads, encodes or is dropped
+_text_used = 0.0  # _clock() of the last use
+_text_timer: Any = None  # the pending idle check (a threading.Timer), if any
+_clock = time.monotonic  # tests pass a fake clock
 
 
-def text_embeddings(
-    prompts: tuple[str, ...], models: VisualModels | None = None, *, save: bool = True
-) -> np.ndarray:
-    """Text embeddings for ``prompts`` (cached in ``models/clip/text-<hash>.npy``; ``save``
-    False neither reads nor writes that file, for free-text queries).
+def _start_timer(delay: float, fn: Callable[[], None]) -> Any:
+    """A started daemon ``threading.Timer`` (tests replace it)."""
+    timer = threading.Timer(delay, fn)
+    timer.daemon = True
+    timer.start()
+    return timer
 
-    On a cache miss the CLIP text tower is loaded (on the CPU unless ``models``
-    is given), which takes a few seconds once per process; from local files only
-    (:func:`load_clip`, :class:`ClipWeightsMissing` without them).
-    """
-    path = _prompt_file(prompts)
-    if save and path.exists():
-        try:
-            return np.load(path, allow_pickle=False)
-        except cache.NPZ_ERRORS as err:
-            logger.debug("%s: text embeddings unreadable (%s); recomputed", path, err)
-    if models is not None:
-        e = models.encode_text(prompts)
-    else:
+
+def _text_idle_check() -> None:
+    """Drop the CPU text model once it went unused for :data:`TEXT_IDLE_S`, else check again
+    when it would have. Never while it encodes (it holds ``_TEXT_LOCK``)."""
+    global _text_timer
+    dropped = False
+    with _TEXT_LOCK:
+        _text_timer = None
+        if not _TEXT_MODEL:
+            return
+        idle = _clock() - _text_used
+        if idle >= TEXT_IDLE_S:
+            _TEXT_MODEL.clear()
+            dropped = True
+        else:
+            _text_timer = _start_timer(TEXT_IDLE_S - idle, _text_idle_check)
+    if dropped:
+        free_torch()
+        logger.debug("CLIP text model unloaded after %.0f s idle", TEXT_IDLE_S)
+
+
+def _encode_text_cpu(prompts: tuple[str, ...]) -> np.ndarray:
+    """The normalised text embeddings of ``prompts`` from the CPU text model, loaded when it
+    is not (:func:`load_clip`); each use restarts its idle time."""
+    global _text_used, _text_timer
+    with _TEXT_LOCK:
         key = (CLIP_ARCH, CLIP_PRETRAINED)
         loaded = _TEXT_MODEL.get(key)
         if loaded is None:
@@ -911,9 +933,34 @@ def text_embeddings(
         model, tokenizer = loaded
         import torch  # noqa: PLC0415
 
-        with torch.inference_mode():
-            e = model.encode_text(tokenizer(list(prompts))).float()
-            e = (e / e.norm(dim=-1, keepdim=True)).numpy()
+        try:
+            with torch.inference_mode():
+                e = model.encode_text(tokenizer(list(prompts))).float()
+                return (e / e.norm(dim=-1, keepdim=True)).numpy()
+        finally:
+            _text_used = _clock()
+            if _text_timer is None:
+                _text_timer = _start_timer(TEXT_IDLE_S, _text_idle_check)
+
+
+def text_embeddings(
+    prompts: tuple[str, ...], models: VisualModels | None = None, *, save: bool = True
+) -> np.ndarray:
+    """Text embeddings for ``prompts`` (cached in ``models/clip/text-<hash>.npy``; ``save``
+    False neither reads nor writes that file, for free-text queries).
+
+    On a cache miss the CLIP text tower is loaded (on the CPU unless ``models``
+    is given), which takes a few seconds; from local files only
+    (:func:`load_clip`, :class:`ClipWeightsMissing` without them). The CPU one is dropped
+    after :data:`TEXT_IDLE_S` without a use and loaded again by the next.
+    """
+    path = _prompt_file(prompts)
+    if save and path.exists():
+        try:
+            return np.load(path, allow_pickle=False)
+        except cache.NPZ_ERRORS as err:
+            logger.debug("%s: text embeddings unreadable (%s); recomputed", path, err)
+    e = models.encode_text(prompts) if models is not None else _encode_text_cpu(prompts)
     if save:
         buf = io.BytesIO()  # a file object: numpy adds no suffix
         np.save(buf, e.astype(np.float32))

@@ -67,9 +67,18 @@ def load_events(project: Path) -> dict[str, list[dict[str, Any]]] | None:
     data = cache.load_json(project / "events.json")
     if not data:
         return None
-    types = eventtypes.resolve(project, data)
+    return group_events(data, eventtypes.resolve(project, data))
+
+
+def group_events(
+    data: dict[str, Any], types: dict[str, tuple[eventtypes.EventType, ...]]
+) -> dict[str, list[dict[str, Any]]]:
+    """:func:`load_events` of the events.json object ``data`` with its event types per source
+    (:func:`cutpoint.events.eventtypes.resolve`): it depends on nothing else. ``data`` is left
+    as it is (the events returned are copies)."""
     out: dict[str, list[dict[str, Any]]] = {}
     for e in data.get("events", []):
+        e = dict(e)
         t = eventtypes.first_match(types.get(e["source"], eventtypes.DEFAULT_EVENT_TYPES), e)
         if t and t.payoff is not None:
             e["_payoff"] = t.payoff

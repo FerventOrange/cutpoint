@@ -68,5 +68,7 @@ See [360 director](workflows/360-director.md) for the 360 design.
 - Long GPU work runs in layers so only one model is loaded at a time.
 - The browser workspace shares the pipeline's result files. It stores review choices and export
   history under `<project>/ui/`, and runs one heavy CLI job at a time rather than keeping models
-  inside the HTTP server. Each UI export gets a fresh destination.
+  inside the HTTP server: no models stay loaded while idle (the AI Chat's visual search loads the
+  CLIP text model there and drops it after 10 minutes without a search). Each UI export gets a
+  fresh destination.
 - Tests are CPU-only and do not need models or footage. See [CONTRIBUTING.md](../CONTRIBUTING.md).
