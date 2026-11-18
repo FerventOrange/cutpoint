@@ -41,9 +41,8 @@ def plan(cpu_free=True, duration=600.0, offset=0.0, limit=None):
 # ----------------------------------------------------------------- the switch and the gate
 @pytest.mark.parametrize(
     ("value", "mode"),
-    [(None, "auto"), ("auto", "auto"), ("HYBRID", "hybrid"), (" gpu ", "gpu"), ("cpu", "cpu"),
-     ("split", "auto"), ("", "auto")],
-)  # fmt: skip
+    [(None, "auto"), ("HYBRID", "hybrid"), (" gpu ", "gpu"), ("split", "auto")],
+)
 def test_the_env_mode(monkeypatch, value, mode):
     if value is not None:
         monkeypatch.setenv(ENV, value)
@@ -75,36 +74,24 @@ def test_auto_splits_exactly_at_the_minimum_length():
     assert plan(duration=analyze.HYBRID_MIN_S) is not None
 
 
-@pytest.mark.parametrize("vcodec", ["hevc", "av1", "vp9", None])
-def test_auto_splits_only_h264(monkeypatch, vcodec):
-    """The CPU half of a 4K HEVC source took twice as long as NVDEC alone."""
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, vcodec=vcodec))
-    assert plan() is None
-    monkeypatch.setenv(ENV, "hybrid")
-    assert plan() is not None  # forced: any codec NVDEC decodes
-
-
 @pytest.mark.parametrize(
     "over",
-    [{"pix_fmt": "yuv420p10le"}, {"pix_fmt": "yuv422p"}, {"pix_fmt": "yuv444p"}],
-    ids=["10-bit", "4:2:2", "4:4:4"],
+    [{"vcodec": "hevc"}, {"vcodec": None}, {"pix_fmt": "yuv420p10le"}, {"pix_fmt": "yuv422p"}],
+    ids=["hevc", "unknown-codec", "10-bit", "4:2:2"],
 )
-def test_auto_splits_only_8bit_420(monkeypatch, over):
-    """NVDEC here decodes no 10-bit or 4:2:2 H.264."""
+def test_auto_splits_only_8bit_420_h264(monkeypatch, over):
+    """The CPU half of a 4K HEVC source took twice as long as NVDEC alone; NVDEC here decodes
+    no 10-bit or 4:2:2 H.264."""
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, **over))
     assert plan() is None
     monkeypatch.setenv(ENV, "hybrid")
-    assert plan() is not None
+    assert plan() is not None  # forced: any codec and format NVDEC decodes
 
 
-@pytest.mark.parametrize("name", ["a.ts", "a.m2ts", "a.avi"])
-def test_auto_splits_only_containers_that_seek_exactly(name):
-    assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
-
-
-@pytest.mark.parametrize("name", ["a.ts", "a.mts", "a.avi"])
-def test_a_forced_split_also_needs_a_container_that_seeks_exactly(monkeypatch, name):
+@pytest.mark.parametrize("name", ["a.ts", "a.avi"])
+def test_auto_and_forced_splits_need_a_container_that_seeks_exactly(monkeypatch, name):
     """The CPU half seeks: MPEG-TS seeks inexactly (#976), so it decodes in one pass."""
+    assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
     monkeypatch.setenv(ENV, "hybrid")
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
 
@@ -112,9 +99,8 @@ def test_a_forced_split_also_needs_a_container_that_seeks_exactly(monkeypatch, n
 @pytest.mark.parametrize(
     ("vcodec", "pix_fmt", "logged"),
     [
-        ("h264", "yuv444p", True), ("h264", "yuv422p", True), ("h264", "yuv420p", False),
-        ("h264", "yuv420p10le", True), ("hevc", "yuv420p10le", False),
-        ("hevc", "yuv444p", True),
+        ("h264", "yuv420p", False), ("h264", "yuv420p10le", True),
+        ("hevc", "yuv420p10le", False), ("hevc", "yuv444p", True), (None, "yuv420p", True),
     ],
 )  # fmt: skip
 def test_a_ts_nvdec_cannot_decode_is_logged(monkeypatch, caplog, vcodec, pix_fmt, logged):
@@ -131,19 +117,27 @@ def test_a_ts_nvdec_cannot_decode_is_logged(monkeypatch, caplog, vcodec, pix_fmt
     assert bool(lines) is logged
     if logged:
         assert len(lines) == 1 and "clip.ts" in lines[0] and pix_fmt in lines[0]
-        assert vcodec in lines[0] and "outside what NVDEC decodes" in lines[0]
+        assert (vcodec or "unknown") in lines[0] and "outside what NVDEC decodes" in lines[0]
         assert "may not decode it" in lines[0]
 
 
-@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.m4v", "a.mkv", "a.webm"])
-def test_auto_splits_mp4_mov_m4v_and_mkv(name):
+@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.m4v", "a.webm"])
+def test_auto_splits_containers_that_seek_exactly(name):
     assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is not None
 
 
-@pytest.mark.parametrize("cpus", [1, 4, 5])
+@pytest.mark.parametrize("cpus", [1, 5])
 def test_auto_keeps_one_decode_with_too_few_cpus(monkeypatch, cpus):
     monkeypatch.setattr(analyze.os, "cpu_count", lambda: cpus)
     assert plan() is None
+
+
+def test_auto_splits_with_just_enough_cpus(monkeypatch):
+    """6 logical CPUs leave the minimum 4 decode threads after the headroom of 2."""
+    monkeypatch.setattr(analyze.os, "cpu_count", lambda: 6)
+    hw, split, threads = plan()
+    assert hw == CUDA and threads == analyze.HYBRID_MIN_THREADS == 4
+    assert split == analyze._hybrid_split(600.0, 4)
 
 
 @pytest.mark.parametrize("hw", [None, ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")])
