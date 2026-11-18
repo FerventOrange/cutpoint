@@ -46,52 +46,6 @@ def sent(fake: FakeProvider, text: str = session.PROMISE_NUDGE) -> int:
     return sum(1 for r in fake.requests if r["messages"][-1] == {"role": "user", "content": text})
 
 
-# -- the detector ----------------------------------------------------------------------------
-
-
-# One row per branch of ``session._promises``: each lookup verb form, a gerund, a moment asked
-# for, a trailing colon; and each way a reply that looks like one answers, offers or asks instead.
-@pytest.mark.parametrize(
-    ("text", "promise"),
-    [
-        ("Searching now.", True),
-        ("Checking the transcript...", True),
-        ("Looking for the rest…", True),
-        ("Let's search for each one.", True),
-        ("I need to search for each.", True),
-        ("Let me do that.", True),
-        ("Okay, I'm going to check the transcript", True),
-        ("I'm gonna look at the jump again", True),
-        ("I'll look for the other words next.", True),
-        ("Done with the first. I\N{RIGHT SINGLE QUOTATION MARK}ll search for the rest.", True),
-        ("Let me check the moment at 12:30.", True),
-        ("Let me check if she says it.", True),
-        ("Let me check for the other terms: grifter, loser, and curse words.", True),
-        ("Here are the hits:", True),
-        ("Give me a moment.", True),
-        ("Just a sec.", True),
-        ("One moment.", True),
-        # an answer, an offer, a question or another verb is none
-        ("Looking at the transcript, she never says 'grifter'.", False),
-        ("A moment later, she laughs.", False),
-        ("Let's look at it another way: the jump is the best part.", False),
-        ("Let me check: nothing there.", False),
-        ("Let me check: no hits.", False),
-        ("I'll try to keep it under 60 s next time.", False),
-        ("I'll find a better transition if the fade feels off.", False),
-        ("I'll check later.", False),
-        ("Let me know if you want more.", False),
-        ("Should I search for more?", False),
-        ("Let's call it a draw.", False),
-        ("I'll get back to you", False),
-    ],
-)
-def test_a_reply_is_a_promise_only_when_it_ends_on_a_lookup_still_to_make(
-    text: str, promise: bool
-) -> None:
-    assert session._promises(text) is promise
-
-
 # -- the nudge, natively and in JSON mode ----------------------------------------------------
 
 

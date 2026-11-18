@@ -12,14 +12,10 @@ from typing import Any
 
 import pytest
 
-from assistant_helpers import A, FakeProvider, call
+from assistant_helpers import TURN, A, FakeProvider, call
 from cutpoint.assistant import ops, pacing, session
 
 FAST, LAUGH, VIEW = "fast", "laugh", "stunning-mountain-views"
-TURN = (
-    "Create a ~4 minute sequence of beautiful shots, good skiing of me and my friends and an "
-    "occasional funny moment and dialogue to break up some of the skiing shots."
-)
 
 
 def durations() -> ops.Durations:
@@ -106,51 +102,7 @@ def longest_run(kinds: list[str], kind: str = pacing.ACTION) -> int:
     return best
 
 
-# -- the wording --------------------------------------------------------------------------------
-
-
-# One row per branch of ``pacing.asks_for_mix``: each mix wording, "between the <any word> runs"
-# and "between the action clips" (no activity is named, #1085 A303), a negation or transition before it, and each wording that only looks like a mix.
-@pytest.mark.parametrize(
-    ("text", "wanted"),
-    [
-        (TURN, True),
-        ("a good mix of skiing and views", True),
-        ("not too long, mix in some views", True),
-        ("No music. Break up the skiing with laughs", True),
-        ("don't cut it short; break up the skiing", True),
-        ("sprinkle in a few funny clips", True),
-        ("add a funny moment now and then", True),
-        ("show a funny moment from time to time", True),
-        ("alternate skiing and scenery", True),
-        ("vary the pace please", True),
-        ("an occasional joke", True),
-        ("between the mtb runs add a funny moment", True),
-        ("add dialogue between the snowboard runs", True),
-        ("put a funny moment between the action clips", True),
-        ("some laughs in between the action", True),
-        ("trim the dead time between the action", False),  # a bare "between the action"
-        # an audio mix, a negated request, a transition or another word is none
-        ("mix the audio", False),
-        ("mix in some music", False),
-        ("mix in the background audio", False),
-        ("don't break up the skiing", False),
-        ("keep the skiing together, no alternating", False),
-        ("without breaking up the runs", False),
-        ("never intersperse dialogue", False),
-        ("add a fade in between the clips", False),
-        ("add a crossfade between the runs", False),
-        ("put a transition between each run", False),
-        ("use an alternate take of clip 3", False),
-        ("an alternative cut", False),
-        ("the occasional stutter in clip 4", False),
-        ("break up the long clip into two", False),
-        ("between the trailer and the intro", False),
-        ("between the surface shots", False),
-    ],
-)
-def test_a_mix_request_is_found_and_look_alike_wording_is_not(text: str, wanted: bool) -> None:
-    assert pacing.asks_for_mix(text) is wanted
+# -- activity words name no action --------------------------------------------------------------
 
 
 @pytest.mark.parametrize("label", ["mtb-trail", "surfing", "ski-run", "riding"])
@@ -168,32 +120,6 @@ def test_python_and_web_name_no_action_words() -> None:
     js = (Path(pacing.__file__).parents[1] / "web" / "util.js").read_text(encoding="utf-8")
     assert "ACTION_WORDS" not in js
     assert not hasattr(pacing, "_ACTION_WORDS")
-
-
-# One row per branch of ``pacing.names_dialogue``: each dialogue word, a negation before it, and
-# "talk" or "chat" that is not a kind of moment.
-@pytest.mark.parametrize(
-    ("text", "named"),
-    [
-        (TURN, True),
-        ("some banter", True),
-        ("add talking moments", True),
-        ("some talk between the runs", True),
-        ("not too long, with dialogue to break up the runs", True),
-        ("the commentary", True),
-        ("a conversation", True),
-        ("chat clips", True),
-        ("no music. add some dialogue", True),
-        ("a funny moment", False),
-        ("no dialogue, break up the skiing", False),
-        ("never add banter", False),
-        ("without any commentary", False),
-        ("the talker is wrong", False),
-        ("let's talk about the order", False),
-    ],
-)
-def test_dialogue_is_named_by_its_words(text: str, named: bool) -> None:
-    assert pacing.names_dialogue(text) is named
 
 
 # -- the kind of a row --------------------------------------------------------------------------

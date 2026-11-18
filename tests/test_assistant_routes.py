@@ -1272,7 +1272,7 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
     assert ring.saved == {}
 
 
-# One row per branch of the edit-request check (``session._edits``, ``session._asks_advice``):
+# One row per branch of the edit-request check (``intent.edits``, ``intent.asks_advice``):
 # each leading edit phrase and where it may stand, a request phrased as a question, and the help
 # questions and statements with the same words that ask for no edit (#863, #864, #881 review).
 @pytest.mark.parametrize(

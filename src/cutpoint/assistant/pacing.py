@@ -1,10 +1,10 @@
 """Spread the kinds of a proposal when the user asks for a mix, in code.
 
 A model piles up the clips of one kind: sixteen action clips in a row, the funny ones at the end.
-When the message asks to break up, mix in or intersperse kinds (:func:`asks_for_mix`), :func:`pace`
-reorders the final proposal with ``move`` ops marked ``"auto": true`` so the funny, dialogue and
-scenic clips ("breakers") sit between the action clips, and adds dialogue moments when the message
-names dialogue and the sequence has none. Without such wording nothing here runs: pacing is left
+When the message asks to break up, mix in or intersperse kinds (:func:`intent.asks_for_mix`),
+:func:`pace` reorders the final proposal with ``move`` ops marked ``"auto": true`` so the funny,
+dialogue and scenic clips ("breakers") sit between the action clips, and adds dialogue moments
+when the message names dialogue and the sequence has none. Without such wording nothing here runs: pacing is left
 to the model.
 
 Every try is measured with ``evaluate`` (the session's own check of ops: the same apply path as
@@ -29,75 +29,6 @@ MAX_DIALOGUE = 3  # dialogue moments added to a sequence that has none
 SPOKEN_WORDS = 4  # words over a moment that make it dialogue
 CUE_STRONG = 5  # a cue this strong (0-10) names the kind of a moment no label word names
 TRIES = 5  # rows tried as the one a dialogue moment replaces
-
-_NOT_AUDIO = (
-    r"(?!\s+(?:(?:some|the|a|my|any|more|less|background|extra) )*"
-    r"(?:music|audio|sound|songs?|tracks?|volume|voice|voiceover|sfx|levels?))"
-)
-# "between the runs", "between the <any word> runs", "between the action clips" and "in between
-# the action": no activity is named, so a request reads the same for any footage (#1085, A303).
-# A bare "between the action" is no mix ("trim the dead time between the action").
-_BETWEEN = r"action (?:runs?|shots?|clips?)|(?:\w+ )?runs?"
-_MIX = re.compile(
-    r"(?<![\w-])(?:"
-    r"break(?:s|ing)? (?:it )?up(?!(?:\W+\w+){0,4}?\W+into\b)|break(?:s|ing)? the (?:monotony|runs?)"
-    rf"|mix(?:ed|es|ing)? (?:in|of|with){_NOT_AUDIO}|mixture of"
-    r"|inters(?:perse|persed|perses|persing)|sprinkl(?:e|es|ed|ing)|scatter(?:s|ed|ing)?"
-    r"|occasional(?:ly)?(?! (?:stutter|glitch|flicker|jitter|artifact|noise|blur|drop))"
-    r"|now and (?:then|again)|from time to time"
-    rf"|in[- ]between (?:the |some |all |each )?(?:{_BETWEEN}|action)"
-    rf"|between (?:the |each |every |some )?(?:{_BETWEEN})"
-    r"|alternat(?:e|es|ed)(?! (?:take|version|cut|clip|shot|angle|ending|option))|alternating"
-    r"|interleav(?:e|es|ed|ing)|vary(?:ing)? (?:up )?the pac(?:e|ing)"
-    r"|change of pace|pepper(?:s|ed|ing)?|punctuat(?:e|es|ed|ing)"
-    r")(?![\w-])",
-    re.I,
-)
-_DIALOGUE = re.compile(
-    r"(?<![\w-])(?:dialogu?e|conversations?|banter|commentary"
-    r"|(?:talk|talking|chat|chatting) (?:clips?|moments?|scenes?|parts?|bits?|segments?|shots?)"
-    r"|(?:some|more|the|any) (?:talk|talking|chat)(?! about))"
-    r"(?![\w-])",
-    re.I,
-)
-# A request that is said not to be wanted: "don't break up", "no dialogue", "without alternating".
-_NEG = re.compile(
-    r"(?<![\w-])(?:don'?t|do\s+not|never|no|not|without|stop|avoid)(?![\w-])(?:\W+\w+){0,3}\W*$",
-    re.I,
-)
-# A transition is no mix: "a fade in between the clips", "a crossfade between the runs".
-_TRANSITION = re.compile(
-    r"(?<![\w-])(?:fade|crossfade|transition|dissolve|cut)s?(?![\w-])(?:\W+\w+){0,3}\W*$", re.I
-)
-
-
-_CLAUSE = re.compile(r"[,;:.!?]|(?<![\w-])(?:but|just|instead|rather|then)(?![\w-])", re.I)
-
-
-def _wanted(pattern: re.Pattern[str], text: str, *, transitions: bool = False) -> bool:
-    """Whether ``pattern`` matches ``text`` somewhere that the words before it do not negate
-    (or, with ``transitions``, turn into a fade or cut)."""
-    for m in pattern.finditer(text):
-        # only the clause the match is in: a "no" or "fade" before a comma or "but" is not about it
-        before = _CLAUSE.split(text[max(0, m.start() - 40) : m.start()])[-1]
-        if not _NEG.search(before) and not (transitions and _TRANSITION.search(before)):
-            return True
-    return False
-
-
-def asks_for_mix(text: str) -> bool:
-    """Whether the message asks to break up, mix in, intersperse or alternate kinds ("an
-    occasional funny moment to break up the action"). An audio mix ("mix the audio", "no music
-    mix"), a transition between clips, and a request that is negated ("don't break up the
-    action") are none."""
-    return _wanted(_MIX, text, transitions=True)
-
-
-def names_dialogue(text: str) -> bool:
-    """Whether the message asks for dialogue (dialogue, conversation, banter, commentary, talk or
-    chat moments), unless the words before it negate it ("no dialogue")."""
-    return _wanted(_DIALOGUE, text)
-
 
 _SCENIC_WORDS = frozenset(
     [

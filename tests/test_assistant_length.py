@@ -8,7 +8,6 @@ The model is the scripted ``FakeProvider`` of ``test_assistant``.
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -20,6 +19,7 @@ from fastapi.testclient import TestClient
 
 from assistant_helpers import (
     CANDS,
+    CLAIMS,
     SEQ,
     A,
     B,
@@ -32,7 +32,7 @@ from assistant_helpers import (
     run,
 )
 from cutpoint import cache
-from cutpoint.assistant import context, edges, lookfor, ops, providers, session, topup
+from cutpoint.assistant import context, edges, intent, lookfor, ops, providers, session, topup
 from cutpoint.clips import EXACT_KEYS
 from test_assistant_routes import proj as proj
 
@@ -65,81 +65,6 @@ def propose(summary: str, *ops_: dict[str, Any]) -> Any:
 
 def kinds(turn: session.Turn) -> list[str]:
     return [e["kind"] for e in turn.view()["events"]]
-
-
-# -- the target the user asked for ---------------------------------------------------------------
-
-
-# One row per branch of ``context.target_seconds``: each cue before or after a length, a clock
-# time, minutes with seconds, a count word, and each way a length is a clip's, a change or a place.
-@pytest.mark.parametrize(
-    ("text", "seconds"),
-    [
-        # a cue before the length
-        ("get it to 4 minutes", 240),
-        ("cut it to 90 s", 90),
-        ("aim for 2 minutes", 120),
-        ("target of 150 s", 150),
-        ("total of 240 s", 240),
-        ("~4 min of beauty shots", 240),
-        ("about two minutes of skiing", 120),
-        ("make it a minute and 4 s", 64),
-        ("about 2 minutes and 15 seconds", 135),
-        ("make it 4 min 30 s", 270),
-        ("the video should be 2.5 minutes", 150),
-        ("extend m3 to 60 s, make the video 4 minutes", 240),
-        ("clips around 2 minutes", 120),
-        ("make it about 4 minutes more or less", 240),
-        # a cue after the length
-        ("a 90 second reel", 90),
-        ("a 4 minute long montage", 240),
-        ("one minute overall", 60),
-        ("remove m3, about 2 min total", 120),
-        # a clock time
-        ("make it 1:30", 90),
-        ("keep it to 1:30", 90),
-        ("make the video 3:30", 210),
-        ("1:30 total", 90),
-        # a length per clip first, then the sequence's
-        ("tighten every clip and aim for a 2 minute montage", 120),
-        ("shorten every clip so the video is about 2 min", 120),
-        ("trim each clip, the whole thing under 2 minutes", 120),
-        ("tighten every clip, total around 3 min", 180),
-        ("cut each clip down and keep it under 90 seconds", 90),
-        ("every moment about 6 s, cut to 90 s", 90),
-        ("every clip around 5 s overall 2 min", 120),
-        ("shorten each clip. under 2 minutes", 120),
-        ("tighten each clip! around 3 min", 180),
-        ("tighten each clip; around 3 min", 180),
-        # a length per clip is none
-        ("each of the highlights about 5 s", None),
-        ("each edit about 4 s", None),
-        ("make each highlight about 5 seconds", None),
-        ("clip about 5 s", None),
-        ("per clip: about 1 min", None),
-        ("about 5 s each", None),
-        ("about 1 min per clip", None),
-        ("around 1 minute a clip", None),
-        ("I want 10s clips", None),
-        ("I want clips of about 5 seconds", None),
-        ("make the clips about 5 s long", None),
-        # nor is a change, a place, a moment's length or "as"
-        ("need 30 s more", None),
-        ("make it 5 min longer", None),
-        ("extend the jump by about 10 s", None),
-        ("extend m3 by 2 minutes", None),
-        ("m3, make it 8 seconds", None),
-        ("remove the clip at 3 minutes", None),
-        ("move the 2 minute clip", None),
-        ("what happens at 1:30?", None),
-        ("around 4:20", None),
-        ("make it as short as possible", None),
-    ],
-)
-def test_the_length_the_user_asks_for_is_read_from_the_message(
-    text: str, seconds: float | None
-) -> None:
-    assert context.target_seconds(text) == seconds
 
 
 # -- what the model sees: lengths as exported, room, the total, the target, the score scale -----
@@ -1055,64 +980,14 @@ def test_a_reply_that_announces_work_is_nudged_for_any_edit_request(msg: str) ->
     assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
 
 
-# One row per branch of ``context.claimed_seconds`` and ``Turn._length_gap``, for a proposal
-# exported at 34 s: each cue before or after a length, minutes with seconds, and each way a
-# length is a clip's, a change, a length asked for or hedged, or excused by the exported length.
+# One row per branch of ``Turn._length_gap`` for a proposal exported at 34 s, over the claims
+# of ``intent.claimed_seconds`` (``assistant_helpers.CLAIMS``).
 @pytest.mark.parametrize(
-    ("summary", "claimed", "flagged"),
-    [
-        # the sequence's length, a cue before it
-        ("Added the laugh; now 90 s.", 90.0, True),
-        ("Added the laugh for a total of 90 s.", 90.0, True),
-        ("Added the laugh; it now runs 1:30.", 90.0, True),
-        ("Added the laugh; your video is now 60 s.", 60.0, True),
-        ("It now runs 4 min 30 s.", 270.0, True),
-        ("It runs 34 s; 60 s in total is your target.", 34.0, False),
-        ("Lengthened m3 by 4 s; the montage now lasts about 34 seconds.", 34.0, False),
-        # ... a cue after it
-        ("Added the laugh, 90 s in all.", 90.0, True),
-        ("It is about a minute total.", 60.0, True),
-        ("Made it 4 min 30 s overall.", 270.0, True),
-        ("Made it 4 minutes and 30 seconds in total.", 270.0, True),
-        ("Now a minute and 4 s in all.", 64.0, True),
-        # a clip's length, a change in length or no cue: no claim
-        ("Each clip is now 5 s.", None, False),
-        ("m3 now runs 12 s.", None, False),
-        ("The jump now lasts 8 s.", None, False),
-        ("Extended the jump; it is now about 8 s.", None, False),
-        ("Added the laugh; the video is now 12 s longer.", None, False),
-        ("Added 3 clips (12 s in all).", None, False),
-        ("Added about 15 seconds of banter.", None, False),
-        ("Moved the laugh earlier, now at 0:12 in the video.", None, False),
-        ("Moved the laugh to the start, now as the opener.", None, False),
-        # the object of a change: no claim
-        ("Trimmed about 10 s overall from m3 and m5.", None, False),
-        ("Trimmed it by 20 s overall.", None, False),
-        ("Added three clips totalling about 15 s.", None, False),
-        ("Cut 20 s in total from the intro.", None, False),
-        ("Removed a total of 20 s of dead air.", None, False),
-        # a length asked for, negated or hypothetical: no claim
-        ("Added the laugh, short of 60 s total.", None, False),
-        ("Added the laugh, just shy of 60 s total.", None, False),
-        ("Added the laugh. 60 s in total needs more footage.", None, False),
-        ("Added the laugh. 60 s total would take more footage.", None, False),
-        ("Added the laugh, closer to 60 s overall.", None, False),
-        ("Added the laugh, toward 60 s overall.", None, False),
-        ("Added the laugh; still not at 60 s total.", None, False),
-        ("It is 34 s now, short of the 60 s total.", None, False),
-        ("Added the laugh; now 34 s of the 40 s asked.", 34.0, False),
-        ("Added the laugh; 60 s total, which was your goal, needs more footage.", None, False),
-        ("Added the laugh; 60 s total, as requested, needs more footage.", None, False),
-        # the exported length named anywhere excuses a claim, the length before a change not
-        ("Added the laugh, now the 34 s cut; 60 s total is too long for the footage.", 60.0, False),
-        ("Added the laugh, going from 0:34 to 1:00 overall.", 60.0, True),
-        ("Added the laugh, taking it from 34 s to 60 s total.", 60.0, True),
-    ],
+    ("summary", "claimed", "flagged"), CLAIMS, ids=[summary for summary, *_ in CLAIMS]
 )
-def test_a_length_claim_in_a_summary_is_read_and_checked_against_the_exported_length(
+def test_a_length_claim_in_a_summary_is_checked_against_the_exported_length(
     summary: str, claimed: float | None, flagged: bool
 ) -> None:
-    assert context.claimed_seconds(summary) == claimed
     gap = session.Turn._length_gap(summary, {"length": 34.0})
     assert (gap is not None) is flagged
     if flagged:
@@ -1176,7 +1051,7 @@ ASKED_AFTER = [
 
 def test_a_wrong_claim_is_still_flagged_when_no_length_named_fits() -> None:
     summary = "Added the laugh; now 90 s, after 24 s."
-    assert context.named_seconds(summary) == [90.0, 24.0]
+    assert intent.named_seconds(summary) == [90.0, 24.0]
     assert session.Turn._length_gap(summary, {"length": 34.0}) is not None
     assert session.Turn._length_gap(summary, {"length": 24.0}) is None  # 24 s is named
 
@@ -1482,7 +1357,7 @@ def test_the_nudge_and_the_fill_offer_read_a_question_the_same_way(
     msg: str, request_: bool
 ) -> None:
     # #866: one rule for both; a request gets the nudge and then the fill, advice gets neither
-    assert session._asks_advice(msg) is not request_
+    assert intent.asks_advice(msg) is not request_
     p = session.Project(list(KINDS), list(KSEQ), durations(), "", "key0")
     said = text_reply("It is 8 s now.")
     fake = FakeProvider([said, said])
@@ -1516,16 +1391,6 @@ def test_a_phrase_end_far_away_leaves_the_end_and_a_trim_never_passes_the_cap(
         seq, [{"op": "trim", "id": "c1", "end_delta": 2}], CANDS, durations(), snap=far
     )
     assert out.after[0]["end"] == 30.0  # first end 20 + MAX_GROW_S
-
-
-def test_a_long_message_with_many_lengths_is_parsed_fast() -> None:
-    text = "each clip about 5 s " * 1000 + "make it 2 min"
-    # this thread's CPU time: other processes on a loaded machine do not count, a scan per
-    # match over the whole message does
-    start = time.thread_time()
-    assert context.target_seconds(text) == 120
-    assert context.target_seconds("about 5 s, " * 2000) == 5
-    assert time.thread_time() - start < 2.0
 
 
 def test_a_length_below_the_sequence_may_remove_half_the_clips() -> None:
