@@ -23,6 +23,7 @@ from assistant_helpers import (
     XKEY,
     FakeRing,
     Wire,
+    _chunks,
     _Resp,
     an_reply,
     oa_call,
@@ -847,6 +848,27 @@ def test_the_models_probe_is_short_and_names_host_and_short_reason_only(monkeypa
         p.list_models()
     assert wire.sent[0]["timeout"] == (1, 3)
     assert str(got.value) == "Ollama is not reachable at box:11434 (connection refused)"
+
+
+def test_every_ollama_request_has_a_short_connect_timeout(monkeypatch) -> None:
+    """A298: an Ollama that does not answer is not reachable after CONNECT_TIMEOUT_S, not
+    after a whole read timeout; the read timeouts stay as they are."""
+    wire = Wire(
+        monkeypatch,
+        _Resp({"capabilities": ["tools"]}),
+        _Resp(lines=_chunks("Hello")),
+        _Resp({}),
+    )
+    p = OllamaProvider("http://10.0.0.2:11434", "m", 0)
+    p.capabilities()
+    p.chat(HI)
+    assert p.unload()
+    connect = providers.CONNECT_TIMEOUT_S
+    assert [(s["url"].rsplit("/", 1)[-1], s["timeout"]) for s in wire.sent] == [
+        ("show", (providers.SHOW_TIMEOUT_S, providers.SHOW_TIMEOUT_S)),  # shorter than connect
+        ("chat", (connect, providers.CHAT_TIMEOUT_S)),
+        ("generate", (connect, providers.CONNECT_TIMEOUT_S)),
+    ]
 
 
 def test_a_url_with_userinfo_logs_host_and_port_only(monkeypatch) -> None:

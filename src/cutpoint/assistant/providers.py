@@ -47,8 +47,14 @@ from urllib3.exceptions import LocationParseError
 from urllib3.util import parse_url
 
 from cutpoint.assistant import cliproxy, keys
+from cutpoint.backends import (
+    CONNECT_TIMEOUT_S,
+    normalize_ollama_url,
+    ollama_send,
+    ollama_url,
+    strip_userinfo,
+)
 from cutpoint.backends import headers_only as _headers_only
-from cutpoint.backends import normalize_ollama_url, ollama_send, ollama_url, strip_userinfo
 from cutpoint.config import AssistantSettings, assistant_settings
 from cutpoint.vision import default_model as vision_model
 from cutpoint.vision import unreachable_reason
@@ -58,7 +64,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_OLLAMA_MODEL = "qwen3.5:9b"  # tools, vision and thinking; about 6.6 GB
 CHAT_TIMEOUT_S = 300.0  # one read of a local model's reply on a slow GPU
 HOSTED_TIMEOUT_S = 180.0  # a hosted model's whole reply (not streamed)
-CONNECT_TIMEOUT_S = 10.0
 SHOW_TIMEOUT_S = 5.0
 CHECK_TIMEOUT_S = 15.0  # a hosted provider's model list or model
 OLLAMA_CONTEXT_TOKENS = 50000  # assistant.context_tokens unset: Ollama (asked for num_ctx)
@@ -680,7 +685,8 @@ class OllamaProvider:
         self, endpoint: str, payload: dict[str, Any], timeout: float, *, stream: bool = False
     ) -> requests.Response:
         """One request (:func:`cutpoint.backends.ollama_send`), streamed for ``stream``; a
-        redirect is refused here, the status is the caller's."""
+        redirect is refused here, the status is the caller's. ``timeout`` is the read timeout;
+        :func:`~cutpoint.backends.ollama_send` adds a short connect timeout (A298)."""
         try:
             resp = ollama_send(
                 "POST", self.url, f"/api/{endpoint}", json=payload, timeout=timeout, stream=stream
@@ -1598,7 +1604,13 @@ class SubscriptionProvider(OpenAIProvider):
             raise ProviderError(str(err)) from err
 
     def capabilities(self) -> Capabilities:
-        return Capabilities(tool_calls=True, json_schema=False)
+        """Logged in on a running proxy (one status request, reused as
+        :func:`cliproxy.cached_status` reuses it; never starts the proxy or logs in), as every
+        other provider proves it is reachable (A299). Tool calls; no JSON schema."""
+        if self._caps is None:
+            self._need_key()
+            self._caps = Capabilities(tool_calls=True, json_schema=False)
+        return self._caps
 
     def chat(
         self,
