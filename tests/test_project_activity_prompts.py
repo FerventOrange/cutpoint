@@ -24,29 +24,15 @@ from cutpoint.pano import cli, qa, views, vlcheck
 from cutpoint.pano import director as D
 from cutpoint.pano import project as P
 from events_fakes import stub_run_events
+from pano_helpers import profile_prompts, write_activity
 
 # Invented library profiles (Cutpoint ships only base and generic): HOP has no lift
 # captions, SLED has them.
 PROFILES = {"puddle-hop": HOP, "glacier-sled": SLED}
 
 
-def _write(project: Path, name: str) -> None:
-    rec = {
-        "version": activity.PROFILE_VERSION,
-        "name": name,
-        "source": "library",
-        "profile": activity.full(activity.validate(PROFILES[name])),
-    }
-    project.mkdir(parents=True, exist_ok=True)
-    (project / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
-
-
-def _hop() -> activity.Prompts:
-    return activity.prompts(activity.full(activity.validate(HOP)))
-
-
 def _hop_key() -> str:
-    with activity.use_prompts(_hop()):
+    with activity.use_prompts(profile_prompts(HOP)):
         key = C.prompts_key()
     assert key and key != C.prompts_key()
     return key
@@ -86,7 +72,7 @@ def _stub_load_inputs(monkeypatch) -> list[tuple[str, bool]]:
 @pytest.mark.parametrize(("name", "lift"), [("puddle-hop", False), ("glacier-sled", True)])
 def test_detect_project_loads_inputs_with_the_projects_prompts(tmp_path, monkeypatch, name, lift):
     project = _crash_project(tmp_path)
-    _write(project, name)
+    write_activity(project, name, PROFILES[name])
     seen = _stub_load_inputs(monkeypatch)
     own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())  # no profile
     crash.detect_project(project, params=own_words, dense=False, sheets=0)
@@ -105,7 +91,7 @@ def test_detect_project_uses_the_profile_it_resolved_for_this_run(tmp_path, monk
 def test_lift_grid_is_none_for_a_profile_without_lift_captions(monkeypatch):
     called = []
     monkeypatch.setattr(views, "_grid_views", lambda src: called.append(src))
-    with activity.use_prompts(_hop()):
+    with activity.use_prompts(profile_prompts(HOP)):
         assert views.lift_grid(Path("x.lrv"), 10) is None
     assert called == []  # not even the view layer is read
     views.lift_grid(Path("x.lrv"), 10)  # the default (generic) has no lifts either
@@ -119,7 +105,7 @@ def test_lift_grid_is_none_for_a_profile_without_lift_captions(monkeypatch):
 @pytest.mark.parametrize(("name", "want"), [("puddle-hop", "puddle-hop"), (None, "generic")])
 def test_run_mix_finds_candidates_with_the_projects_prompts(tmp_path, monkeypatch, name, want):
     if name:
-        _write(tmp_path, name)
+        write_activity(tmp_path, name, PROFILES[name])
     seen: list[str] = []
 
     def part_candidates(_d):
@@ -154,7 +140,7 @@ def test_run_events_visual_layer_and_sheets_use_the_projects_prompts(
     from cutpoint.events import visual as visual_layer  # noqa: PLC0415
 
     if name:
-        _write(tmp_path, name)
+        write_activity(tmp_path, name, PROFILES[name])
     src = tmp_path / "a.mp4"
     src.write_bytes(b"x")
     s = SimpleNamespace(path=src, name="a.mp4")
@@ -207,7 +193,7 @@ def test_run_events_writes_sheets_after_the_crash_layer_under_the_profile_it_wro
 
     def detect(project, **kw):
         seen.append(("crash", activity.active_prompts().name))
-        _write(project, "puddle-hop")  # the profile this run resolved
+        write_activity(project, "puddle-hop", HOP)  # the profile this run resolved
         return {}
 
     def write_sheets(project, sources):
@@ -267,7 +253,7 @@ def test_run_qa_scores_with_the_projects_prompts(tmp_path, monkeypatch, name, wa
     from cutpoint.events import visual as V  # noqa: PLC0415
 
     if name:
-        _write(tmp_path, name)
+        write_activity(tmp_path, name, PROFILES[name])
     d = tmp_path / sub
     d.mkdir(parents=True)
     seen: list[str] = []
@@ -319,10 +305,10 @@ def _director(tmp_path: Path, monkeypatch) -> tuple[Path, dict[str, Any]]:
 
 
 def test_cmd_director_plans_and_checks_with_the_projects_prompts(tmp_path, monkeypatch):
-    _write(tmp_path / "proj", "puddle-hop")
+    write_activity(tmp_path / "proj", "puddle-hop", HOP)
     out, seen = _director(tmp_path, monkeypatch)
     assert seen["compute"] == ["puddle-hop"]
-    assert seen["wording"] == [vlcheck.wording_id(_hop())] and seen["wording"][0]
+    assert seen["wording"] == [vlcheck.wording_id(profile_prompts(HOP))] and seen["wording"][0]
     saved = json.loads((out / "001_a.json").read_text(encoding="utf-8"))
     assert saved["prompts"] == _hop_key()  # read back by _reusable
 
@@ -376,7 +362,7 @@ def _crash_context_run(tmp_path, monkeypatch, settings, context, profile=None) -
     src.write_bytes(b"x")
     s = SimpleNamespace(path=src, name="a.mp4")
     if profile:
-        _write(tmp_path, profile)
+        write_activity(tmp_path, profile, PROFILES[profile])
     stub_run_events(monkeypatch, [s], {"settings": settings} if settings else None)
     monkeypatch.setattr(pipeline, "VramMonitor", _Mon)
     monkeypatch.setattr(

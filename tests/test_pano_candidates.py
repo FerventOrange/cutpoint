@@ -125,33 +125,19 @@ def test_analyze_plans_caches_and_clips_reuses_an_equal_path(project, monkeypatc
     assert pfile2.parent != pfile.parent and pfile.read_bytes() == pfile2.read_bytes()
 
 
-def _hop() -> activity.Prompts:
-    return activity.prompts(activity.full(activity.validate(HOP)))
-
-
-def _write_hop(proj: Path) -> None:
-    rec = {
-        "version": activity.PROFILE_VERSION,
-        "name": "puddle-hop",
-        "source": "library",
-        "profile": activity.full(activity.validate(HOP)),
-    }
-    (proj / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
-
-
 def test_path_key_has_the_prompts_of_every_profile(project) -> None:
     _, clip = project
     key = C.path_key(clip, 4.0, 12.5, "people", None)
     assert key["prompts"] == activity.default_prompts().key() == C.prompts_key()  # generic
-    with activity.use_prompts(_hop()):
+    with activity.use_prompts(helpers.profile_prompts(HOP)):
         key = C.path_key(clip, 4.0, 12.5, "people", None)
-        assert key["prompts"] == _hop().key() == C.prompts_key()
+        assert key["prompts"] == helpers.profile_prompts(HOP).key() == C.prompts_key()
 
 
 def test_miss_reason_names_changed_activity_captions(project) -> None:
     _, clip = project
     default = C.path_key(clip, 4.0, 12.5, "people", None)
-    with activity.use_prompts(_hop()):
+    with activity.use_prompts(helpers.profile_prompts(HOP)):
         hop = C.path_key(clip, 4.0, 12.5, "people", None)
     assert C._miss_reason(default, hop) == "activity captions changed"
     assert C._miss_reason(hop, default) == "activity captions changed"
@@ -161,7 +147,7 @@ def test_candidate_paths_are_planned_and_matched_with_the_projects_prompts(
     project, monkeypatch
 ) -> None:
     proj, clip = project
-    _write_hop(proj)
+    helpers.write_activity(proj, "puddle-hop", HOP)
     seen: list[str] = []
     real = D.compute_path
 
