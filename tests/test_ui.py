@@ -7459,7 +7459,9 @@ def test_clips_job_passes_event_tails_on_or_off_and_nothing_for_auto(
         ({"speech_max_lead": 61}, "speech_max_lead must be 0-60 seconds"),
         ({"tail_min": "1"}, "tail_min must be 0-60 seconds"),
         ({"tail_max": True}, "tail_max must be 0-60 seconds"),
-        ({"event_window": 0}, "event_window must be above 0-60 seconds"),
+        # 0 as the CLI refuses it
+        ({"event_window": 0}, "event_window must be above 0 and at most 60 seconds"),
+        ({"event_window": -2}, "event_window must be above 0 and at most 60 seconds"),
         ({"extend_start": 31}, "extend_start must be 0-30 seconds"),
         ({"extend_end": [1]}, "extend_end must be 0-30 seconds"),
         ({"crop": "--force"}, "crop must be 'auto', 'none' or W:H:X:Y"),

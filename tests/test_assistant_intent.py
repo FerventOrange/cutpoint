@@ -36,6 +36,13 @@ TARGETS = [
     ("extend m3 to 60 s, make the video 4 minutes", 240),
     ("clips around 2 minutes", 120),
     ("make it about 4 minutes more or less", 240),
+    ("cut it down to 2 minutes", 120),
+    ("cut down to 90 s", 90),
+    ("trim it down to 100 seconds", 100),
+    ("trim to 3 min", 180),
+    ("bring it down to two minutes", 120),
+    ("shorten it to 45 seconds", 45),
+    ("shorten to 1 min", 60),
     # a cue after the length
     ("a 90 second reel", 90),
     ("a 4 minute long montage", 240),
@@ -46,6 +53,10 @@ TARGETS = [
     ("keep it to 1:30", 90),
     ("make the video 3:30", 210),
     ("1:30 total", 90),
+    ("cut it down to 1:30", 90),
+    ("trim it to 1:30", 90),
+    ("shorten to 1:30", 90),
+    ("bring it down to 2:15", 135),
     # a length per clip first, then the sequence's
     ("tighten every clip and aim for a 2 minute montage", 120),
     ("shorten every clip so the video is about 2 min", 120),
@@ -75,10 +86,18 @@ TARGETS = [
     ("extend the jump by about 10 s", None),
     ("extend m3 by 2 minutes", None),
     ("m3, make it 8 seconds", None),
+    ("m3, cut it down to 8 s", None),
+    ("cut m3 down to 8 s", None),
+    ("shorten each clip to 5 s", None),
+    ("cut it down by 2 minutes", None),
     ("remove the clip at 3 minutes", None),
     ("move the 2 minute clip", None),
     ("what happens at 1:30?", None),
     ("around 4:20", None),
+    ("then cut to 4:20 where he falls", None),
+    ("start at 1:30 then cut to 2:45", None),
+    ("cut to 1:30", None),
+    ("m3, trim it to 0:08", None),
     ("make it as short as possible", None),
 ]
 
@@ -118,6 +137,7 @@ NAMED = [
     ("Added the laugh; now 90 s, after 24 s.", [90.0, 24.0]),
     ("It now runs 1:30.", [90.0]),
     ("Took it from 34 s to 60 s.", [60.0]),
+    ("Now 4 min 30 s overall.", [270.0]),
     ("Moved the laugh to the start.", []),
 ]
 

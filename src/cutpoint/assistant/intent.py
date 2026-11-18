@@ -39,12 +39,15 @@ _VIDEO = (
 )
 # "make the video", "the video should be", "keep it to": the length of the whole sequence
 _SEQ_CUE = (
-    rf"make (?:the|this|that) {_VIDEO}(?: be)?|(?:the |this )?{_VIDEO} (?:should|must|needs to|has to)"
-    r" be|it should be|keep it (?:to|at)"
+    rf"make (?:the|this|that) {_VIDEO}(?: be)?"
+    rf"|(?:the |this )?{_VIDEO} (?:should|must|needs to|has to) be"
+    r"|it should be|keep it (?:to|at)"
 )
 _LEN_CUE = (
     r"(?:make it|get it to|bring it to|cut it to|cut to|trim it to|keep it to|keep it under|build"
-    r"|aim(?:ing)? for|overall|target(?:ing)?(?: of)?|total(?:ling)? of|totall?ing|want|need|~|about|around"
+    r"|(?:cut|trim|bring)(?: it)? down to|trim to|shorten(?: it)? to"
+    r"|aim(?:ing)? for|overall|target(?:ing)?(?: of)?|total(?:ling)? of|totall?ing|want|need|~"
+    r"|about|around"
     r"|approx\w*|roughly|nearly|almost|under|at most|up to|at least|no more than|no longer than"
     rf"|{_SEQ_CUE})"
 )
@@ -58,6 +61,7 @@ _AFTER = re.compile(
 )
 _CLOCK_CUE = (
     r"(?:make it|get it to|bring it to|total of|target|aim for|keep it under|under|at most|up to"
+    r"|cut it to|trim it to|(?:cut|trim|bring)(?: it)? down to|shorten(?: it)? to"
     rf"|no more than|want|need|{_SEQ_CUE})"
 )
 _CLOCK = re.compile(
@@ -151,7 +155,8 @@ _CLAIM_FILL = (
     r"|comes\s+to|for|a)\b|~))*\s*"
 )
 _CLAIM_BEFORE = re.compile(
-    rf"(?<![\w])(?P<cue>now(?!\s+at\b)|total(?:l?ing)?|overall|in all|brings? it to|bringing it to|runs|lasts"
+    rf"(?<![\w])(?P<cue>now(?!\s+at\b)|total(?:l?ing)?|overall|in all|brings? it to"
+    r"|bringing it to|runs|lasts"
     rf"|{_VIDEO}\s+(?:is|runs|lasts))\b{_CLAIM_FILL}{_CLAIM_LEN}",
     re.I,
 )
@@ -266,13 +271,15 @@ _FROM = re.compile(
 
 
 def named_seconds(summary: str) -> list[float]:
-    """Every length that ``summary`` names, tied to a cue or not ("now 34 s", "60 s, which you
-    asked for", "1:30"), in seconds; not the length before a change ("from 34 s to 60 s")."""
-    out = []
+    """Every length that ``summary`` names, once each in the order named, tied to a cue or not
+    ("now 34 s", "60 s, which you asked for", "1:30"), in seconds; not the length before a change
+    ("from 34 s to 60 s")."""
+    out: list[float] = []
     for m in _NAMED_LEN.finditer(summary):
         at = m.start("n") if m.group("n") is not None else m.start("mm")
-        if not _FROM.search(summary, max(0, at - 40), at):
-            out.append(_claim_value(m))
+        # "4 min 30 s" is one length, read from either number
+        if not _FROM.search(summary, max(0, at - 40), at) and (value := _claim_value(m)) not in out:
+            out.append(value)
     return out
 
 
@@ -449,7 +456,8 @@ _NOT_AUDIO = (
 _BETWEEN = r"action (?:runs?|shots?|clips?)|(?:\w+ )?runs?"
 _MIX = re.compile(
     r"(?<![\w-])(?:"
-    r"break(?:s|ing)? (?:it )?up(?!(?:\W+\w+){0,4}?\W+into\b)|break(?:s|ing)? the (?:monotony|runs?)"
+    r"break(?:s|ing)? (?:it )?up(?!(?:\W+\w+){0,4}?\W+into\b)"
+    r"|break(?:s|ing)? the (?:monotony|runs?)"
     rf"|mix(?:ed|es|ing)? (?:in|of|with){_NOT_AUDIO}|mixture of"
     r"|inters(?:perse|persed|perses|persing)|sprinkl(?:e|es|ed|ing)|scatter(?:s|ed|ing)?"
     r"|occasional(?:ly)?(?! (?:stutter|glitch|flicker|jitter|artifact|noise|blur|drop))"

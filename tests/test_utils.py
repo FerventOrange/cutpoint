@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import sys
@@ -18,6 +19,8 @@ from cutpoint.utils import (
     footage_context,
     input_name,
     matches_glob,
+    non_negative_float,
+    positive_float,
     seconds_keys,
     slugify,
     strip_angle_brackets,
@@ -98,6 +101,32 @@ def test_seconds_keys(value, allow_negative, expected):
         assert (
             seconds_keys(item, ("t", "missing"), "seg", allow_negative=allow_negative) == expected
         )
+
+
+@pytest.mark.parametrize(
+    ("parse", "text", "message"),
+    [
+        (positive_float, "inf", "expected a finite number"),
+        (positive_float, "-inf", "expected a finite number"),
+        (positive_float, "nan", "expected a finite number"),
+        (positive_float, "0", "must be greater than 0"),
+        (non_negative_float, "Infinity", "expected a finite number"),
+        (non_negative_float, "-inf", "expected a finite number"),
+        (non_negative_float, "NaN", "expected a finite number"),
+        (non_negative_float, "-0.5", "must be 0 or more"),
+        (non_negative_float, "five", "expected a number"),
+    ],
+)
+def test_number_options_refuse_non_finite_and_out_of_range_values(parse, text, message):
+    with pytest.raises(argparse.ArgumentTypeError, match=message):
+        parse(text)
+
+
+@pytest.mark.parametrize(
+    ("parse", "text", "value"), [(positive_float, "1e3", 1000.0), (non_negative_float, "0", 0.0)]
+)
+def test_number_options_take_finite_values(parse, text, value):
+    assert parse(text) == value
 
 
 def test_slugify():

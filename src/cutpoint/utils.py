@@ -91,18 +91,21 @@ def _number[N: (int, float)](
     text: str, kind: Callable[[str], N], what: str, ok: Callable[[N], bool], rule: str
 ) -> N:
     """``kind(text)`` if it passes ``ok``; else ``ArgumentTypeError`` saying ``"<text>: expected
-    <what>"`` (not a number) or ``"<text>: <rule>"`` (out of range)."""
+    <what>"`` (not a number), ``"<text>: expected a finite number"`` (``inf``, ``nan``) or
+    ``"<text>: <rule>"`` (out of range)."""
     try:
         value = kind(text)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(f"{text!r}: expected {what}") from exc
-    if not ok(value):  # also rejects NaN
+    if isinstance(value, float) and not math.isfinite(value):  # no option takes an endless length
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a finite number")
+    if not ok(value):
         raise argparse.ArgumentTypeError(f"{text!r}: {rule}")
     return value
 
 
 def positive_float(text: str) -> float:
-    """argparse type: a number greater than 0."""
+    """argparse type: a finite number greater than 0."""
     return _number(text, float, "a number", lambda v: v > 0, "must be greater than 0")
 
 
@@ -112,7 +115,7 @@ def positive_int(text: str) -> int:
 
 
 def non_negative_float(text: str) -> float:
-    """argparse type: a number of 0 or more."""
+    """argparse type: a finite number of 0 or more."""
     return _number(text, float, "a number", lambda v: v >= 0, "must be 0 or more")
 
 

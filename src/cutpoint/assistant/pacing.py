@@ -105,14 +105,15 @@ def moment_kind(
     analysis' must-include confidence). A moment a weaker crash only marked keeps its kind. Its
     ``kind`` and the words of its labels decide first (visual pool ``view`` is scenic; the kinds
     of :data:`_ACTION_KINDS`, the visual pool's ``crew`` and ``cruise`` and the action-cam
-    ``airtime``, ``speed`` and ``carve``, are action; ``beauty``/``view``/``scenic``; ``laugh``/``funny``; ``talk``/``voice``).
-    No label word makes a moment action: which footage is action comes from the candidate's
-    ``kind`` and cues, never from activity words such as a sport's (#1085, A303). Then the strongest
-    cue decides (``speed``, ``airtime``, ``crash``, ... are action), then speech over it
-    (``spoken``: dialogue), else it is action. A moment a talk stretch nominated (``signals.events.nominated`` holds
-    ``dialogue-*``) is dialogue; one a stretch only widened keeps its own type, from the label it
-    had before it took the stretch's title. A moment an ``events`` VLM window named
-    (``label_before_vlm``, #1071) is judged by the label it had before, not the window's title.
+    ``airtime``, ``speed`` and ``carve``, are action; ``beauty``/``view``/``scenic``;
+    ``laugh``/``funny``; ``talk``/``voice``). No label word makes a moment action: which footage
+    is action comes from the candidate's ``kind`` and cues, never from activity words such as a
+    sport's (#1085, A303). Then the strongest cue decides (``speed``, ``airtime``, ``crash``, ...
+    are action), then speech over it (``spoken``: dialogue), else it is action. A moment a talk
+    stretch nominated (``signals.events.nominated`` holds ``dialogue-*``) is dialogue; one a
+    stretch only widened keeps its own type, from the label it had before it took the stretch's
+    title. A moment an ``events`` VLM window named (``label_before_vlm``, #1071) is judged by the
+    label it had before, not the window's title.
     """
     cand = cand or {}
     if cand.get("kind") in (CRASH, "wipeout") or (

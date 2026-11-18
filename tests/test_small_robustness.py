@@ -120,6 +120,7 @@ def test_captions_filter_escapes_the_ass_file_name(tmp_path, monkeypatch):
         ["clips", "p", "--tail-min", "-1"],
         ["clips", "p", "--tail-max", "-1"],
         ["clips", "p", "--event-window", "-1"],
+        ["clips", "p", "--event-window", "0"],  # 0 used to mean the default 10 s
         ["clips", "p", "--extend", "-1"],
         ["clips", "p", "--extend-start", "-0.5"],
         ["clips", "p", "--extend-end", "-0.5"],
@@ -130,6 +131,11 @@ def test_captions_filter_escapes_the_ass_file_name(tmp_path, monkeypatch):
         ["extend", "d", "--seconds", "-1"],
         ["extend", "d", "--start", "-1"],
         ["extend", "d", "--end", "-1"],
+        ["crashes", "p", "--lead", "-1"],
+        ["crashes", "p", "--max-after", "-1"],
+        ["crashes", "p", "--max-clip", "0"],  # a crash clip of no length
+        ["clips", "p", "--max-total", "inf"],
+        ["extend", "d", "--seconds", "inf"],
     ],
 )
 def test_negative_export_options_are_a_usage_error(capsys, argv):
