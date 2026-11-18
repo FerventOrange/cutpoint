@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import stat
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -386,8 +389,18 @@ def _win_open(path: Path, directory: bool):
         raise
 
 
-def private_directory(path: Path) -> None:
-    """Create ``path`` if needed and restrict its access to the current user."""
+def _win_checked(path: Path, directory: bool) -> os.stat_result:
+    """:func:`_win_open` ``path`` and stat it while the checked handle is still open."""
+    handle, kernel32 = _win_open(path, directory)
+    try:
+        return os.lstat(path)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def private_directory(path: Path) -> os.stat_result:
+    """Create ``path`` if needed and restrict its access to the current user; returns the stat
+    of the directory checked (after its permissions were set)."""
     path = Path(path)
     if os.name == "nt":
         try:
@@ -395,13 +408,11 @@ def private_directory(path: Path) -> None:
             _win_check_ancestors(path)
             path.mkdir(mode=0o700, parents=True, exist_ok=True)
             _win_check_ancestors(path)
-            handle, kernel32 = _win_open(path, True)
-            kernel32.CloseHandle(handle)
+            return _win_checked(path, True)
         except OSError:
             raise
         except Exception:  # noqa: BLE001 - sanitize unexpected native API failures.
             raise PermissionError("cannot protect private Windows directory") from None
-        return
     path = _posix_path(path)
     if not hasattr(os, "O_NOFOLLOW"):
         raise PermissionError("safe private paths are unsupported")
@@ -412,24 +423,24 @@ def private_directory(path: Path) -> None:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
             raise PermissionError("unsafe private directory")
         os.fchmod(fd, 0o700)
+        return os.fstat(fd)
     finally:
         os.close(fd)
 
 
-def private_file(path: Path) -> None:
-    """Require an existing regular file and restrict its access to the current user."""
+def private_file(path: Path) -> os.stat_result:
+    """Require an existing regular file and restrict its access to the current user; returns
+    the stat of the file checked (after its permissions were set)."""
     path = Path(path)
     if os.name == "nt":
         try:
             path = Path(path).absolute()
             _win_check_ancestors(path)
-            handle, kernel32 = _win_open(path, False)
-            kernel32.CloseHandle(handle)
+            return _win_checked(path, False)
         except OSError:
             raise
         except Exception:  # noqa: BLE001 - sanitize unexpected native API failures.
             raise PermissionError("cannot protect private Windows file") from None
-        return
     path = _posix_path(path)
     if not hasattr(os, "O_NOFOLLOW"):
         raise PermissionError("safe private paths are unsupported")
@@ -439,5 +450,73 @@ def private_file(path: Path) -> None:
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
             raise PermissionError("unsafe private file")
         os.fchmod(fd, 0o600)
+        return os.fstat(fd)
     finally:
         os.close(fd)
+
+
+def stamp(info: os.stat_result) -> tuple[int, ...]:
+    """What identifies a checked file or folder and changes when it is replaced, rewritten,
+    linked or (on POSIX) has its mode or owner changed: device, inode (the file index on
+    Windows), type and mode, owner, link count, size, modification time and, on POSIX, the
+    status change time (a chmod or chown sets it; on Windows ``st_ctime`` is the creation
+    time, and a DACL change sets no stat field)."""
+    ctime = 0 if os.name == "nt" else info.st_ctime_ns
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_uid,
+        info.st_nlink,
+        info.st_size,
+        info.st_mtime_ns,
+        ctime,
+    )
+
+
+class Checked:
+    """:func:`private_directory` and :func:`private_file` for reads, once per path while it
+    stays the object that was checked (:func:`stamp`), for at most :attr:`MAX_AGE_S`. A path
+    that is replaced, rewritten, re-linked or (on POSIX) chmod-ed or chown-ed since, or that
+    cannot be stat-ed, is checked again before it is read; a check that fails is forgotten, so
+    it runs again next time. The age limit bounds what no stat field shows (a Windows DACL
+    widened by hand): it is made private again within five minutes.
+
+    ``directory`` / ``file``: the checks to run (the callers pass their module's names, so a
+    test that replaces them is honoured). A check that returns no ``os.stat_result`` (a fake)
+    is never remembered. Thread-safe; the check itself runs outside the lock."""
+
+    MAX_AGE_S = 300.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._seen: dict[tuple[str, bool], tuple[tuple[int, ...], float]] = {}
+        self._clock = time.monotonic  # tests pass a fake clock
+
+    def check(self, path: Path, run: Callable[[Path], object], *, directory: bool) -> None:
+        key = (str(path), directory)
+        try:
+            now = stamp(os.lstat(path))
+        except OSError:
+            now = None
+        with self._lock:
+            held = self._seen.get(key)
+            if (
+                now is not None
+                and held is not None
+                and held[0] == now
+                and self._clock() - held[1] < self.MAX_AGE_S
+            ):
+                return
+            self._seen.pop(key, None)
+        info = run(path)
+        if isinstance(info, os.stat_result):
+            with self._lock:
+                self._seen[key] = (stamp(info), self._clock())
+
+    def clear(self) -> None:
+        with self._lock:
+            self._seen.clear()
+
+    def __len__(self) -> int:
+        return len(self._seen)

@@ -30,8 +30,11 @@ import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import PurePath
 from typing import Any
 
+from cutpoint import state
 from cutpoint.config import source_path
 from cutpoint.events.scoring import LAUGH_STRONG
 from cutpoint.utils import data_block
@@ -638,6 +641,35 @@ class MomentTable:
         return [real for *_, real in sorted(hits)[:limit]]
 
 
+# A transcript line: (the file name with "@<offset>" of a recovered part, that name without it,
+# start, end in seconds, the text after the name), or the path of a "# <path>" heading
+_Row = tuple[str, str, float, float, str] | PurePath
+
+
+@state.register_cache
+@lru_cache(maxsize=4)
+def _transcript_rows(transcript: str) -> tuple[tuple[PurePath, ...], tuple[_Row, ...]]:
+    """``(headings, rows)`` of a ``transcript.txt`` text, parsed once per text (a turn asks
+    :func:`transcript_lines` once per moment): each heading's source path, and the headings
+    and timed lines in order (other lines are left out)."""
+    heads: list[PurePath] = []
+    rows: list[_Row] = []
+    for line in transcript.splitlines():
+        if line.startswith("# "):
+            head = source_path(_HEAD.sub("", line[2:]))
+            heads.append(head)
+            rows.append(head)
+            continue
+        m = _LINE.match(line)
+        if not m:
+            continue
+        g = [float(x) for x in m.groups()[1:]]
+        t0, t1 = g[0] * 3600 + g[1] * 60 + g[2], g[3] * 3600 + g[4] * 60 + g[5]
+        named = m.group(1)
+        rows.append((named, named.split("@")[0], t0, t1, line[m.start(1) + len(named) :]))
+    return tuple(heads), tuple(rows)
+
+
 def transcript_lines(
     transcript: str, source: str, start: float, end: float, *, shown: str
 ) -> list[str]:
@@ -647,22 +679,20 @@ def transcript_lines(
     source's lines with ``# <path>``, so when a heading names ``source`` only the lines under
     such headings count (a transcript without them: every line of the file name)."""
     name = file_name(source)
-    heads = [_HEAD.sub("", line[2:]) for line in transcript.splitlines() if line.startswith("# ")]
+    heads, rows = _transcript_rows(transcript)
     mine = source_path(source)
-    headed = any(source_path(h) == mine for h in heads)
+    headed = any(h == mine for h in heads)
     out, inside = [], not headed
-    for line in transcript.splitlines():
-        if line.startswith("# "):
-            inside = not headed or source_path(_HEAD.sub("", line[2:])) == mine
+    for row in rows:
+        if isinstance(row, PurePath):
+            inside = not headed or row == mine
             continue
-        m = _LINE.match(line)
-        if not inside or not m or m.group(1).split("@")[0] != name:
+        named, bare, t0, t1, rest = row
+        if not inside or bare != name:
             continue
-        g = [float(x) for x in m.groups()[1:]]
-        t0, t1 = g[0] * 3600 + g[1] * 60 + g[2], g[3] * 3600 + g[4] * 60 + g[5]
         if t1 >= start and t0 <= end:
-            part = m.group(1)[len(name) :]  # "@<offset>" of a recovered part, else ""
-            out.append(f"[{shown}{part}{line[m.start(1) + len(m.group(1)) :]}")
+            part = named[len(name) :]  # "@<offset>" of a recovered part, else ""
+            out.append(f"[{shown}{part}{rest}")
             if len(out) >= MAX_TRANSCRIPT_LINES:
                 break
     return out

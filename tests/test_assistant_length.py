@@ -506,6 +506,57 @@ def test_the_same_sequence_is_planned_once(tmp_path: Path, planning) -> None:
     assert edges.length(SEQ, first) == pytest.approx(24 + 3 * 2.0)
 
 
+def test_the_analysis_files_are_parsed_once_while_they_are_unchanged(
+    tmp_path: Path, planning, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1085 A759: highlights.json and events.json are read and the events grouped once for
+    many plans; a rewritten file, or other event types (a HUD preset changed), are read or
+    grouped again, and a file held by hold_outputs is read from the hold."""
+    ev = {"source": A, "kind": "audio", "label": "Laughter", "start": 41.0, "end": 42.0}
+    cache.save_json(tmp_path / "events.json", {"events": [ev]})
+    read: list[str] = []
+    grouped: list[int] = []
+    load_json, group_events = cache.load_json, edges.group_events
+    mine = {"highlights.json", "events.json"}  # the presets are looked up each time (cheap)
+
+    def counted(f: Path) -> Any:
+        read.extend([f.name] if f.parent == tmp_path and f.name in mine else [])
+        return load_json(f)
+
+    monkeypatch.setattr(edges.cache, "load_json", counted)
+    monkeypatch.setattr(edges, "group_events", lambda d, t: grouped.append(1) or group_events(d, t))
+    planner = edges.EdgePlanner(tmp_path, lambda s: tmp_path / Path(s).name)
+
+    def events() -> dict[str, Any]:
+        return planning["calls"][-1]["events"]
+
+    planner.plan(SEQ)
+    planner.plan([{**SEQ[0], "end": 51.0}, *SEQ[1:]])  # another sequence: planned again
+    assert len(planning["calls"]) == 2
+    assert sorted(read) == ["events.json", "highlights.json"] and len(grouped) == 1
+    assert planning["calls"][0]["events"] is events()
+    cache.save_json(tmp_path / "events.json", {"events": [{**ev, "start": 43.0}]})
+    planner.plan([{**SEQ[0], "end": 52.0}, *SEQ[1:]])
+    assert sorted(read) == ["events.json", "events.json", "highlights.json"]
+    assert len(grouped) == 2 and [e["start"] for e in events()[A]] == [43.0]
+
+    resolve = edges.eventtypes.resolve
+    monkeypatch.setattr(edges.eventtypes, "resolve", lambda p, d: {A: ()})
+    planner.plan([{**SEQ[0], "end": 53.0}, *SEQ[1:]])  # no event types now: grouped again
+    assert len(read) == 3 and len(grouped) == 3
+    monkeypatch.setattr(edges.eventtypes, "resolve", resolve)
+
+    hl = {"style": "funny", "settings": {"language": "de"}}
+    cache.save_json(tmp_path / "highlights.json", hl)
+    planner.plan([{**SEQ[0], "end": 54.0}, *SEQ[1:]])
+    assert read.count("highlights.json") == 2 and planning["calls"][-1]["language"] == "de"
+
+    with cache.hold_outputs(tmp_path, ["events.json"]):  # analyze holds its results back
+        cache.save_json(tmp_path / "events.json", {"events": [{**ev, "start": 47.0}]})
+        planner.plan([{**SEQ[0], "end": 55.0}, *SEQ[1:]])
+        assert [e["start"] for e in events()[A]] == [47.0]
+
+
 def test_a_sequence_that_cannot_be_planned_keeps_its_raw_ranges(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, planning
 ) -> None:

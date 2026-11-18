@@ -6,7 +6,8 @@ clip finish a sentence or a reaction and the speech-aware pass moves cuts that f
 (:func:`cutpoint.clips.plan_edges`, the planning step of ``cutpoint clips``). :class:`EdgePlanner`
 runs that step for a sequence so that the page's preview and totals, and the lengths the model
 sees, are those of the export. It reads cached analysis data and writes nothing. Planning is
-cached per project, so asking again for the same rows costs nothing.
+cached per project, so asking again for the same rows costs nothing; ``highlights.json`` and
+the events of ``events.json`` are kept parsed while the files are unchanged (#1085 A759).
 
 :meth:`EdgePlanner.phrase_end` is the hook ``ops.apply_ops`` takes (``snap``): a trim that
 lengthens a clip ends it where the phrase it lands in ends.
@@ -27,12 +28,14 @@ from cutpoint import cache, sources
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import EXACT_KEYS, plan_edges
 from cutpoint.config import remap_source
+from cutpoint.events import eventtypes
 from cutpoint.events.scoring import analysis_style
-from cutpoint.events.tails import EventTailSettings, load_events
+from cutpoint.events.tails import EventTailSettings, group_events
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.planning import Padding
 from cutpoint.styles import STYLES, style_name
 from cutpoint.tail import TailSettings
+from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +94,12 @@ class EdgePlanner:
         # caches them)
         self._chains: dict[str, tuple[tuple[Any, ...], list[tuple[float, float]]]] = {}
         self._words: dict[str, tuple[tuple[Any, ...], list[dict[str, Any]]]] = {}
+        # the analysis files as last parsed, by name: (file_stamp, parsed JSON), and the events
+        # grouped for the export (tails.load_events) with the event types they were grouped by;
+        # used under _lock only
+        self._files: dict[str, tuple[tuple[int, int, int], Any]] = {}
+        self._grouped: tuple[tuple[int, int, int], Any, dict[str, list[dict[str, Any]]]] | None
+        self._grouped = None
 
     # -- exported edges ----------------------------------------------------------------
     def _stamp(self) -> tuple[int, ...]:
@@ -181,6 +190,41 @@ class EdgePlanner:
         except OSError:
             return (str(path), 0, 0)
 
+    def _load(self, name: str) -> Any:
+        """``<project>/<name>`` parsed (:func:`cutpoint.cache.load_json`), from memory while the
+        file is the one parsed last (same stamp before and after that read); a file held by
+        :func:`cutpoint.cache.hold_outputs` is always read. Under ``_lock``."""
+        path = self.project / name
+        if cache.is_held(path):
+            self._files.pop(name, None)
+            return cache.load_json(path)
+        before = file_stamp(path)
+        held = self._files.get(name)
+        if held is not None and before is not None and held[0] == before:
+            return held[1]
+        data = cache.load_json(path)
+        if before is not None and file_stamp(path) == before:  # not replaced while it was read
+            self._files[name] = (before, data)
+        else:
+            self._files.pop(name, None)
+        return data
+
+    def _events(self) -> dict[str, list[dict[str, Any]]] | None:
+        """:func:`cutpoint.events.tails.load_events` of the project: grouped again only when
+        events.json or the event types its sources resolve to (their HUD presets) changed.
+        Under ``_lock``."""
+        data = self._load("events.json")
+        if not data:
+            return None
+        types = eventtypes.resolve(self.project, data)  # reads the presets each time: cheap
+        stamp = self._files.get("events.json", (None,))[0]
+        held = self._grouped
+        if held is not None and stamp is not None and held[0] == stamp and held[1] == types:
+            return held[2]
+        grouped = group_events(data, types)
+        self._grouped = (stamp, types, grouped) if stamp is not None else None
+        return grouped
+
     def _plan(
         self,
         rows: Sequence[dict[str, Any]],
@@ -191,7 +235,7 @@ class EdgePlanner:
         """``(edges, reasons, whole, dropped)``: the planned rows (those of the sources that
         can be read), why each moved, whether every source could be read and the ids the
         export leaves out (inside a longer clip)."""
-        hl = cache.load_json(self.project / "highlights.json")
+        hl = self._load("highlights.json")
         hl = hl if isinstance(hl, dict) else {}
         try:  # a deleted user style degrades to its recorded base; none recorded: auto's
             style = analysis_style(hl)
@@ -199,7 +243,7 @@ class EdgePlanner:
             style = STYLES[style_name({})]
             logger.warning("%s; planning the edges as %r", err, style.name)
         settings = hl.get("settings") if isinstance(hl.get("settings"), dict) else {}
-        events = load_events(self.project) if opts.event_tails is not False else None
+        events = self._events() if opts.event_tails is not False else None
         off = {"smart_tail": False} if not smart_tail else {}
         off |= {"speech_aware": False} if not speech_aware else {}
         moments = [
