@@ -142,7 +142,7 @@ So do these combinations:
 
 | Command | `outputs` |
 |---|---|
-| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`, `bundled`) and `missing`, the keys whose path does not exist |
+| `paths` | One key per folder printed (`home`, `config`, `cache`, `models`, `tools`, `stage`, `styles`, `presets`, `profiles`, `projects`) and `missing`, the keys whose path does not exist |
 | `resume` | `resume` (`argv`, `status_before`, `done_before`), `resumed`, and the replayed command's outputs |
 | `rerank` | `highlights`, `backup` (`highlights.before-rerank.json` when saved, else `null`), `saved`, `analyzed` (`--analyze` ran analyze), `style`, `from` (the style before), `candidates` (count), `suggested_top`, `top` and `before` (the first `--top` moments after and before: each `rank`, `id`, `source`, `start`, `end`, `score`, `label`; `top` also `was`, the moment's rank before or `null` for a new span), `new_ids`, `dropped_ids`, `notes`, `seconds`. With `needs_analyze`: `missing` (each `feature`, `detail`, `source`) and `analyze_command` |
 | `analyze` | `highlights`, `transcript`, `candidates` (count, visual candidates included), `visual_candidates` (count; action-cam, action and sport), `suggested_top` (when set; the number of moments the default `clips` edit picks), `style`; unless `--style` names a style, `detection` (the `highlights.json` block, see [detect](#detect)) |
@@ -1319,29 +1319,6 @@ debug lines of helper threads and a `resuming the OCR read` line when a backgrou
 handed back to its turn; only timings differ. Set
 `CUTPOINT_ANALYZE_OVERLAP=0` to turn it off.
 
-Experimental, off by default: `CUTPOINT_ANALYZE_SHARED_DECODE=split` also moves the scene
-detection proxy of `transcribe` into the background, for a source of up to 30 minutes with one
-video stream (no cover art) whose scene cuts are not cached yet. It makes the proxy in the same
-GPU decode (CPU without one) as the background HUD OCR (one pass instead of two) and spools the OCR frames to
-the source's cache folder, in files of about 256 MB removed as they are read. The spool grows
-by as much as the OCR read lags behind the decode, up to 8 files (about 2 GB; 4 GB without the
-cap on a 446 s 1080p clip): then the decode, and the proxy with it, waits for the OCR read to
-catch up. It is skipped when the drive has less free space than that cap (or every OCR frame of
-a shorter source), plus the scene proxy (budgeted at about 0.6 MB per source second for 16:9 video, 1.0 MB for
-10-bit video, more for portrait), plus 1 GB. `0`, unset or any other value: as described above. When the
-background proxy has not started by the time scene detection needs it, or fails, scene
-detection decodes as usual; the scene cuts, `events.json`, `highlights.json` and the OCR
-caches are the same as with it off. Each source then logs an INFO line with the scene
-detection time, the wait for the background proxy and the spool peak, and one with the wait for
-the background OCR, for measuring; a source with cover art or more than one video stream, or a
-drive without room for the spool and proxy, logs why at once. When Cutpoint is killed or crashes during
-the split, its ffmpeg stops at once on Windows and with ffmpeg 7 and newer; on Linux and macOS
-with ffmpeg 6.x it finishes encoding the proxy first. Either way the spool and the temporary
-proxy (`proxy.<pid>.<host>.<random>.tmp.mp4`) stay in the cache folder until the next `analyze`
-that reads the source's HUD OCR in the background removes them. That run removes the leftovers
-of runs that are finished or dead, and the fixed `proxy.tmp.mp4` of older versions, but keeps the
-temporary proxy of a run still going, and of another computer sharing the cache.
-
 Opt-in, off by default: `CUTPOINT_ANALYZE_SCENE_OVERLAP=1` detects a source's scene cuts at the
 same time as Whisper transcribes it, instead of after it. It starts only for a source whose
 style weighs scene cuts (not one that detects them around candidate edges only), that is not skipped, whose scene cuts are not cached and whose
@@ -1354,8 +1331,7 @@ the caches are the same as with it off. An error in scene detection still stops 
 the transcription; when the transcription fails or is stopped, the scene detection is stopped
 too (its ffmpeg killed or its detection stopped within about 0.1 s plus a frame decode, no `scenes-v3.json` written). In
 `timings.sources`, `scenes_s` is then the time of the scene thread, mostly inside
-`transcribe_s`, and the source has `"overlap": true`. The overlap does not start for a source whose scene proxy comes from a shared decode
-(`CUTPOINT_ANALYZE_SHARED_DECODE=split`). The INFO line "detecting scene cuts" appears when
+`transcribe_s`, and the source has `"overlap": true`. The INFO line "detecting scene cuts" appears when
 the transcription starts. Any other value, or unset: as described above.
 
 | Step | What |
@@ -2521,7 +2497,7 @@ cutpoint paths [--json]
 ```
 
 Prints the resolved data folders: `CUTPOINT_HOME`, config, cache, models, tools,
-stage, styles, HUD presets, activity profiles, projects and the bundled presets. `--json` writes them as one [JSON envelope](#json-output).
+stage, styles, HUD presets, activity profiles and projects. `--json` writes them as one [JSON envelope](#json-output).
 
 ## guide
 

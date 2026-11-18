@@ -243,7 +243,7 @@ class GamePrompt:
         hype: The hype rubric line.
         combat: The footage has kills (see :func:`has_kills`): the prompt asks about
             kills and deaths; else it describes hype in neutral terms.
-        custom: A project preset (not an installed user or bundled one) gives a
+        custom: A project preset (not an installed user one) gives a
             prompt (name, view, hype) that differs from the reference prompt of its
             game key (the installed preset's, else the derived default), so the VLM
             cache key includes the prompt text. Event type seeds do not count: they
@@ -283,7 +283,7 @@ def game_prompt(game: str | None, preset: HudPreset | None, combat: bool = False
     (the combat one when ``combat``, see :func:`has_kills`; else the neutral one).
 
     ``custom`` is set for a project preset whose prompt differs from the
-    reference: the installed (user, else bundled) preset of the same game key,
+    reference: the installed (user) preset of the same game key,
     else the derived default.
     Presets without prompt fields (e.g. written by discovery) keep their VLM cache keys.
     """

@@ -932,16 +932,6 @@ def test_a_preset_that_cannot_be_written_does_not_stop_the_run(folder, caplog, m
     assert _keys(folder.project) == {"alpha one.mp4": "neon-drift", "alpha two.mp4": "neon-drift"}
 
 
-def test_a_bundled_preset_is_not_written(folder, monkeypatch) -> None:
-    from cutpoint import paths  # noqa: PLC0415
-
-    srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"})
-    target, before = _old_preset(None)
-    monkeypatch.setattr(paths, "PRESETS_DIR", target.parent)  # as if it shipped with the package
-    folder.run(srcs, force=True)
-    assert target.read_bytes() == before
-
-
 def test_a_run_without_force_leaves_an_old_preset(folder, caplog) -> None:
     srcs = folder.sources({"alpha one.mp4": "a", "beta one.mp4": "b"})
     target, before = _old_preset(None)

@@ -132,8 +132,7 @@ def _foreign_project(project: Path, clips_dir: Path) -> bool:
 
 def _pick(e: dict[str, Any]) -> tuple[float, float]:
     """The picked moment of a manifest entry (before any padding)."""
-    rec = e.get("pick") or (e.get("extend") or {}).get("pre_pad") or e
-    return float(rec["start"]), float(rec["end"])
+    return float(e["pick"]["start"]), float(e["pick"]["end"])
 
 
 PAD_KEYS = ("extend", "extend_start", "extend_end")
@@ -270,7 +269,7 @@ def _reusable(
         and abs(float(old.get("end", -1)) - new["end"]) < 1e-3
         and old.get("crop") == new.get("crop")
         and grade_from_entry(old) == grade_from_entry(new)
-        and float(old.get("audio_fade", 0.25)) == float(audio_fade)
+        and float(old.get("audio_fade", -1)) == float(audio_fade)
     )
 
 
@@ -454,6 +453,11 @@ def _extend_locked(
                     logger.warning("  %s: %s; skipped", f.name, why)
                 skipped[f.name] = why
                 continue
+            if not isinstance(e.get("pick"), dict):
+                raise ValueError(
+                    f"{clips_dir / 'manifest.json'}: the entry of {f.name} has no pick (clips "
+                    "exported by an older cutpoint); export the clips again with `cutpoint clips`"
+                )
             src = _read_path(e)
             if str(src) not in infos:
                 infos[str(src)] = probe(src)

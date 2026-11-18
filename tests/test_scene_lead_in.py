@@ -246,58 +246,6 @@ def test_without_a_lead_in_a_failure_propagates_and_a_read_error_is_not_retried(
     assert len(runs) == 1
 
 
-# ----------------------------------------------------------------- the old scene files
-def test_the_old_scene_files_go_after_the_save(tmp_path, monkeypatch):
-    cdir = tmp_path / "src"
-    cdir.mkdir()
-    for name in ("scenes.json", "scenes-v2.json", "scenes-windows.json", "other.json"):
-        (cdir / name).write_text("[]")
-    proxy = cdir / "proxy.mp4"
-    proxy.write_bytes(b"x")
-    monkeypatch.setattr(analyze, "_scan", lambda p, c: [1.0])
-    assert analyze._detect(proxy, cdir / analyze.SCENES_FILE) == [1.0]
-    assert sorted(p.name for p in cdir.iterdir()) == sorted(
-        ["other.json", "scenes-windows.json", analyze.SCENES_FILE]
-    )
-
-
-def test_the_old_scene_files_stay_when_the_detection_fails(tmp_path, monkeypatch):
-    (tmp_path / "scenes.json").write_text("[]")
-
-    def boom(p, c):
-        raise FFmpegError("x")
-
-    monkeypatch.setattr(analyze, "_scan", boom)
-    with pytest.raises(FFmpegError):
-        analyze._detect(tmp_path / "proxy.mp4", tmp_path / analyze.SCENES_FILE)
-    assert (tmp_path / "scenes.json").exists()
-
-
-def test_the_split_pass_drops_the_old_scene_files_too(tmp_path, monkeypatch):
-    (tmp_path / "scenes-v2.json").write_text("[]")
-    (tmp_path / "keep.json").write_text("[]")
-    monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
-    monkeypatch.setattr(analyze, "_hybrid_plan", lambda *a: (None, 5.0, 2))
-    monkeypatch.setattr(analyze, "_hybrid_cuts", lambda *a: [2.0])
-    assert analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cpu_free=True) == [2.0]
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["keep.json", analyze.SCENES_FILE]
-
-
-def test_a_file_that_cannot_be_removed_is_ignored(tmp_path, monkeypatch):
-    (tmp_path / "scenes.json").write_text("[]")
-    (tmp_path / "scenes-v2.json").write_text("[]")
-    real_unlink = Path.unlink
-
-    def deny(self, *a, **k):
-        if self.name == "scenes.json":
-            raise PermissionError("in use")
-        return real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(Path, "unlink", deny)
-    analyze._drop_old_scene_files(tmp_path)  # no exception; the other file is still removed
-    assert (tmp_path / "scenes.json").exists() and not (tmp_path / "scenes-v2.json").exists()
-
-
 # ----------------------------------------------------------------- real ffmpeg
 CUT_PARTS = [
     ("testsrc2", 4.0), ("color=c=red", 4.0), ("testsrc", 3.0), ("smptebars", 4.0),

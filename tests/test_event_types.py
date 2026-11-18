@@ -500,11 +500,6 @@ def test_ocr_key(home, tmp_path, monkeypatch):
     write_preset(paths.presets_dir(), boxfeed())
     from_user = OcrParams().key("boxfeed", load_preset("boxfeed"))
     assert from_user["regions"] == key["regions"]
-    bundled = tmp_path / "bundled"
-    write_preset(bundled, boxfeed())
-    (paths.presets_dir() / "boxfeed.json").unlink()
-    monkeypatch.setattr(paths, "PRESETS_DIR", bundled)
-    assert OcrParams().key("boxfeed", load_preset("boxfeed")) == from_user
 
 
 # --- preset-defined event types ------------------------------------------------

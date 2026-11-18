@@ -1434,12 +1434,9 @@ def _discover(
     def add_fit_ref(game: str, path: Path | None, ref: Any) -> None:
         """Give an existing preset the fresh grid ``fit_ref`` of a forced discovery (the HUD
         fit check); every other key stays as it is. A ref of too little evidence is not
-        written, nor one for a bundled preset; a preset that cannot be written is left as it
-        is (WARNING)."""
+        written; a preset that cannot be written is left as it is (WARNING)."""
         if path is None or not game_fit.valid_ref(ref) or not ref["grid"]:
             return
-        if Path(path).resolve().is_relative_to(cutpoint_paths.PRESETS_DIR.resolve()):
-            return  # bundled with the package: read-only data
         if not (
             isinstance(ref.get("frames"), int)
             and isinstance(ref.get("boxes"), int)

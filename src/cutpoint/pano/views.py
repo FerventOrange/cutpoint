@@ -883,7 +883,6 @@ def direction_scores(
     pv: PanoViews,
     n_bins: int = 36,
     rules: PeopleRules360 | None = None,
-    people_size: str = "framing",
     view_pitch: float = -8.0,
     view_fov: float = 86.0,
     occlude: bool = True,
@@ -894,8 +893,6 @@ def direction_scores(
     at least 10 deg), height = :func:`framing_utility` of the box height (the
     best positive bump plus the most negative one: a person inches away pulls
     the bins down); the wearer is the cone around :func:`wearer_axis` only.
-    ``people_size="close"`` is the old behaviour (height = closeness, plus the
-    >70 deg rule of :func:`is_wearer`; the A/B baseline in tests/test_pano_director.py).
     ``pitch``: pitch of the strongest person per bin; ``subject`` ``(N, nb, 4)``:
     its yaw, pitch, width, height (NaN where nobody). ``group`` / ``beauty``: the
     8 view scores interpolated around the circle. ``occlude`` (0-1):
@@ -906,9 +903,7 @@ def direction_scores(
     (skips the projections when the director does not use it).
     """
     r = rules or PeopleRules360()
-    legacy = people_size == "close"
-    if not legacy:
-        r = replace(r, wearer_max_height_deg=math.inf)
+    r = replace(r, wearer_max_height_deg=math.inf)
     vs = view_scores(pv)
     oc = occlusion_scores(pv)
     n = len(pv.t)
@@ -928,10 +923,7 @@ def direction_scores(
         keep = other_people(pv, r)
         for row in d[keep]:
             f = int(row[0])
-            if legacy:
-                height = float(np.clip(row[6] / r.close_height_deg, 0, 1))
-            else:
-                height = float(framing_utility(row[6]))
+            height = float(framing_utility(row[6]))
             sig = max(10.0, float(row[5]) / 2)
             dd = G.wrap_deg(centres - row[3])
             bump = height * np.exp(-0.5 * (dd / sig) ** 2)

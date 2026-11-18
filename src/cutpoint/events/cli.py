@@ -113,7 +113,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         default="auto",
         help="HUD preset key: auto (from the path) or any preset key; "
         "lookup: project (<project>/hud_presets), user "
-        "(<CUTPOINT_HOME>/presets), then bundled",
+        "(<CUTPOINT_HOME>/presets)",
     )
     g.add_argument(
         "--player",

@@ -6,8 +6,8 @@ user can delete/rename/reorder clips after reviewing them.
 Audio edge fades: ``cutpoint clips`` and ``cutpoint extend`` bake a short audio fade
 in/out into every clip (manifest ``audio_fade``), so the clips, the Resolve
 timeline and final.mp4 all sound the same. ``assemble`` only adds the fade
-(``audio_fade``, default 0.25 s) to clips that do not carry one: older clip
-folders and files added by hand. Clips are never faded twice. The video stays
+(``audio_fade``, default 0.25 s) to clips that do not carry one: files added by
+hand. Clips are never faded twice. The video stays
 a hard cut unless ``transition="fade"``.
 
 Audio transitions (``audio_transition``) follow the video by default: ``cut`` with cuts,

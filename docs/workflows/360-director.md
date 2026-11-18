@@ -49,8 +49,8 @@ in the spirit of Pano2Vid and AutoCam.
   most a fifth of the frame. A larger box elsewhere is treated as a person too close and framed
   out.
 - Other people at least 15 degrees tall (`near_min_h_deg`, detected with a score of at least
-  `near_min_score`) are framed whole or kept out, never cut by the frame edge
-  (`edge_rule` `include_exclude`, the default). Where one would be cut, the director widens the
+  `near_min_score`) are framed whole or kept out, never cut by the frame edge.
+  Where one would be cut, the director widens the
   view or shifts its yaw, whichever costs less: a shift costs `w_shift` per half view width, at
   most `include_max_shift` of it; widening costs `w_widen` for the whole way to the widest view,
   and keeps the subject at least `include_min_subject_h` of the frame tall (or as tall as it
@@ -84,8 +84,6 @@ in the spirit of Pano2Vid and AutoCam.
   Without it, a split alone does not make the step hard.
   When the view held before the cut is itself cut at the edge, the cut-away starts one key
   earlier.
-  `edge_rule` `legacy` keeps the earlier rule: widen, then reframe, then cut away, inside the
-  moment only.
 - The fix covers the whole planned span, not only the moment, so padding and tails added later
   are clean too. Keys fall on the 0.5 s grid of the moment's start. The path records that span
   as `fixed`; `extend` reuses a recorded path when that span covers the new range, else it

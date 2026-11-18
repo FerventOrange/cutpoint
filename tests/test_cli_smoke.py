@@ -44,7 +44,6 @@ def test_paths_command_uses_isolated_home(home, capsys):
         "styles",
         "presets",
         "projects",
-        "bundled",
     ):
         assert any(line.startswith(key) for line in out.splitlines())
     assert any(line.startswith("home") and "(missing)" in line for line in out.splitlines())

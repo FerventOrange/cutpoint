@@ -981,7 +981,7 @@ def top_up(
 
 def wants_top_up(preset: Any, presets_dir: Path) -> bool:
     """Whether an existing preset gets the map once (:func:`top_up`): a discovered preset
-    installed in the user's presets folder ``presets_dir`` (never a bundled or a project one)
+    installed in the user's presets folder ``presets_dir`` (never a project one)
     whose ``discovery`` has no ``hud_map`` yet."""
     path = getattr(preset, "path", None)
     if path is None or getattr(preset, "source", "") != "discovered":

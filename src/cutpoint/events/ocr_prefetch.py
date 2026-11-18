@@ -25,13 +25,6 @@ VRAM on the GPU the models use (``CUDA_VISIBLE_DEVICES``, :func:`cutpoint.memgua
 whose inputs differ from the ones ``run_events`` uses, is read inline as before, after the
 worker is stopped: one OCR engine and one decode at most.
 
-``CUTPOINT_ANALYZE_SHARED_DECODE=split`` (experimental, off by default) also makes the scene
-proxy of a whole, clean source of up to ``LONG_FILE_S`` in the background (:class:`SceneShare`),
-in the OCR read's GPU pass (:class:`~cutpoint.ffmpeg_utils.SplitDecode`, the raw frames
-spooled to the cache folder when the free disk allows). The scene cuts use that proxy, wait
-for it while it is made, and decode as before when it is not started yet or failed: the
-results are the same.
-
 With ``--batch-size N`` (#109) the worker drops its OCR engine after every N sources and makes
 a new one for the next read, and :meth:`OcrPrefetch.close` hands the engine over to the inline
 reads, so ``run_events`` drops it at its own batch boundaries too; the results are the same.
@@ -39,13 +32,9 @@ reads, so ``run_events`` drops it at its own batch boundaries too; the results a
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import logging
-import math
 import queue
-import re
-import shutil
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -54,30 +43,19 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import memguard, paths
-from cutpoint.encode import is_high_bit
 from cutpoint.errors import LowMemoryError, is_out_of_memory
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
-    DecodeHook,
     OcrCancelled,
     OcrEngine,
     OcrParams,
     detect_ocr_events,
 )
 from cutpoint.events.regions import HudPreset, game_key_for_path, load_preset
-from cutpoint.ffmpeg_utils import (
-    SPOOL_DIR,
-    SplitDecode,
-    decoder_for,
-    probe,
-    spool_cap,
-    spool_fits,
-)
 
 logger = logging.getLogger(__name__)
 
 ENV = "ANALYZE_OVERLAP"  # CUTPOINT_ANALYZE_OVERLAP=0: OCR waits for its turn (escape hatch)
-SHARED_ENV = "ANALYZE_SHARED_DECODE"  # split | 0 (default): the scene proxy (experimental)
 MIN_FREE_MIB = 2048  # free VRAM when the first source is offered (Whisper may load after it)
 MIN_TOTAL_MIB = 8192
 POLL_S = 0.5  # waits on the worker in steps this long: Ctrl+C gets through on Windows
@@ -90,112 +68,6 @@ Result = tuple[list[dict[str, Any]], dict[str, Any]]
 def enabled() -> bool:
     """False when ``CUTPOINT_ANALYZE_OVERLAP=0``."""
     return (paths.env(ENV) or "").strip() != "0"
-
-
-def shared_mode() -> str | None:
-    """``split`` from ``CUTPOINT_ANALYZE_SHARED_DECODE``; None (off) otherwise."""
-    mode = (paths.env(SHARED_ENV) or "").strip().lower()
-    return mode if mode == "split" else None
-
-
-def sweep(cdir: Path) -> None:
-    """Remove what an interrupted background scene proxy may have left in ``cdir``."""
-    shutil.rmtree(cdir / SPOOL_DIR, ignore_errors=True)
-    from cutpoint.ffmpeg_utils import sweep_tmp  # noqa: PLC0415 - one function; keeps the import block
-
-    sweep_tmp(
-        cdir / "proxy.mp4"
-    )  # a killed run's temp proxies, and the fixed name of older versions
-
-
-# lossless proxy, bytes per pixel and second: measured on NVDEC at 0.16-0.60 MB per source
-# second for 8-bit 1080p/4K sources and 0.79-0.92 for 10-bit ones (the proxy stays 10-bit)
-PROXY_BYTES_PER_PIXEL_S = {False: 11, True: 17}
-
-
-def proxy_bytes(plan: ScenePlan, src_size: tuple[int, int] | None, high_bit: bool = False) -> int:
-    """Disk the lossless scene proxy of ``plan`` takes, above what was measured: 11 bytes per
-    pixel and second, 17 for a 10-bit (``high_bit``) source. Its width comes from ``plan.vf``,
-    its height from the source's ``src_size`` (16:9 when unknown)."""
-    found = re.search(r"scale=(\d+)", plan.vf)
-    width = int(found.group(1)) if found else 320
-    height = width * src_size[1] / src_size[0] if src_size and src_size[0] else width * 9 / 16
-    return int(PROXY_BYTES_PER_PIXEL_S[high_bit] * width * height * plan.duration)
-
-
-@dataclass(frozen=True)
-class ScenePlan:
-    """The scene proxy :func:`cutpoint.analyze.scene_cuts` would make of a whole source:
-    ``vf`` and ``enc`` are its filter chain and encoder arguments, ``proxy`` its file."""
-
-    io: Path  # the file decoded (the source or its source_remap copy)
-    cdir: Path
-    duration: float
-    vf: str
-    enc: tuple[str, ...]
-
-    @property
-    def proxy(self) -> Path:
-        return self.cdir / "proxy.mp4"
-
-
-class SceneShare:
-    """The background scene proxy of one source: ``pending`` until the worker claims it
-    (``running``), then ``done`` or ``failed``; ``declined`` when the scene cuts came first
-    or the share was refused. Thread-safe."""
-
-    def __init__(self, plan: ScenePlan, mode: str) -> None:
-        self.plan = plan
-        self.mode = mode
-        self.state = "pending"
-        self.why = ""  # why it was declined
-        self.waited = 0.0  # seconds the scene cuts waited for it
-        self.spool_peak: int | None = None  # split: most spool bytes on disk at once
-        self.taken = False  # the scene cuts got the proxy (else close() removes it)
-        self._cond = threading.Condition()
-
-    def claim(self) -> bool:
-        """Worker side: start it unless the scene cuts came first."""
-        with self._cond:
-            if self.state != "pending":
-                return False
-            self.state = "running"
-            return True
-
-    def decline(self, why: str) -> None:
-        """Worker side: it will not be made (the scene cuts decode as before)."""
-        with self._cond:
-            if self.state == "pending":
-                self.state, self.why = "declined", why
-
-    def finish(self, ok: bool, peak: int | None = None) -> None:
-        """Worker side: ``plan.proxy`` is complete (``ok``) or nothing is left."""
-        with self._cond:
-            self.spool_peak = peak
-            self.state = "done" if ok else "failed"
-            self._cond.notify_all()
-
-    def result(self) -> Path | None:
-        """Scene cuts side: the complete proxy, waited for while it is made (in steps of
-        :data:`POLL_S`, so Ctrl+C gets through); None (decode it as before) when it was not
-        started, which it then never is, or failed."""
-        t0 = time.perf_counter()
-        with self._cond:
-            if self.state == "pending":
-                self.state, self.why = "declined", "not started before the scene cuts"
-                return None
-            while self.state == "running":
-                self._cond.wait(POLL_S)
-            self.waited = time.perf_counter() - t0
-            self.taken = self.state == "done"
-            return self.plan.proxy if self.taken else None
-
-    def summary(self) -> str:
-        """For the measurement log line."""
-        text = f"{self.state}{f' ({self.why})' if self.why else ''}, waited {self.waited:.1f}s"
-        if self.spool_peak is not None:
-            text += f", spool peak {self.spool_peak / 2**20:.0f} MiB"
-        return text
 
 
 def vram_ok() -> bool:
@@ -221,7 +93,6 @@ class _Job:
     error: BaseException | None = None
     skipped: bool = False  # declined or cancelled: read inline
     oom: str = ""  # how it was short of memory in the background (skipped: read inline)
-    share: SceneShare | None = None  # its scene proxy, made in the background
     index: int = 0  # its place among the analysis' sources (--batch-size)
     preset_key: Any = None  # the OCR key of the preset it was read with (take() compares it)
 
@@ -280,9 +151,6 @@ class OcrPrefetch:
         self._open = True  # sources may still be offered
         self._checked: bool | None = None  # presets and VRAM, checked by the worker
         self.declined: str | None = None  # why the worker read nothing
-        self._off = ""  # the same, for the shares of every source
-        self.mode = shared_mode()  # the background scene proxy (None: off)
-        self._split: SplitDecode | None = None  # the worker's shared decode
         # seconds the main thread spent in take(), per source path (timings.sources, #725)
         self.waits: dict[str, float] = {}
 
@@ -293,28 +161,22 @@ class OcrPrefetch:
         self.close()
 
     # ---- main thread
-    def offer(
-        self, src: Path, duration: float, ok: bool, scene: ScenePlan | None = None
-    ) -> SceneShare | None:
+    def offer(self, src: Path, duration: float, ok: bool) -> None:
         """A source whose read was checked, ``duration`` as highlights.json records it.
         ``ok`` False (a read error, a recovered part, Whisper not on CUDA): neither it nor
-        a later source is read in the background. ``scene``: its scene proxy, made in the
-        background in the shared-decode mode; returns the share the scene cuts then use."""
+        a later source is read in the background."""
         if not self._open or str(src) in self._jobs:
-            return None
+            return
         if not ok:
             self._open = False
-            return None
+            return
         try:
             job = _Job(load_source(src, duration))
         except Exception:  # never fails the transcription: the OCR is read in its turn
             logger.debug("OCR prefetch off: %s not loadable", src, exc_info=True)
             self._open = False
-            return None
-        sweep(job.source.cdir)  # also after a split run, when the mode is off now
+            return
         job.index = next((k for k, p in enumerate(self.sources) if str(p) == str(src)), 0)
-        if self.mode is not None and scene is not None:
-            job.share = SceneShare(scene, self.mode)
         self._jobs[str(src)] = job
         if self._thread is None:
             self._thread = threading.Thread(target=self._run, name="ocr-prefetch", daemon=True)
@@ -324,7 +186,6 @@ class OcrPrefetch:
             for hold in self._holds:
                 hold.handler.addFilter(hold)
         self._queue.put(job)
-        return job.share
 
     def take(
         self, src: Source, params: OcrParams, on_progress: Callable[[float], None] | None
@@ -347,7 +208,7 @@ class OcrPrefetch:
     def _take(
         self, job: _Job, src: Source, on_progress: Callable[[float], None] | None
     ) -> Result | None:
-        sent, t0 = 0, time.perf_counter()
+        sent = 0
         while True:
             finished = job.done.wait(POLL_S)
             shares = job.shares[sent:]
@@ -390,9 +251,6 @@ class OcrPrefetch:
             setattr(record, REPLAY, True)
             handler.handle(record)
         job.records.clear()
-        if self.mode is not None:  # for measuring the shared decode
-            waited = time.perf_counter() - t0
-            logger.info("%s: background OCR taken after a %.1fs wait", src.name, waited)
         if job.error is not None:
             raise job.error
         return job.result
@@ -409,10 +267,6 @@ class OcrPrefetch:
             if thread.is_alive():
                 logger.debug("OCR prefetch still busy after %.0fs; left to exit", JOIN_S)
                 self._stuck = thread
-        for job in self._jobs.values():  # a proxy the scene cuts never used
-            if job.share is not None and job.share.state == "done" and not job.share.taken:
-                with contextlib.suppress(OSError):
-                    job.share.plan.proxy.unlink(missing_ok=True)
         for hold in self._holds:
             hold.handler.removeFilter(hold)
         self._holds = []
@@ -468,16 +322,14 @@ class OcrPrefetch:
     def _run(self) -> None:
         while (job := self._queue.get()) is not None:
             self.current = job
-            why = "the OCR read needed no fresh GPU decode (cached, resumed or in parts)"
             try:
                 if self._cancel.is_set():
-                    job.skipped, why = True, "the background OCR was stopped"
+                    job.skipped = True
                     continue
                 if self._checked is None:
                     self._checked = self._check()
-                    self._off = self.declined or ""  # kept: take() clears declined once said
                 if not self._checked:
-                    job.skipped, why = True, self._off
+                    job.skipped = True
                     continue
                 if self.batch_size and job.index and not job.index % self.batch_size:
                     # a batch boundary (--batch-size): the next read makes a new engine
@@ -491,10 +343,9 @@ class OcrPrefetch:
                         on_progress=job.shares.append,
                         make_engine=self.make_engine,
                         cancel=self._cancel,
-                        decode=self._decoder(job),
                     )
             except OcrCancelled:  # cancelled, or a GPU pass failed: read in its turn
-                job.skipped, why = True, "the OCR read was cancelled or its GPU pass failed"
+                job.skipped = True
                 self._cancel.set()  # the later sources too, after it
             except BaseException as err:  # noqa: BLE001 - re-raised by take()
                 if isinstance(err, LowMemoryError):
@@ -502,7 +353,6 @@ class OcrPrefetch:
                     # the steps it overlaps: checked again (and freed) in its turn
                     short = err.args[1] if len(err.args) > 1 else str(err)
                     job.skipped, job.oom = True, f"had too little memory free ({short})"
-                    why = "too little memory was free for the OCR read"
                 elif is_out_of_memory(err):
                     # short of memory next to the GPU steps it overlaps (our own contention):
                     # read in its turn, once they are done; out of memory there stops the run.
@@ -510,76 +360,9 @@ class OcrPrefetch:
                     lines = str(err).strip().splitlines()
                     reason = lines[0] if lines else type(err).__name__
                     job.skipped, job.oom = True, f"ran out of memory ({reason})"
-                    why = "the OCR read ran out of memory"
                 else:
-                    job.error, why = err, "the OCR read failed"
+                    job.error = err
                 self._cancel.set()  # a serial run stops at this source too
             finally:
-                if self._split is not None:  # its frames were not all read: ffmpeg is killed
-                    self._split.close()
-                    self._split = None
-                if job.share is not None:  # unless it ran
-                    job.share.decline(why)
                 self.current = None
                 job.done.set()
-
-    def _decoder(self, job: _Job) -> DecodeHook | None:
-        """The shared-decode mode: the decode hook that reads the OCR frames from one decode pass
-        that also makes the job's scene proxy (when the scene cuts did not come first and the
-        disk holds the spool: its cap, or every frame of a shorter file)."""
-        share = job.share
-        if share is None:
-            return None
-        plan = share.plan
-
-        def decode(rect: tuple[int, int, int, int], vf: str, errors: list[str], exits: list[int]):
-            width, height = rect[2:]
-            # the spool thread waits at the cap, so the spool never holds more than that or
-            # than every frame of the file (when the OCR read lags the whole way)
-            frame = width * height * 3
-            need = min(frame * math.ceil(self.params.fps * plan.duration + 1), spool_cap(frame))
-            if plan.io != job.source.io_path or not self.params.hwaccel:
-                share.decline("another file or decoder than the OCR read")
-                return None
-            try:
-                info = probe(plan.io)
-                size = (info.width, info.height)
-            except Exception:  # noqa: BLE001 - only sizes the estimate; the start probes again
-                info, size = None, None
-            high_bit = info is not None and is_high_bit(info)
-            need += proxy_bytes(plan, size, high_bit)  # the scene proxy is written beside the spool
-            if not spool_fits(plan.cdir, need):
-                why = f"less than {need / 2**30:.1f} GiB + 1 GiB free for the spool and proxy"
-                share.decline(why)
-                # said now, not held for the OCR turn (REPLAY lets it through _Hold)
-                logger.info("%s: shared decode off: %s", job.source.name, why, extra={REPLAY: True})
-                return None
-            if not share.claim():
-                return None
-            try:
-                info = info or probe(plan.io)
-                self._split = SplitDecode(
-                    plan.io,
-                    size=(width, height),
-                    raw_vf=vf,
-                    stamp_fps=self.params.fps,
-                    scene_vf=plan.vf,
-                    scene_enc=plan.enc,
-                    proxy=plan.proxy,
-                    spool=plan.cdir / SPOOL_DIR,
-                    cancel=self._cancel,
-                    on_exit=share.finish,
-                    stderr_lines=errors,
-                    hw=decoder_for(plan.io),
-                    src_size=(info.width, info.height),
-                    src_fmt=info.pix_fmt,
-                    src_codec=info.vcodec,
-                )
-            except Exception as err:  # noqa: BLE001 - not started: both decode as before
-                logger.debug("shared decode not started: %s", err)
-                sweep(plan.cdir)
-                share.finish(False)
-                return None
-            return self._split.frames(exits)
-
-        return decode

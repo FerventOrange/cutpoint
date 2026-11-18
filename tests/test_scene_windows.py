@@ -6,7 +6,6 @@ faked; the cache folder is real."""
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import threading
@@ -263,9 +262,7 @@ def world(home, tmp_path, monkeypatch, decodes):
     w.src, w.decodes, w.full = src, decodes, []
     w.cdir = cache.source_dir(src, 0.0)
 
-    def full(
-        src_, cdir, duration, offset=0.0, limit=None, shared=None, cancel=None, cpu_free=False
-    ):
+    def full(src_, cdir, duration, offset=0.0, limit=None, cancel=None, cpu_free=False):
         w.full.append(threading.current_thread())
         cache.save_json(cdir / analyze.SCENES_FILE, [16.4])
         return [16.4]
@@ -439,20 +436,6 @@ def test_an_auto_switch_to_a_scene_weighted_style_drops_the_windows_mark(world, 
     assert hl["style"] == "action" and len(world.full) == 1
     (rec,) = hl["timings"]["sources"]
     assert "scene_windows" not in rec and rec["scenes_s"] >= 0
-
-
-def test_the_shared_scene_proxy_is_not_planned_without_scene_weight(world, monkeypatch):
-    """In a shared-decode mode the background proxy is planned only for styles that weigh it."""
-    planned = []
-    monkeypatch.setattr(analyze, "_scene_plan", lambda src, d: planned.append(src))
-
-    pre = SimpleNamespace(mode="split", waits={}, offer=lambda *a: None, busy=False)
-    monkeypatch.setattr(analyze, "_ocr_prefetch", lambda *a, **k: contextlib.nullcontext(pre))
-    monkeypatch.setattr(analyze, "Transcriber", type("Tr", (StubTranscriber,), {"device": "cuda"}))
-    for name in ("funny", "gaming"):
-        analyze.analyze(world.src, get_style(name), world.src.parent.parent / f"p-{name}",
-                        vision=False, use_scenes=True, layers=False)  # fmt: skip
-    assert planned == [world.src]  # gaming only
 
 
 # ----------------------------------------------------------------- the cached grids (events)

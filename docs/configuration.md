@@ -48,7 +48,6 @@ All optional.
 | `CUTPOINT_EXPORT_WORKERS` | Clips `clips` and `edit` export at once: `auto` (default) or a number from 1 to 3. Overrides `export_workers` |
 | `CUTPOINT_VIDEO_DECODER` | `cpu` decodes every video on the CPU instead of NVDEC or VAAPI (analysis, HUD OCR, 360, UI proxies); unset or any other value detects the GPU decoder as usual (see [GPU troubleshooting](troubleshooting/ffmpeg-gpu.md#which-video-encoder-is-used-and-why-not-the-gpu)) |
 | `CUTPOINT_ANALYZE_OVERLAP` | `0` turns off the background HUD OCR of `analyze` (on by default where it applies; see [analysis steps](commands.md#analysis-steps)). An escape hatch: the output is the same either way |
-| `CUTPOINT_ANALYZE_SHARED_DECODE` | Experimental, opt-in: `split` makes the scene detection proxy of `analyze` in the same decode as the background HUD OCR, spooling up to about 2 GB to the cache folder. Same output either way (see [analysis steps](commands.md#analysis-steps)) |
 | `CUTPOINT_ANALYZE_SCENE_OVERLAP` | Opt-in: `1` detects the scene cuts of each source in `analyze` while Whisper transcribes it, instead of after. Helps on long sources where both take about as long (long talks, screen recordings). Same output either way, apart from `timings` (see [analysis steps](commands.md#analysis-steps)) |
 | `CUTPOINT_SCENE_DECODE` | How the full scene detection pass of `analyze` decodes a source. `auto` (default, also any other value) splits it between NVDEC and the CPU, which decode the two parts of the source at once (about 1/3 faster), when an NVIDIA GPU decodes it, it is 8-bit 4:2:0 H.264 (the CPU decodes HEVC too slowly to help) in MP4, MOV, M4V or MKV whose video starts with the file, 2 to 30 minutes long, the machine has at least 6 logical CPUs (2 are left free) and nothing else uses the CPU then: no background HUD OCR read and no Whisper on the CPU (with `CUTPOINT_ANALYZE_SCENE_OVERLAP=1`); otherwise one decode, as before. `gpu`: always one decode (on the GPU decoder when there is one), as before this option. `cpu`: one decode on the CPU. `hybrid`: split whenever NVDEC decodes the source (a whole source of up to 30 minutes without read errors), also when it is short, not H.264 or the CPU is busy (for measuring; only MP4, MOV, M4V or MKV: other containers decode in one pass). The scene cuts match those of one decode, apart from a rare cut where the frames the CPU and NVDEC decode differ slightly; if a part of the split fails, a WARNING says so and the source decodes in one pass |
 | `CUTPOINT_FADE_COPY` | `0` re-encodes the whole video of `assemble --transition fade` instead of stream-copying between the fades (see [assemble](commands.md#assemble)). An escape hatch: the same number of frames at the same times, the same audio and the same timelines either way |
@@ -415,7 +414,7 @@ Settings for the optional 360 module. Every key is optional.
 | `max_follow_deg` | Largest camera lean, in degrees from the clip's average attitude, that the view follows when `level_strength` is below 1. A larger lean (a fall, the camera being handled) is followed as this much. Default 30 |
 | `imu_offset_s` | Time offset in seconds between the motion sensor and the video, if a clip's correction looks early or late. Default 0 |
 | `equirect_yaw_offset` | Degrees added to the director's yaw for Studio exports whose yaw 0 is not the camera's forward direction. Default 0 |
-| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. `edge_rule` (`include_exclude`, the default, or `legacy`) chooses how people at the frame edge are fixed; its tuning keys are `w_shift`, `w_widen`, `include_margin` (0.06), `include_pad_deg` (5.0, degrees of yaw, 0 or more), `include_check_pad_deg` (1.5, degrees, 0 or more), `near_soft_as_hard` (false; `true` or `false`), `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. `upright_hold_s` (default 30 s; 0 follows the camera, as the legacy preset does) sets how slowly the view of a handheld or pole-mounted clip follows the camera's heading. See [360 director](workflows/360-director.md#director) |
+| `director` | `DirectorParams` overrides for `cutpoint 360 director`, for example `{"max_speed": 35, "min_hold_s": 3.0}`. `--param KEY=VALUE` overrides them. Unknown keys and bad values are errors. People at the frame edge are fixed with these tuning keys: `w_shift`, `w_widen`, `include_margin` (0.06), `include_pad_deg` (5.0, degrees of yaw, 0 or more), `include_check_pad_deg` (1.5, degrees, 0 or more), `near_soft_as_hard` (false; `true` or `false`), `include_max_shift`, `include_min_subject_h`, `include_bridge_s`, `exclude_clear_deg`, `near_min_h_deg`, `near_min_score`, `near_box_scale`, `cut_min_gain_s` and `cut_min_gap_s`. `upright_hold_s` (default 30 s; 0 follows the camera) sets how slowly the view of a handheld or pole-mounted clip follows the camera's heading. See [360 director](workflows/360-director.md#director) |
 
 ## Styles
 
@@ -508,11 +507,10 @@ Game-HUD OCR regions come from a preset, looked up in this order:
 
 1. `<project>\hud_presets\<game>.json`
 2. `<CUTPOINT_HOME>\presets\<game>.json` (region discovery writes here)
-3. the bundled presets folder `src/cutpoint/events/presets/` (no game presets are bundled)
 
-The first preset whose `game` key (or file name, without `game`) matches wins: 1 overrides 2 and 3,
-and 2 overrides 3. To make a preset for a game, write one
-in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted like the bundled one.
+No game presets are bundled. The first preset whose `game` key (or file name, without `game`)
+matches wins: 1 overrides 2. To make a preset for a game, write one
+in folder 1 or 2, or let region discovery create it. The user folder (2) is trusted.
 A `"builtin"` key, which older presets may have, is ignored.
 
 Without `--game`, a source's game key is the `game` of the first preset whose `match` hints occur
@@ -708,12 +706,11 @@ before.
 - Names `laughter`, `scream`, `boost` and `vlm`, and names ending in `_reaction`, are reserved, and a `payoff` must be true or false.
   Such entries, and other invalid ones, are skipped with a WARNING shown once. Entries of `events`
   that are not objects are dropped without a warning.
-- Changing scores, `max` or tails does not re-run OCR. A preset in the user or bundled folder
+- Changing scores, `max` or tails does not re-run OCR. A preset in the user folder
   never gets a separate VLM cache key. A project preset gets one only when its prompt (name, view,
-  hype) differs from the user (or bundled) preset for the same game key, or from the default
+  hype) differs from the user preset for the same game key, or from the default
   prompt if there is none; its windows are then described again once. Seeds do not affect the
   key. After adding a user-folder preset with `title`, `view` or `hype`, or editing those fields in one, run
-  `cutpoint events <project> --force vlm` to describe the windows again. A preset moved from the
-  bundled folder to the user folder keeps its OCR and VLM cache keys.
+  `cutpoint events <project> --force vlm` to describe the windows again.
 
 See [game streams](workflows/game-streams.md).

@@ -1184,7 +1184,6 @@ def _cmd_paths(a: argparse.Namespace) -> None:
         ("presets", paths.presets_dir()),
         ("profiles", paths.profiles_dir()),
         ("projects", cfg.projects_dir),
-        ("bundled", paths.PRESETS_DIR),
     ]
     if jsonout.active():
         for key, path in rows:
@@ -2481,8 +2480,7 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     pa = sub.add_parser(
         "paths",
         help="print the resolved data folders (CUTPOINT_HOME, "
-        "config, cache, models, tools, stage, styles, presets, profiles, projects, "
-        "bundled)",
+        "config, cache, models, tools, stage, styles, presets, profiles, projects)",
     )
     _add_json_argument(pa)
     pa.set_defaults(func=_cmd_paths)

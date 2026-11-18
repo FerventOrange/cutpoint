@@ -92,7 +92,6 @@ from cutpoint.ffmpeg_utils import (
     probe,
     read_window_ok,
     run_progress,
-    single_video_stream,
     source_tracks,
     wav_duration,
 )
@@ -615,9 +614,6 @@ LEAD_IN_S = 10.0
 # recording (OBS and stream encoders put a keyframe every 2 s), so a shorter lead-in mostly lands
 # on the keyframe the plain seek does and only costs its measuring decode
 LEAD_IN_MIN_S = 2.0
-# Scene files of older clocks (#976, #994), never read again: removed from a source's cache
-# folder once its current SCENES_FILE is saved (_drop_old_scene_files)
-OLD_SCENES_FILES = ("scenes.json", "scenes-v2.json")
 
 
 def scene_overlap() -> bool:
@@ -893,15 +889,7 @@ def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> l
         except OSError as exc:  # never replace the original exception
             logger.debug("could not delete %s: %s", proxy, exc)
     cache.save_json(path, cuts)
-    _drop_old_scene_files(path.parent)
     return cuts
-
-
-def _drop_old_scene_files(cdir: Path) -> None:
-    """Remove the :data:`OLD_SCENES_FILES` of the cache folder ``cdir``, if there are any."""
-    for name in OLD_SCENES_FILES:
-        with contextlib.suppress(OSError):
-            (cdir / name).unlink(missing_ok=True)
 
 
 def _scan(proxy: Path, cancel: threading.Event | None) -> list[float]:
@@ -947,7 +935,6 @@ def scene_cuts(
     duration: float,
     offset: float = 0.0,
     limit: float | None = None,
-    shared: Any = None,
     cancel: threading.Event | None = None,
     cpu_free: bool = False,
     readable_from: float | None = None,
@@ -965,8 +952,6 @@ def scene_cuts(
         offset: Seek here first; returned times are relative to it.
         limit: Stop decoding after this many seconds (stays clear of a known
             unreadable region instead of hitting it again).
-        shared: The :class:`~cutpoint.events.ocr_prefetch.SceneShare` of this source (a
-            shared-decode mode): its proxy, waited for while it is made, replaces the decode.
         cancel: For a run in a background thread (:class:`_SceneJob`): once set, ffmpeg is
             killed or the detection stopped, the proxy removed and :class:`~cutpoint.ffmpeg_utils.RunCancelled` raised,
             before any :data:`SCENES_FILE` is written.
@@ -985,12 +970,9 @@ def scene_cuts(
     logger.info("%s: detecting scene cuts", src.name)
     importlib.import_module("scenedetect")  # not installed: fails before any decode
     dopts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
-    if shared is not None and (made := shared.result()) is not None:
-        return _detect(made, path, **dopts)
     plan = _hybrid_plan(src, duration, offset, limit, cpu_free)
     if plan is not None and (cuts := _hybrid_cuts(src, cdir, duration, *plan, cancel)) is not None:
         cache.save_json(path, cuts)
-        _drop_old_scene_files(cdir)
         return cuts
     proxy = cdir / "proxy.mp4"
     gpu = scene_decode_mode() != "cpu"
@@ -1318,7 +1300,6 @@ class _SceneJob:
         duration: float,
         offset: float,
         limit: float | None,
-        shared: Any,
         cpu_free: bool = False,
         readable_from: float | None = None,
     ) -> None:
@@ -1326,7 +1307,7 @@ class _SceneJob:
         self.cuts: list[float] = []
         self.took = 0.0  # seconds the thread ran
         self._error: BaseException | None = None
-        self._args = (src, cdir, duration, offset, limit, shared)
+        self._args = (src, cdir, duration, offset, limit)
         # the split decode (scene_cuts' cpu_free): a plain call when Whisper is on the CPU
         self._opts: dict[str, Any] = {"cpu_free": True} if cpu_free else {}
         if readable_from is not None:  # a recovered part's lead-in (scene_cuts)
@@ -2196,7 +2177,7 @@ def analyze_source(
     cam_ctx: Any = None,
     pick: bool = True,
     report: Callable[[float], None] | None = None,
-    read_checked: Callable[[MediaInfo, dict[str, Any] | None], Any] | None = None,
+    read_checked: Callable[[MediaInfo, dict[str, Any] | None], None] | None = None,
     text: bool = True,
     on_transcript: Callable[[], None] | None = None,
     cpu_busy: Callable[[], bool] | None = None,
@@ -2215,8 +2196,7 @@ def analyze_source(
     ``report`` gets the share of the source's transcription done (0-1): the audio
     extract is its first :data:`EXTRACT_SHARE`, Whisper the rest. ``read_checked`` gets
     the probe and the read-error record (None: a clean read) as soon as they are known,
-    before loudness, Whisper and the scene cuts; what it returns goes to
-    :func:`scene_cuts` as ``shared`` (a scene proxy made in the background, or None).
+    before loudness, Whisper and the scene cuts.
     ``on_transcript`` is called once the transcript is there (made or cached), before the
     scene cuts. ``cpu_busy`` says whether a CPU-heavy step of the caller (the background HUD
     OCR) runs right now (None: none does); the scene cuts split their decode between NVDEC and
@@ -2241,7 +2221,6 @@ def analyze_source(
     cdir = cache.source_dir(src, offset)
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
-    shared = None  # read_checked's background scene proxy
     overlap: _SceneJob | None = None  # the scene cuts, run alongside Whisper
     segments: list[Segment] = []
     lufs_data: tuple[np.ndarray, np.ndarray] | None = None
@@ -2275,7 +2254,7 @@ def analyze_source(
             warn_read_error(src, read_error, recover)
             span = read_error["audio_s"]  # analyse only what was actually read
         if read_checked is not None:
-            shared = read_checked(info, read_error)
+            read_checked(info, read_error)
 
         t0 = time.perf_counter()
         lufs_data = _loudness(wav, cdir)
@@ -2287,7 +2266,6 @@ def analyze_source(
                 use_scenes
                 and not edge_windows(style, span)
                 and scene_overlap()
-                and shared is None
                 and cache.load_json(cdir / SCENES_FILE) is None
                 and cached_transcript(tr, cdir) is None
             ):
@@ -2296,7 +2274,7 @@ def analyze_source(
                 free = getattr(tr, "device", None) == "cuda" and not (cpu_busy and cpu_busy())
                 limit = span if read_error else None
                 lead = {"readable_from": readable_from} if readable_from is not None else {}
-                overlap = _SceneJob(io, cdir, span, offset, limit, shared, free, **lead)
+                overlap = _SceneJob(io, cdir, span, offset, limit, free, **lead)
             segments = _transcript(wav, cdir, tr, transcribed if report else None, src)
             tick("transcribe_s", t0)
             if on_transcript is not None:
@@ -2316,7 +2294,7 @@ def analyze_source(
         stages["cached"] = False
         logger.warning("%s has no audio; using scene/vision signals only", src.name)
         if read_checked is not None:
-            shared = read_checked(info, None)
+            read_checked(info, None)
 
     cuts: list[float] = []
     edge_cuts: EdgeCuts | None = None
@@ -2346,19 +2324,9 @@ def analyze_source(
             opts: dict[str, Any] = {} if cpu_busy is not None and cpu_busy() else {"cpu_free": True}
             if readable_from is not None:
                 opts["readable_from"] = readable_from
-            cuts = scene_cuts(
-                io, cdir, span, offset, limit=span if read_error else None, shared=shared, **opts
-            )
+            cuts = scene_cuts(io, cdir, span, offset, limit=span if read_error else None, **opts)
             took = time.perf_counter() - t0
         add("scenes_s", took)
-        if shared is not None:  # for measuring the shared decode
-            logger.info(
-                "%s: shared decode (%s): scenes %.1fs, %s",
-                src.name,
-                shared.mode,
-                took,
-                shared.summary(),
-            )
     ps = part_signals(
         span, lufs_data, segments, cuts if use_scenes else None, style, src.name, text
     )
@@ -3524,34 +3492,6 @@ def _ocr_prefetch(
     return ocr_prefetch.OcrPrefetch(project, sources, params, batch_size=batch_size)
 
 
-def _scene_plan(src: Path, duration: float) -> Any:
-    """The :class:`~cutpoint.events.ocr_prefetch.ScenePlan` of a whole source whose scene
-    proxy may be made in the background: up to :data:`LONG_FILE_S` (longer files decode
-    keyframes only), its scene cuts not cached, one video stream (no cover art) and a
-    container that seeks exactly (:func:`_seeks_exactly`: an MPEG-TS pass places its first
-    frame by a decode of its own, :func:`_first_shift`); else None (an INFO line names a
-    failed stream or container gate; called in a shared-decode mode only)."""
-    from cutpoint.events.ocr_prefetch import ScenePlan  # noqa: PLC0415
-
-    cdir = cache.source_dir(src)
-    if duration > LONG_FILE_S or cache.load_json(cdir / SCENES_FILE) is not None:
-        return None
-    io = remap_source(src)
-    if not single_video_stream(io):
-        logger.info(
-            "%s: shared decode off: not exactly one video stream (cover art or several)",
-            src.name,
-        )
-        return None
-    if not _seeks_exactly(io):
-        logger.info(
-            "%s: shared decode off: MPEG-TS or another container without exact seeks", src.name
-        )
-        return None
-    _pre, _post, vf, enc = _proxy_args(duration)
-    return ScenePlan(io, cdir, duration, vf, tuple(enc))
-
-
 def _dialogue_backend(
     style: Style,
     skip: Collection[str],
@@ -4483,20 +4423,15 @@ def _transcribe_sources(
         The results and the transcript.txt text.
     """
 
-    def read_checked(src: Path, offset: float) -> Callable[..., Any] | None:
+    def read_checked(src: Path, offset: float) -> Callable[..., None] | None:
         """``analyze_source``'s hook: offer the source to the OCR prefetch, which reads
-        only a whole, clean source while Whisper runs on the GPU (and, in a shared-decode
-        mode, makes its scene proxy; the share is returned for the scene cuts)."""
+        only a whole, clean source while Whisper runs on the GPU."""
         if prefetch is None:
             return None
 
-        def offer(info: MediaInfo, rec: dict[str, Any] | None) -> Any:
+        def offer(info: MediaInfo, rec: dict[str, Any] | None) -> None:
             ok = not offset and rec is None and tr.device == "cuda"
-            plan = None
-            windows = edge_windows(style, info.duration)  # no full pass to share
-            if ok and opts.use_scenes and not windows and prefetch.mode is not None:
-                plan = _scene_plan(src, info.duration)
-            return prefetch.offer(src, round(info.duration, 3), ok, plan)
+            prefetch.offer(src, round(info.duration, 3), ok)
 
         return offer
 

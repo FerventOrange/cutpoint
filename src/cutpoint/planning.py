@@ -290,7 +290,6 @@ def pad(
     record = {
         "requested": {"start": padding.start, "end": padding.end},
         "applied": {"start": applied_s, "end": max(0.0, applied_e)},
-        "pre_pad": {"start": round(start, 3), "end": round(end, 3)},
     }
     if clamped:
         record["clamped"] = clamped

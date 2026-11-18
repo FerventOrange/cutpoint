@@ -243,7 +243,7 @@ def _clips(tmp_path: Path, project: Path | None, name: str = "clips") -> Path:
     clips = tmp_path / "proj" / name
     write(clips / "001_a.mp4")
     e = {"file": "001_a.mp4", "source": str(write(tmp_path / "a.insv")), "start": 10.0}
-    e |= {"end": 20.0, "pano": {"mode": "auto"}}
+    e |= {"end": 20.0, "pick": {"start": 10.0, "end": 20.0}, "pano": {"mode": "auto"}}
     doc = {"format": FMT, "clips": [e]} | ({"project": str(project)} if project else {})
     write(clips / "manifest.json", json.dumps(doc))
     return clips
