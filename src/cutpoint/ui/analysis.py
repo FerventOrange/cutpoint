@@ -153,7 +153,10 @@ def _gaming_style(name: object, ps: ProjectStyle) -> bool:
 
 
 def _action_cam_style(name: str) -> bool:
-    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam): kept as given for 360 sources."""
+    """``name`` is a telemetry-driven action-cam style (``kind`` action-cam).
+
+    Such a style is kept as given for 360 sources.
+    """
     try:
         return get_style(name).kind == ACTION_CAM
     except (ValueError, TypeError, AttributeError):
@@ -350,13 +353,6 @@ class ProjectStyle:
         except (ValueError, TypeError, AttributeError):
             return name not in learned_styles()
         return False
-
-
-def _analysis_inputs(meta: dict[str, Any], hl: dict[str, Any] | None) -> tuple[Any, Any]:
-    """:attr:`ProjectStyle.inputs` and :attr:`ProjectStyle.chosen`, for ui/routes/ranking.py
-    (moves to :class:`ProjectStyle` with that file's next change)."""
-    ps = ProjectStyle.of(meta, hl)
-    return ps.inputs, ps.chosen
 
 
 def _no_options(values: Any, what: str) -> None:

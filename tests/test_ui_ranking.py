@@ -298,7 +298,7 @@ def test_apply_records_the_rerank_the_style_was_chosen_after(home, tmp_path, cli
     assert apply(client, preview(client).json()["base"]).status_code == 200
     meta = ui.read_meta(project)
     assert meta[ui.STYLE_FOR] == read(project)["settings"]["rerank_backup"]
-    assert ui._analysis_inputs(meta, read(project))[1] == "funny"
+    assert ui.ProjectStyle.of(meta, read(project)).chosen == "funny"
 
 
 def test_a_project_is_not_deleted_while_its_ranking_is_applied(home, tmp_path, client):
