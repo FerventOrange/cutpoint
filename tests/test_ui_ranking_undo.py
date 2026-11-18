@@ -260,6 +260,22 @@ def test_a_360_project_has_no_undo_and_is_refused(home, tmp_path, client):
     assert snapshot(project) == before
 
 
+def test_the_marker_and_ui_folder_are_released_when_the_swap_fails(
+    home, tmp_path, client, monkeypatch
+):
+    project = make_project(home, tmp_path)
+    rerank.rerank(project, get_style("funny"))  # on the command line: no ui folder yet
+    base = page(client)["ranking_key"]
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("disk trouble")
+
+    monkeypatch.setattr(rerank, "swap", boom)
+    with pytest.raises(RuntimeError, match="disk trouble"):
+        swap(client, base)
+    assert not ui.RERANKING and not (project / "ui").exists()
+
+
 def test_a_missing_base_is_400(home, tmp_path, client):
     make_project(home, tmp_path)
     assert client.post(URL, json={}).status_code == 400

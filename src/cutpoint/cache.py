@@ -410,12 +410,17 @@ def match_mode(tmp: Path, target: Path) -> None:
         tmp.chmod(mode)
 
 
-def save_json(path: Path, data: Any, *, indent: int = 2, durable: bool = False) -> None:
-    """Atomically write ``data`` as JSON, UTF-8, with the platform's line endings (see
-    :func:`save_bytes`, also for ``durable``)."""
+def json_bytes(data: Any, *, indent: int = 2) -> bytes:
+    """``data`` as :func:`save_json` writes it: JSON, UTF-8, with the platform's line endings."""
     text = json.dumps(data, indent=indent, ensure_ascii=False)
     # strings escape their newlines, so these are only the indent's line breaks
-    save_bytes(path, text.replace("\n", os.linesep).encode("utf-8"), durable=durable)
+    return text.replace("\n", os.linesep).encode("utf-8")
+
+
+def save_json(path: Path, data: Any, *, indent: int = 2, durable: bool = False) -> None:
+    """Atomically write ``data`` as JSON, UTF-8, with the platform's line endings
+    (:func:`json_bytes`; see :func:`save_bytes`, also for ``durable``)."""
+    save_bytes(path, json_bytes(data, indent=indent), durable=durable)
 
 
 def _fsync_dir(folder: Path) -> None:

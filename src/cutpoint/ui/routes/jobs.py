@@ -94,10 +94,10 @@ from cutpoint.ui.projects import (
     current_export,
     export_joins,
     fresh_name,
-    load_exports,
     project_busy,
     project_dir,
     prune_resume_folders,
+    record_export,
     resumed,
     run_state,
     validate_segments,
@@ -297,11 +297,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
                 raise RuntimeError("edit finished without its clips and final video")
             if skip:  # the analysis edit rewrote ran with it too
                 save_analysis_skip(p, skip)
-            items = [e for e in load_exports(p) if e["dir"] != clips_name]  # replaced
-            items.append(
-                {"dir": clips_name, "created": stamp, "vertical": vertical, "final": final_name}
-            )
-            cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+            record_export(p, clips_name, created=stamp, vertical=vertical, final=final_name)
 
     elif action == "clips":
         picks = body.get("picks", "sequence")
@@ -393,9 +389,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
         def on_success() -> None:
             if not (p / out_name / "manifest.json").is_file():
                 raise RuntimeError("clips finished without a manifest")
-            items = load_exports(p)
-            items.append({"dir": out_name, "created": stamp, "vertical": vertical, "final": None})
-            cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+            record_export(p, out_name, "append", created=stamp, vertical=vertical, final=None)
 
     elif action == "extend":
         exp = current_export(p)
@@ -416,9 +410,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
         def on_success() -> None:
             if not (p / out_name / "manifest.json").is_file():
                 raise RuntimeError("extend finished without a manifest")
-            items = load_exports(p)
-            items.append({"dir": out_name, "created": stamp, "vertical": vertical, "final": None})
-            cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+            record_export(p, out_name, "append", created=stamp, vertical=vertical, final=None)
 
     elif action == "assemble":
         exp = current_export(p)
@@ -509,12 +501,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             if not (p / f"{stem}.{fmt}").is_file():
                 what = "a final video" if fmt == "mp4" else f"its {fmt} timeline"
                 raise RuntimeError(f"assemble finished without {what}")
-            items = load_exports(p)
-            for e in items:
-                if e["dir"] == exp_dir:
-                    e["final"] = f"{stem}.{fmt}"
-                    e["final_joins"] = final_joins
-            cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+            record_export(p, exp_dir, "update", final=f"{stem}.{fmt}", final_joins=final_joins)
 
     elif action in ("crashes", "events"):
         # The analysis refined after the fact, one CLI command each: "Describe the footage"

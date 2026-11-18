@@ -409,6 +409,44 @@ def test_save_keeps_the_earlier_file_as_the_backup(home, tmp_path):
     assert json.loads((project / rerank.BACKUP).read_bytes())["style"] == "commentary"
 
 
+def test_swap_round_trip_restores_each_ranking_and_writes_as_save_json(home, tmp_path):
+    """swap: Undo puts the ranking before back (ids and candidates), Redo the re-ranked one;
+    highlights.json holds the bytes cache.save_json writes for its object (A412)."""
+    project = make_project(home, tmp_path)
+    first = read(project)
+    second = rerank.rerank(project, get_style("funny")).after
+    found = rerank.undo_target(project, read(project))
+    assert found is not None and found[0]["style"] == "gaming" and found[1] is False
+    base = analyze.backup_digest((project / "highlights.json").read_bytes())
+    before, now, undone = rerank.swap(project, base)
+    assert undone is True and before["style"] == "funny" and now["style"] == "gaming"
+    assert ids(read(project)) == ids(first) and read(project)["candidates"] == first["candidates"]
+    raw = (project / "highlights.json").read_bytes()
+    assert raw == cache.json_bytes(read(project))
+    cache.save_json(tmp_path / "saved.json", read(project))
+    assert raw == (tmp_path / "saved.json").read_bytes()
+    assert rerank.undo_target(project, read(project))[1] is True  # the next swap is a Redo
+    _, now, undone = rerank.swap(project, analyze.backup_digest(raw))
+    assert undone is False and ids(read(project)) == ids(second)
+    assert read(project)["candidates"] == second["candidates"]
+    assert not [f for f in project.iterdir() if f.suffix == ".tmp"]
+
+
+def test_swap_refuses_a_stale_base_and_has_nothing_without_a_backup(home, tmp_path):
+    project = make_project(home, tmp_path)
+    raw = (project / "highlights.json").read_bytes()
+    assert rerank.swap(project, analyze.backup_digest(raw)) is None  # never re-ranked
+    rerank.rerank(project, get_style("funny"))
+    with pytest.raises(StaleRankingError):
+        rerank.swap(project, "not-the-key")
+
+
+def test_json_bytes_is_what_save_json_writes(tmp_path):
+    data = {"a": "line\nbreak", "b": ["é", 1.5, None], "c": {"d": True}}
+    cache.save_json(tmp_path / "x.json", data)
+    assert (tmp_path / "x.json").read_bytes() == cache.json_bytes(data)
+
+
 def test_the_same_style_keeps_every_id(home, tmp_path):
     project = make_project(home, tmp_path)
     hl = read(project)

@@ -271,6 +271,21 @@ def test_apply_with_a_ui_file_is_refused_before_the_ranking_is_saved(home, tmp_p
     assert not (project / rerank.BACKUP).exists() and not ui.RERANKING
 
 
+def test_the_marker_and_ui_folder_are_released_when_apply_fails(
+    home, tmp_path, client, monkeypatch
+):
+    project = make_project(home, tmp_path)
+    base = preview(client).json()["base"]
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("disk trouble")
+
+    monkeypatch.setattr(rerank, "rerank", boom)
+    with pytest.raises(RuntimeError, match="disk trouble"):
+        apply(client, base)
+    assert not ui.RERANKING and not (project / "ui").exists()
+
+
 def test_a_refused_apply_leaves_no_ui_folder(home, tmp_path, client):
     project = make_project(home, tmp_path)
     assert apply(client, "not-the-key").status_code == 409
