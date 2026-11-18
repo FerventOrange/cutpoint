@@ -215,12 +215,14 @@ class ToolCalls:
                 "possible": possible,  # the page offers each for the user to add
             }
         )
-        skipped = got.total - got.searched
-        note = (
-            f" ({skipped} of {got.total} sources have no cached frames and were not searched)"
-            if skipped
-            else ""
-        )
+        bare = got.total - got.searched - got.other
+        parts = [f"{bare} of {got.total} sources have no cached frames"] if bare else []
+        if got.other:
+            parts.append(
+                f"{got.other} of {got.total} have a frame index made with another CLIP model"
+            )
+        searched = "neither was searched" if len(parts) == 2 else "they were not searched"
+        note = f" ({' and '.join(parts)}; {searched})" if parts else ""
         if not rows:
             return (
                 f"no window matches closely (the best frame is {got.best}/10){note}; "
