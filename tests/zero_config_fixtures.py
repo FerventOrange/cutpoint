@@ -35,7 +35,12 @@ def _tone(seconds: int, rate: int = 16000) -> list[str]:
 
 
 def _moving(seconds: int) -> list[str]:
-    src = f"gradients=size={SIZE}:rate={RATE}:speed=0.05:nb_colors=4"
+    # fixed colours and gradient line: their random defaults (not tied to ``seed``) make some
+    # pictures so flat that most of them reads as static (a still picture: no HUD counted)
+    src = (
+        f"gradients=size={SIZE}:rate={RATE}:speed=0.05:nb_colors=4"
+        ":c0=red:c1=lime:c2=blue:c3=yellow:x0=0:y0=0:x1=319:y1=179"
+    )
     return ["-f", "lavfi", "-i", src, "-t", str(seconds)]
 
 
