@@ -292,3 +292,41 @@ def test_a_new_still_keeps_the_frames_folder_within_the_cap(
         assert len(jpgs(project / "ui" / "frames")) <= 20
     left = sorted(int(f.name.split("-")[1]) for f in jpgs(project / "ui" / "frames"))
     assert left[-1] == 4900 and len(left) == 20  # the newest stays
+
+
+# --------------------------------------------------------------------------- sources poll
+def test_the_sources_route_lists_the_project_views_sources_alone(ui_client, tmp_path: Path) -> None:
+    """A754: the page's proxy poll reads the project's ``sources`` without its moments; the
+    same views as the whole project reply, from the same code."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    for name in ("a.mp4", "b.mkv"):
+        (folder / name).write_bytes(b"x")
+    res = ui_client.post("/api/projects", json={"name": "Poll", "source": str(folder)})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    res = ui_client.get(f"/api/projects/{pid}/sources")
+    assert res.status_code == 200, res.text
+    light = res.json()
+    assert list(light) == ["sources"]
+    assert [s["name"] for s in light["sources"]] == ["a.mp4", "b.mkv"]
+    assert set(light["sources"][0]) == {
+        "id", "name", "path", "url", "duration", "status", "proxy", "fragmented", "progress",
+        "windows", "pending", "failed",
+    }  # fmt: skip
+    assert light["sources"] == ui_client.get(f"/api/projects/{pid}").json()["sources"]
+
+
+@pytest.mark.parametrize("pid", ["nope", ".hidden", " trip", "a\\b"])
+def test_the_sources_route_refuses_what_the_project_route_refuses(ui_client, pid: str) -> None:
+    assert ui_client.get(f"/api/projects/{pid}/sources").status_code == 404
+    assert ui_client.get(f"/api/projects/{pid}").status_code == 404
+
+
+def test_the_sources_route_needs_the_session_token(ui_client, tmp_path: Path) -> None:
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    (folder / "a.mp4").write_bytes(b"x")
+    pid = ui_client.post("/api/projects", json={"name": "Tok", "source": str(folder)}).json()["id"]
+    res = ui_client.get(f"/api/projects/{pid}/sources", headers={"X-Cutpoint-Token": "wrong"})
+    assert res.status_code == 403

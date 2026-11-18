@@ -290,6 +290,17 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   window.HTMLDialogElement?.prototype && (window.HTMLDialogElement.prototype.close ??= function () { this.removeAttribute('open'); });
 
   const all = { ...bootRoutes(project), ...routes };
+  // the proxy polls' GET /api/projects/<id>/sources (A754) answers from the project route's reply
+  // at the time, unless a test routes it itself
+  for (const key of Object.keys(all)) {
+    if (!/^GET \/api\/projects\/[^/]+$/.test(key) || Object.hasOwn(all, `${key}/sources`)) continue;
+    all[`${key}/sources`] = async (req) => {
+      let out = all[key];
+      if (typeof out === 'function') out = await out(req);
+      if (out?.__reply && out.status !== 200) return out;
+      return { sources: (out?.__reply ? out.body : out)?.sources ?? [] };
+    };
+  }
   const requests = [];
   const unhandled = [];
   const fetchMock = makeFetch(all, requests, unhandled);
