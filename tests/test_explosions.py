@@ -16,11 +16,12 @@ import pytest
 from conftest import needs_ffmpeg
 from cutpoint import analyze
 from cutpoint.assistant import watch
-from cutpoint.events import common, eventtypes, explosions, pipeline, scoring, sheets, vlm_windows
+from cutpoint.events import eventtypes, explosions, pipeline, scoring, sheets, vlm_windows
 from cutpoint.events.audio_events import DEFAULT_GROUPS
 from cutpoint.events.common import Source
 from cutpoint.events.report import _event_line, normalize
 from cutpoint.sources import Part
+from events_fakes import stub_run_events
 
 QUIET = -30.0
 
@@ -244,19 +245,9 @@ def test_run_events_confirms_booms_and_writes_the_settings(tmp_path, monkeypatch
         {k: v for k, v in _boom(20.0).items() if k != "kind"},
         {k: v for k, v in _boom(40.0).items() if k != "kind"},
     ]
-    monkeypatch.setattr(
-        pipeline,
-        "load_highlights",
-        lambda p: {"sources": [{"path": str(src.path)}], "style": "gaming", "candidates": []},
-    )
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: src)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "unload_ollama", list)
+    stub_run_events(monkeypatch, [src], {"style": "gaming", "candidates": []})
     monkeypatch.setattr(pipeline, "cached_audio_events", lambda s, p: cached)
     monkeypatch.setattr(pipeline, "source_parts", lambda path: [Part(0.0, cdir, None)])
-    monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
     monkeypatch.setattr(sheets, "write_visual_sheets", lambda *a, **k: None)
     windows: list[tuple[float, float]] = []
 

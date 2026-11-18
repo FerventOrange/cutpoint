@@ -23,10 +23,11 @@ import cutpoint.analyze
 from conftest import envelope, write
 from cutpoint import cache, cli, config, memguard, progress, runstate, vision
 from cutpoint.assistant import providers
-from cutpoint.events import common, pipeline
+from cutpoint.events import pipeline
 from cutpoint.events.common import AudioPart, Source
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.vision import VisionResult
+from events_fakes import stub_run_events
 
 
 def _read(project: Path) -> dict:
@@ -365,12 +366,7 @@ def layers_run(home, tmp_path, monkeypatch):
             st.done["ocr"].add(s.name)
         return [], {"frames": 1}
 
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(pipeline, "unload_ollama", list)
-    monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
+    stub_run_events(monkeypatch, srcs, read_highlights=True)
     monkeypatch.setattr(pipeline, "PannsDetector", lambda: model("audio"))
     monkeypatch.setattr(
         pipeline, "cached_audio_events", lambda s, p: st.done.get("audio", {}).get(s.name)

@@ -16,6 +16,7 @@ from cutpoint.events import visual as V
 from cutpoint.pano import cli, project, views
 from cutpoint.pano import geometry as G
 from cutpoint.pano.x3 import X3Clip
+from events_fakes import stub_run_events
 
 
 class _Stop(Exception):
@@ -191,12 +192,7 @@ def events(tmp_path: Path, monkeypatch):
     """``run_events`` with the visual and crash layers faked; returns the handoff the
     visual layer got and the encoder the crash layer got."""
     src = common.Source(path=tmp_path / "a.lrv", duration=10.0, cdir=tmp_path / "a", audio_parts=[])
-    monkeypatch.setattr(pipeline, "load_highlights", lambda p: {"sources": [{"path": "a"}]})
-    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-    monkeypatch.setattr(pipeline, "load_source", lambda path, dur: src)
-    monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-    monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-    monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
+    stub_run_events(monkeypatch, [src])
     rec = SimpleNamespace(handoff=[], encoder=[], fail=False)
 
     def visual(sources, params, force=False, bad=None, handoff=None, errors=None):

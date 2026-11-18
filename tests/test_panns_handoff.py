@@ -11,6 +11,7 @@ import pytest
 
 from cutpoint.events import common, pipeline, sheets, voice
 from cutpoint.events.common import AudioPart, Source
+from events_fakes import stub_run_events
 
 
 class _Stop(Exception):
@@ -45,17 +46,8 @@ def run(tmp_path: Path, monkeypatch):
         load_fail: bool = False,
         stage=None,
     ):
-        by_path = {str(s.path): s for s in srcs}
-        monkeypatch.setattr(
-            pipeline, "load_highlights", lambda p: {"sources": [{"path": k} for k in by_path]}
-        )
-        monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
-        monkeypatch.setattr(pipeline, "load_source", lambda path, dur: by_path[str(path)])
-        monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
-        monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
-        monkeypatch.setattr(pipeline, "unload_ollama", list)
+        stub_run_events(monkeypatch, srcs)
         monkeypatch.setattr(pipeline, "cached_audio_events", lambda s, p: None)
-        monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)
         made: list[object] = []
         log: list[tuple[str, object]] = []
 
