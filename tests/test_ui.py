@@ -8888,6 +8888,36 @@ def test_a_resumed_edit_lists_its_clips_and_final_and_a_resumed_analysis_keeps_i
     assert cache.load_json(p / ui.ANALYSIS_FILE)["skip"] == ["keyframes", "crashes"]
 
 
+def test_record_export_replaces_appends_and_updates_as_the_jobs_wrote_it(tmp_path: Path) -> None:
+    """record_export: ``replace`` drops the earlier entry of the folder and appends it as the
+    latest (edit, a resumed run), ``append`` keeps a duplicate (clips, extend), ``update`` sets
+    fields in place (assemble); the file is what cache.save_json writes."""
+    from cutpoint.ui.projects import record_export as record  # noqa: PLC0415
+
+    p = tmp_path / "p"
+    (p / "ui").mkdir(parents=True)
+    old = {"dir": "clips", "created": "1", "vertical": False, "final": "final.mp4"}
+    other = {"dir": "clips_ui_1", "created": "2", "vertical": False, "final": None}
+    cache.save_json(p / "ui" / "exports.json", {"exports": [old, other, {"dir": "../x"}]})
+    record(p, "clips", created="3", vertical=True, final="final_vertical.mp4")
+    new = {"dir": "clips", "created": "3", "vertical": True, "final": "final_vertical.mp4"}
+    assert cache.load_json(p / "ui" / "exports.json")["exports"] == [other, new]
+    record(p, "clips_ui_1", "append", created="4", vertical=False, final=None)
+    again = {"dir": "clips_ui_1", "created": "4", "vertical": False, "final": None}
+    record(p, "clips_ui_1", "update", final="final.mp4", final_joins=[])
+    done = [{**e, "final": "final.mp4", "final_joins": []} for e in (other, again)]
+    want = {"exports": [done[0], new, done[1]]}
+    raw = (p / "ui" / "exports.json").read_bytes()
+    assert raw == cache.json_bytes(want)
+    assert list(json.loads(raw)["exports"][0]) == [
+        "dir",
+        "created",
+        "vertical",
+        "final",
+        "final_joins",
+    ]
+
+
 @pytest.mark.slow
 def test_a_project_another_process_holds_reads_busy(client: TestClient, tmp_path: Path) -> None:
     p, _ = cli_project(tmp_path)

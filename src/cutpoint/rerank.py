@@ -26,6 +26,8 @@ import copy
 import importlib.util
 import json
 import logging
+import os
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -164,6 +166,130 @@ def sealed(hl: dict[str, Any], *, undone: bool = False) -> dict[str, Any]:
     it is the ranking an Undo went back to (``undone``: the next swap is a Redo)."""
     hl.setdefault("settings", {})[UNDO] = {"seal": seal(hl), "undone": undone}
     return hl
+
+
+def _inside(project: Path, name: str) -> bool:
+    """``project / name`` still lies inside ``project`` once links are resolved."""
+    try:
+        return (project / name).resolve().is_relative_to(project.resolve())
+    except (OSError, RuntimeError):  # RuntimeError: a symlink loop (Python 3.12)
+        return False
+
+
+def _source_paths(hl: dict[str, Any]) -> list[str]:
+    return [str(s.get("path")) for s in hl.get("sources") or [] if isinstance(s, dict)]
+
+
+def undo_target(project: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool] | None:
+    """The ranking an Undo (or Redo) of ``project`` swaps in, given its highlights.json ``hl``:
+    the backup's object and whether ``hl`` is the ranking an Undo went back to (the swap is a
+    Redo then). None when nothing matches (no Undo):
+
+    - ``hl`` is sealed (``settings.rerank_undo``, :func:`seal`): no analysis, ``events`` run or
+      hand edit rewrote highlights.json since a re-rank save or a swap wrote it (a
+      re-analysis keeps ``settings.rerank_backup``, but not the seal);
+    - :data:`BACKUP` is in the project (not a link out of it) and its key is
+      ``settings.rerank_backup``: the very file that ranking replaced, unchanged;
+    - the backup is an analysis of the same sources.
+    """
+    st = hl.get("settings")
+    mark = st.get(UNDO) if isinstance(st, dict) else None
+    link = st.get("rerank_backup") if isinstance(st, dict) else None
+    if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(project, BACKUP):
+        return None
+    back_raw = cache.load_bytes(project / BACKUP)
+    if back_raw is None or analyze.backup_digest(back_raw) != link or mark.get("seal") != seal(hl):
+        return None
+    try:
+        back = json.loads(back_raw.decode("utf-8-sig"))
+    except ValueError:  # UnicodeDecodeError too
+        return None
+    if (
+        not isinstance(back, dict)
+        or "style" not in back
+        or not isinstance(back.get("sources"), list)
+        or not isinstance(back.get("settings", {}), dict)
+        or _source_paths(back) != _source_paths(hl)
+    ):
+        return None
+    return back, mark.get("undone") is True
+
+
+def _swap_files(project: Path, restored: bytes, kept: bytes, current: bytes) -> None:
+    """Swap the project's rankings: highlights.json gets ``restored`` (made from the backup)
+    and :data:`BACKUP` ``kept`` (:func:`backup_bytes` of ``current``, highlights.json's bytes
+    now). Both are staged as temp files first, then renamed: highlights.json first, while the
+    backup still holds the ranking it gets. A failed second rename puts ``current`` back into
+    highlights.json; should that fail too, the temp file holding ``kept`` is kept (its path
+    logged), as one a hard kill leaves.
+    Durable as ``cache.save_bytes(..., durable=True)`` (A667): each temp file is flushed to
+    disk before its rename and, on POSIX, the folder after the renames."""
+    hl_path, back_path = project / HIGHLIGHTS, project / BACKUP
+    staged: list[Path] = []
+    keep = False
+    try:
+        for path, data in ((hl_path, restored), (back_path, kept)):
+            fd, name = tempfile.mkstemp(dir=project, prefix=path.name + ".", suffix=".tmp")
+            os.close(fd)
+            staged.append(Path(name))
+            staged[-1].write_bytes(data)
+            with staged[-1].open("r+b") as f:  # as cache.save_bytes(durable=True)
+                os.fsync(f.fileno())
+            cache.match_mode(staged[-1], path)
+        cache.retry_locked(lambda: staged[0].replace(hl_path), hl_path, "replace")
+        try:
+            cache.retry_locked(lambda: staged[1].replace(back_path), back_path, "replace")
+        except BaseException:
+            try:
+                cache.save_bytes(hl_path, current, durable=True)  # as it was: all or nothing
+            except BaseException:
+                keep = True  # the only copy of the current ranking now
+                logger.error("The ranking before the swap is kept in %s", staged[1])
+                raise
+            raise
+        cache._fsync_dir(project)
+    finally:
+        for tmp in staged if not keep else ():
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)
+
+
+def swap(project: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
+    """Undo (or Redo) the last ranking change of ``project``, under its run lock: swap
+    highlights.json and :data:`BACKUP` (:func:`undo_target`). The ranking swapped in keeps its
+    moments and ids as they are; only its settings change: ``rerank_backup`` links it to the
+    file it replaced, ``last_candidate_id`` is the higher of the two (never down), and it is
+    sealed again (``undone`` flips, so the next swap is the other way). Returns the ranking
+    before, the one now and whether this was an Undo; None when there is nothing to swap in
+    (:func:`undo_target` is None).
+
+    Raises:
+        StaleRankingError: If highlights.json's key is not ``base`` any more.
+        FolderBusyError: If another run holds the project's lock.
+        FileNotFoundError, ValueError: As :func:`load`.
+    """
+    from cutpoint import backends  # noqa: PLC0415 (requests: off the CLI import)
+
+    with folders.swap_lock(project / runstate.LOCK_NAME, project):
+        raw, hl = load(project)
+        if analyze.backup_digest(raw) != base:
+            raise StaleRankingError(f"{project / HIGHLIGHTS} changed since the page loaded")
+        found = undo_target(project, hl)
+        if found is None:
+            return None
+        back, undone = found
+        # neither file keeps an Ollama login an older one held (A639): the ranking swapped in
+        # as every highlights.json is written, the one it replaces as a re-rank keeps it
+        backends.saved_settings(back)
+        kept = backup_bytes(raw)
+        st = back.setdefault("settings", {})
+        st["rerank_backup"] = analyze.backup_digest(kept)
+        last = [(x.get("settings") or {}).get("last_candidate_id") for x in (hl, back)]
+        if ints := [n for n in last if isinstance(n, int) and not isinstance(n, bool)]:
+            st["last_candidate_id"] = max(ints)
+        sealed(back, undone=not undone)
+        _swap_files(project, cache.json_bytes(back), kept, raw)
+        return hl, back, not undone
 
 
 def _has_audio(src: Path) -> bool:

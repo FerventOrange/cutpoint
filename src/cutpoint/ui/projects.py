@@ -13,7 +13,7 @@ import time
 from collections import Counter
 from itertools import pairwise
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
@@ -631,6 +631,31 @@ def load_exports(p: Path) -> list[dict[str, Any]]:
     ]
 
 
+def record_export(
+    p: Path, name: str, how: Literal["replace", "append", "update"] = "replace", **fields: Any
+) -> None:
+    """Record the clips folder ``name`` of ``p`` in ``ui/exports.json`` (:func:`load_exports`,
+    then rewritten whole by ``cache.save_json``; 409 when a link takes the file out of the
+    project). ``how``:
+
+    - ``replace``: ``{"dir": name, **fields}`` becomes the latest export, an earlier entry of
+      ``name`` dropped (``edit`` and a resumed run write the same folder again);
+    - ``append``: appended as is (``clips`` and ``extend`` write a fresh folder each);
+    - ``update``: ``fields`` set on the entries of ``name``, their order kept (``assemble``'s
+      final).
+    """
+    items = load_exports(p)
+    if how == "update":
+        for e in items:
+            if e["dir"] == name:
+                e.update(fields)
+    else:
+        if how == "replace":
+            items = [e for e in items if e["dir"] != name]
+        items.append({"dir": name, **fields})
+    cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+
+
 def _events_sig(p: Path) -> str | None:
     """``<mtime_ns>-<size>`` of the project's ``events.json`` and ``crashes.json`` (joined by
     ``+``, a missing file skipped), which changes when a run rewrites either; None when both are
@@ -911,11 +936,7 @@ def resumed(p: Path, rec: dict[str, Any], outputs: dict[str, Any], stamp: str) -
     ):
         final_name = None
     _ui_folder(p)
-    items = [e for e in load_exports(p) if e["dir"] != name]  # replaced, as edit's
-    items.append(
-        {"dir": name, "created": stamp, "vertical": "--vertical" in argv, "final": final_name}
-    )
-    cache.save_json(_own(p, f"{UI_DIR}/exports.json"), {"exports": items})
+    record_export(p, name, created=stamp, vertical="--vertical" in argv, final=final_name)
 
 
 def current_export(p: Path) -> dict[str, Any] | None:
