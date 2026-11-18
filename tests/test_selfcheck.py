@@ -14,7 +14,7 @@ from cutpoint import cache, jsonout, rerank, selfcheck
 from cutpoint.events import scoring
 from cutpoint.styles import get_style
 from cutpoint.ui import REFINE_WARNINGS, Job, _note_warnings
-from test_event_candidates import project_of, write_events
+from event_candidates_helpers import project_of, write_events
 from test_rerank import lite_layers as lite_layers
 from test_rerank import make_project
 

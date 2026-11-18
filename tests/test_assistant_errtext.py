@@ -11,9 +11,9 @@ from typing import Any
 
 import pytest
 
+from assistant_helpers import FakeProvider, call, project, run
 from cutpoint.assistant import errtext, lookfor, session
 from cutpoint.assistant.providers import ProviderError, Reply
-from test_assistant import FakeProvider, call, project, run
 
 WIN = r"C:\Users\Travis\My Videos\highlights.json"
 USER = "Travis"

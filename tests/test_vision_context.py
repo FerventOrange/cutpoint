@@ -10,7 +10,7 @@ import pytest
 import requests
 
 from cutpoint import memguard, vision
-from test_resume import _Resp
+from resume_helpers import _Resp
 
 URL = "http://127.0.0.1:11434"
 MODEL = "qwen3.5:9b"

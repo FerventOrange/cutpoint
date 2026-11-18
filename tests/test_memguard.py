@@ -14,12 +14,12 @@ from typing import Any
 import pytest
 
 import cutpoint.analyze
+from batch_size_helpers import _Whisper
 from conftest import envelope, set_config
 from cutpoint import cli, config, memguard, progress
 from cutpoint.errors import LowMemoryError, LowVramError
 from cutpoint.events import common
-from test_batch_size import _Whisper, analyze_run  # noqa: F401  (a fixture)
-from test_resume import _Resp
+from resume_helpers import _Resp
 
 GB = memguard.GIB
 _RAM_FREE = memguard.ram_free  # conftest turns it off (no_host_probes); ``mem`` fakes it
@@ -660,7 +660,7 @@ def test_a_cpu_only_run_makes_no_fallback(mem, monkeypatch, tmp_path):
 
 
 def test_analyze_warns_of_a_transcript_fallback_in_its_envelope(
-    analyze_run,  # noqa: F811
+    analyze_run,
     monkeypatch,
     capsys,
 ):

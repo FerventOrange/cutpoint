@@ -16,6 +16,8 @@ from typing import Any
 import pytest
 import requests
 
+from analyze_steps_helpers import progress_lines
+from assistant_helpers import KEY
 from conftest import set_config, warning_codes, write
 from cutpoint import analyze, cache, jsonout, planning, progress, vision
 from cutpoint.assistant import providers
@@ -24,21 +26,19 @@ from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES
 from cutpoint.styles import get_style
 from cutpoint.ui import moments_view
 from cutpoint.utils import slugify, title_slug
-from test_analyze_steps import progress_lines, run  # noqa: F401
-from test_assistant_byo import KEY, no_keys  # noqa: F401  (autouse: no real keyring or key)
-from test_event_candidates import (  # noqa: F401  (no_transcript is autouse there)
+from event_candidates_helpers import (
     SRC,
     STYLE,
     events_of,
     feed,
     grid,
     highlights,
-    no_transcript,
     nominees,
     own,
     sound,
 )
-from test_planning import plan_env, readable, speech_env  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("no_keys", "no_transcript")  # no real key, keyring or segments
 
 
 # --------------------------------------------------------------------------- helpers
@@ -800,7 +800,7 @@ def with_model(monkeypatch, reply: dict[str, Any]) -> list[str]:
 
 
 def test_analyze_without_event_layers_reads_the_dialogue_and_writes_the_events(
-    run,  # noqa: F811
+    run,
     capsys,
     monkeypatch,
 ):
@@ -819,7 +819,7 @@ def test_analyze_without_event_layers_reads_the_dialogue_and_writes_the_events(
 
 
 def test_analyze_hands_the_reader_to_the_event_layers_with_their_audio_events(
-    run,  # noqa: F811
+    run,
     monkeypatch,
 ):
     run.segments = SPEECH
@@ -833,7 +833,7 @@ def test_analyze_hands_the_reader_to_the_event_layers_with_their_audio_events(
     assert report.is_dialogue(ev) and ev["source"] == str(run.video)
 
 
-def test_analyze_of_a_style_without_an_open_list_reads_no_dialogue(run, capsys, monkeypatch):  # noqa: F811
+def test_analyze_of_a_style_without_an_open_list_reads_no_dialogue(run, capsys, monkeypatch):
     run.segments = SPEECH
     prompts = with_model(monkeypatch, {"moments": [moment(0, 1)]})
     run.go("funny")
@@ -1142,12 +1142,12 @@ def test_max_total_leaves_out_a_candidate_longer_than_the_total_rather_than_trim
     assert chosen["id"] == "h001"
 
 
-def test_plan_clips_exports_a_long_dialogue_candidate_whole(plan_env, speech_env):  # noqa: F811
+def test_plan_clips_exports_a_long_dialogue_candidate_whole(plan_env, speech_env):
     from conftest import media_info  # noqa: PLC0415
     from cutpoint import boundaries, clips  # noqa: PLC0415
     from cutpoint.events.tails import EventTailSettings  # noqa: PLC0415
     from cutpoint.tail import TailSettings  # noqa: PLC0415
-    from test_planning import SRC_A, _moment  # noqa: PLC0415
+    from planning_helpers import SRC_A, _moment  # noqa: PLC0415
 
     project, _ = speech_env  # plan_env faked the source reads: every source is readable
     moment_ = _moment("h001", SRC_A, 20.0, 260.0, label="dialogue-funny")
@@ -1728,7 +1728,7 @@ LONG_MIN = (400.0 - 100.0 + scoring.LOOKAHEAD_S) / 60  # minutes of the stretch 
 
 def long_nominee(extra: list[dict[str, Any]], tmp_path: Path, bumps=((250.0, 1.0),)):
     """A gaming project with a picked 60-point moment, and the stretch 100-400 s as a nominee."""
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     hl = highlights([own("h001", 20.0, 60.0)])
     events = events_of([talk_event(100.0, 400.0, conf=0.0), *extra])
@@ -1751,7 +1751,7 @@ def test_a_long_dialogue_nominee_has_the_floor_not_the_peak_and_keeps_its_grid_s
 
 
 def test_a_short_dialogue_nominee_and_a_kill_nominee_keep_the_peak_over_the_floor(tmp_path):
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     hl = highlights([own("h001", 20.0, 10.0)])
     events = events_of([talk_event(100.0, 160.0, conf=0.0), feed(300.0)])
@@ -1765,7 +1765,7 @@ def test_a_short_dialogue_nominee_and_a_kill_nominee_keep_the_peak_over_the_floo
 
 
 def test_a_long_dialogue_nominee_with_no_other_candidate_scores_zero(tmp_path):
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     hl = highlights([])
     events = events_of([talk_event(100.0, 400.0, conf=0.0)])
@@ -1849,7 +1849,7 @@ def test_candidates_of_90_seconds_or_less_are_scored_as_before():
 
 
 def test_rescoring_a_project_with_a_long_dialogue_nominee_is_stable(tmp_path):
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     hl = highlights([own("h001", 20.0, 60.0)])
     ev = events_of([talk_event(100.0, 400.0, conf=0.5), *laughs(8), feed(200.0)])
@@ -1868,7 +1868,7 @@ def test_rescoring_a_project_with_a_long_dialogue_nominee_is_stable(tmp_path):
 
 
 def test_the_cap_ranks_nominees_with_the_per_minute_boost(tmp_path):
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     # room for one nominee. Both are floored to 36; the long stretch has 4 kills in 5 minutes
     # (4.6 points counted per minute, 18 by count), the short one a kill (6): the short one wins
@@ -2072,7 +2072,7 @@ def test_a_fresh_reading_removes_the_sources_stale_caches_only(tmp_path):
 def test_a_short_dialogue_nominee_with_quiet_grids_has_the_dialogue_floor_a_kill_the_lower_one(
     tmp_path,
 ):
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     assert (scoring.DIALOGUE_FLOOR, scoring.NOMINEE_FLOOR) == (0.75, 0.6)
     hl = highlights([own("h001", 20.0, 60.0)])
@@ -2086,7 +2086,7 @@ def test_a_short_dialogue_nominee_with_quiet_grids_has_the_dialogue_floor_a_kill
 
 def test_only_the_best_dialogue_nominees_of_a_part_get_the_dialogue_floor(tmp_path):
     # six talk stretches in 20 min: K = max(2, floor(2.5 / 3 + 0.5)) = 2 keep 0.75, the rest 0.6
-    from test_event_candidates import quiet_grid  # noqa: PLC0415
+    from event_candidates_helpers import quiet_grid  # noqa: PLC0415
 
     starts = [100.0 + 180.0 * i for i in range(6)]
     hl = highlights([own("h001", 20.0, 60.0)])

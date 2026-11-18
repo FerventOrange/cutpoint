@@ -14,11 +14,24 @@ from typing import Any
 import numpy as np
 import pytest
 
+from assistant_helpers import (
+    KEY,
+    FakeProvider,
+    Wire,
+    _Resp,
+    an_reply,
+    call,
+    project,
+    rs_call,
+    rs_reply,
+    rs_text,
+    run,
+    tool_use,
+)
 from cutpoint.assistant import providers, session, watch
 from cutpoint.assistant.providers import AnthropicProvider, OpenAIProvider, Reply
-from test_assistant import FakeProvider, _Resp, call, project, run
-from test_assistant_byo import KEY, Wire, an_reply, rs_call, rs_reply, rs_text, tool_use
-from test_assistant_byo import no_keys as no_keys  # the autouse fixture
+
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 LAST = session.MAX_ROUNDS - 1  # the index of the closing round's request
 ASK = "Create a montage of the large manta rays."

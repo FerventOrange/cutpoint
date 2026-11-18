@@ -99,15 +99,16 @@ def fake_start(captured: list[list[str]]):
 
 
 @pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def cpu_codecs(monkeypatch: pytest.MonkeyPatch) -> None:
     # job subprocesses inherit the CPU codecs: no NVENC/NVDEC contention under a loaded suite
     monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
     monkeypatch.setenv("CUTPOINT_VIDEO_DECODER", "cpu")
-    app = ui.create_app(PORT)
-    # ``with`` runs the app's shutdown (jobs.shutdown kills any job still running)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+
+
+@pytest.fixture
+def client(cpu_codecs: None, ui_client: TestClient) -> TestClient:
+    """The shared ``ui_client``, made after the codec variables are set."""
+    return ui_client
 
 
 @pytest.fixture(autouse=True)

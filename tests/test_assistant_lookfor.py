@@ -10,7 +10,6 @@ import importlib.util as util
 import json
 import os
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -18,12 +17,12 @@ from typing import Any
 import numpy as np
 import pytest
 
+from assistant_helpers import CANDS, SEQ, A, B, FakeProvider, call, durations, project, run
 from cutpoint import ui
 from cutpoint.assistant import context, lookfor, ops, session
 from cutpoint.assistant import store as ai_store
 from cutpoint.assistant.providers import Capabilities, Reply
 from cutpoint.events import visual as V
-from test_assistant import CANDS, SEQ, A, B, FakeProvider, call, durations, project, run
 
 TEXT = np.eye(768, dtype=np.float32)[0]
 
@@ -666,22 +665,14 @@ def test_a_color_only_proposal_is_a_proposal() -> None:
 pytest.importorskip("httpx")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from test_assistant_routes import PORT, ask, files, use  # noqa: E402
+from test_assistant_routes import ask, files, use  # noqa: E402
 from test_assistant_routes import proj as proj  # noqa: E402
 
 BASE = "/api/projects/cli/assistant"
 
 
-@pytest.fixture
-def client() -> Iterator[TestClient]:
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
-
-
 def test_a_color_change_is_applied_recorded_and_reverted(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
 ) -> None:
     p, seq, _ = proj
     use(
@@ -701,10 +692,10 @@ def test_a_color_change_is_applied_recorded_and_reverted(
             ]
         ),
     )
-    prop = ask(client, "colors are dull", seq)["events"][0]
+    prop = ask(ui_client, "colors are dull", seq)["events"][0]
     off = {"mode": "off", "strength": 0.6}
     before = files(p)
-    entry = client.post(
+    entry = ui_client.post(
         f"{BASE}/proposals/{prop['id']}/applied", json={"segments": seq, "color": off}
     ).json()
     assert entry["color"] == {"before": off, "after": {"mode": "auto", "strength": 0.8}}
@@ -713,23 +704,27 @@ def test_a_color_change_is_applied_recorded_and_reverted(
     assert not (p / "ui" / "review.json").exists()
 
     # a strength the op left out stays what the page has; an old page (no color) records none
-    second = ask(client, "underwater", seq)["events"][0]
-    kept = client.post(
+    second = ask(ui_client, "underwater", seq)["events"][0]
+    kept = ui_client.post(
         f"{BASE}/proposals/{second['id']}/applied",
         json={"segments": seq, "color": {"mode": "auto", "strength": 0.8}},
     ).json()
     assert kept["color"]["after"] == {"mode": "underwater", "strength": 0.8}
-    old = client.post(f"{BASE}/proposals/{second['id']}/applied", json={"segments": seq}).json()
+    old = ui_client.post(f"{BASE}/proposals/{second['id']}/applied", json={"segments": seq}).json()
     assert old["color"] == {"before": None, "after": {"mode": "underwater", "strength": 1.0}}
 
     # revert: previewed with the Color it puts back, unless the page is already there
     now = {"mode": "auto", "strength": 0.8}
-    rev = client.post(f"{BASE}/history/{entry['id']}/revert", json={"segments": seq, "color": now})
+    rev = ui_client.post(
+        f"{BASE}/history/{entry['id']}/revert", json={"segments": seq, "color": now}
+    )
     assert rev.status_code == 200, rev.text
     assert rev.json()["color"] == off and rev.json()["after"] == seq
-    same = client.post(f"{BASE}/history/{entry['id']}/revert", json={"segments": seq, "color": off})
+    same = ui_client.post(
+        f"{BASE}/history/{entry['id']}/revert", json={"segments": seq, "color": off}
+    )
     assert same.status_code == 409 and "already as it was" in same.json()["detail"]
-    done = client.post(
+    done = ui_client.post(
         f"{BASE}/proposals/{rev.json()['id']}/applied",
         json={"segments": seq, "base_key": rev.json()["base_key"], "color": now},
     ).json()
@@ -737,7 +732,7 @@ def test_a_color_change_is_applied_recorded_and_reverted(
 
 
 def test_the_page_color_is_checked_before_it_is_recorded(
-    client: TestClient, monkeypatch, proj
+    ui_client: TestClient, monkeypatch, proj
 ) -> None:
     _, seq, _ = proj
     use(
@@ -746,16 +741,16 @@ def test_the_page_color_is_checked_before_it_is_recorded(
             [call("propose_edit", summary="Grade", ops=[{"op": "color", "mode": "auto"}])]
         ),
     )
-    prop = ask(client, "grade", seq)["events"][0]
+    prop = ask(ui_client, "grade", seq)["events"][0]
     for junk in ("auto", {"mode": "sepia", "strength": 1}, {"mode": "auto", "strength": 7}, 5):
-        got = client.post(
+        got = ui_client.post(
             f"{BASE}/proposals/{prop['id']}/applied", json={"segments": seq, "color": junk}
         ).json()
         assert got["color"]["before"] is None
 
 
 def test_a_look_for_moment_is_added_persisted_and_rebased(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch, proj
 ) -> None:
     p, seq, ids = proj
     src = seq[0]["source"]
@@ -773,7 +768,7 @@ def test_a_look_for_moment_is_added_persisted_and_rebased(
             ]
         ),
     )
-    turn = ask(client, "find a sunset", seq)
+    turn = ask(ui_client, "find a sunset", seq)
     step, prop = turn["events"]
     assert step["name"] == "look_for" and step["new"] == 1, path
     real = lookfor.moment_id(src, 70.0, 75.0)
@@ -784,13 +779,15 @@ def test_a_look_for_moment_is_added_persisted_and_rebased(
     assert saved is not None and saved[1]["moments"] == prop["moments"]
     # ... and on a changed sequence, where its ops run again (the analysis has no such moment)
     url = f"{BASE}/proposals/{prop['id']}/applied"
-    moved = client.post(url, json={"segments": seq[1:]}).json()
+    moved = ui_client.post(url, json={"segments": seq[1:]}).json()
     assert moved["rebased"] is True and [s["id"] for s in moved["after"]] == [ids[1], real]
-    plain = client.post(url, json={"segments": seq}).json()
+    plain = ui_client.post(url, json={"segments": seq}).json()
     assert plain["rebased"] is False and plain["after"] == prop["after"]
     # the saved sequence of a review accepts it
-    entries = client.app.state.sources.entries(p)
-    assert ui.validate_segments(plain["after"], entries, client.app.state.media) == plain["after"]
+    entries = ui_client.app.state.sources.entries(p)
+    assert (
+        ui.validate_segments(plain["after"], entries, ui_client.app.state.media) == plain["after"]
+    )
 
 
 def test_the_frame_index_is_one_cache_file_whatever_the_option(tmp_path, monkeypatch) -> None:

@@ -27,14 +27,27 @@ from cutpoint.styles import STYLES, get_style
 from cutpoint.telemetry import DT
 from cutpoint.transcribe import transcript_name
 from cutpoint.ui import moments_view
+from event_candidates_helpers import (
+    SIGNALS,
+    SRC,
+    STYLE,
+    N,
+    analysis_of,
+    bump,
+    events_of,
+    feed,
+    grid,
+    highlights,
+    nominees,
+    own,
+    project_of,
+    quiet_grid,
+    sound,
+    write_caches,
+    write_events,
+)
 
-SIGNALS = ("loudness", "speech", "laughter", "scene", "continuity")
-
-
-# --------------------------------------------------------------------------- helpers
-def bump(t: float, n: int, height: float = 1.0, width: float = 1.0) -> np.ndarray:
-    x = np.arange(n) * DT
-    return height * np.exp(-(((x - t) / width) ** 2))
+pytestmark = pytest.mark.usefixtures("no_transcript")  # no Whisper segments
 
 
 def part_of(sig: dict[str, np.ndarray], n: int, src: str = "a.mp4") -> analyze.SourceResult:
@@ -193,30 +206,10 @@ def test_describe_candidates_scores_and_moves_to_source_time():
     assert out.score == scorer.score(0.5, get_style("gaming"), scorer.available_for(), False)
 
 
-# --------------------------------------------------------------------------- events
-SRC = "game.mp4"
-
-
-def feed(t: float, **flags: bool) -> dict[str, Any]:
-    return {
-        "source": SRC, "start": t, "end": t + 3, "kind": "ocr", "type": "kill",
-        "label": "Ash > Bob", "player": True, "player_kill": True, "player_death": False,
-        "teamkill": False, **flags,
-    }  # fmt: skip
-
-
 def banner(t: float, text: str = "VICTORY", kind: str = "banner") -> dict[str, Any]:
     return {"source": SRC, "start": t, "end": t + 2, "kind": "ocr", "type": kind, "label": text}
 
 
-def sound(t: float, label: str = "Laughter", confidence: float = 0.4) -> dict[str, Any]:
-    return {
-        "source": SRC, "start": t, "end": t + 1.5, "kind": "audio", "label": label,
-        "confidence": confidence,
-    }  # fmt: skip
-
-
-STYLE = ("gaming",)
 PLACER = EventType(
     "placer", (Matcher("banner", prefix=("BOX PLACED",)),), score=6.0, max=2, tail_s=3.0
 )
@@ -282,40 +275,6 @@ def test_seeds_skip_events_that_start_in_menu_time():
 )
 def test_is_nominated(c, expected):
     assert scoring.is_nominated(c) is expected
-
-
-# --------------------------------------------------------------------------- nominate
-N = 6000  # a 600 s part
-
-
-def grid(src: str = SRC, n: int = N, offset: float = 0.0, index: int = 0) -> analyze.GridPart:
-    ps = analyze.PartSignals(n, {k: np.zeros(n) for k in SIGNALS}, [], [], [], [], [])
-    return analyze.GridPart(Path(src), index, offset, n * DT, ps)
-
-
-def own(cid: str, start: float, score: float = 50.0, end: float | None = None) -> dict[str, Any]:
-    return {
-        "id": cid, "source": SRC, "source_index": 0, "start": start,
-        "end": start + 8 if end is None else end, "duration": 8, "score": score,
-        "signals": {"keywords": [], "vision": None}, "label": "gaming-moment", "transcript": "",
-    }  # fmt: skip
-
-
-def highlights(cands: list[dict[str, Any]], style: str = "gaming", **settings) -> dict[str, Any]:
-    return {"style": style, "settings": settings, "candidates": cands, "suggested_top": 1}
-
-
-def events_of(events: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
-    return {"events": events, "windows": [], "sources": [SRC], **extra}
-
-
-@pytest.fixture(autouse=True)
-def no_transcript(monkeypatch):
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
-
-
-def nominees(hl: dict[str, Any]) -> list[dict[str, Any]]:
-    return [c for c in hl["candidates"] if scoring.is_nominated(c)]
 
 
 def test_nominate_adds_a_candidate_for_an_event_nothing_covers(tmp_path):
@@ -679,30 +638,6 @@ def test_pool_moments_stay_last_and_outside_suggested_top(tmp_path):
     assert hl["suggested_top"] == 2
 
 
-# --------------------------------------------------------------------------- the two paths
-def write_caches(src: Path, span: float, cuts: list[float]) -> None:
-    cdir = cache.source_dir(src)
-    times = np.arange(1, int(span) * 10 + 1) * 0.1
-    loud = -30.0 + 12.0 * np.exp(-(((times - 40.0) / 1.0) ** 2))
-    cache.save_json(cdir / "loudness.json", {"t": times.tolist(), "m": loud.tolist()})
-    words = [
-        {"word": w, "start": 40.0 + 0.4 * i, "end": 40.3 + 0.4 * i, "probability": 0.95}
-        for i, w in enumerate(["no", "way", "that", "worked"])
-    ]
-    seg = {"start": 40.0, "end": 41.6, "text": "no way that worked", "words": words}
-    cache.save_json(cdir / transcript_name(TRANSCRIPT_MODELS[0]), [seg])
-    cache.save_json(cdir / analyze.SCENES_FILE, cuts)
-
-
-def analysis_of(src: Path, span: float, **entry: Any) -> dict[str, Any]:
-    return {
-        "style": "gaming",
-        "settings": {"scenes": True},
-        "sources": [{"path": str(src), "duration": span, **entry}],
-        "candidates": [],
-    }
-
-
 def test_cached_grids_equal_the_grids_of_the_analysis(tmp_path):
     src = tmp_path / "game.mp4"
     src.write_bytes(b"x")
@@ -830,28 +765,6 @@ def test_a_nominee_without_transcript_or_keywords_does_not_break_the_readers(tmp
         assert row["len"] > 0
         json.dumps(row)
     assert table.label(nom["id"], nom["label"]) == "player-kills"
-
-
-# --------------------------------------------------------------------------- the events command
-def project_of(tmp_path: Path, cands: list[dict[str, Any]], **settings: Any) -> tuple[Path, Path]:
-    """A project folder with a highlights.json of ``cands`` for a stand-in source whose caches
-    are written (a loudness peak at 40 s, scene cuts at 30 and 70 s)."""
-    src = tmp_path / "game.mp4"
-    src.write_bytes(b"x")
-    write_caches(src, 120.0, [30.0, 70.0])
-    proj = tmp_path / "proj"
-    proj.mkdir()
-    hl = analysis_of(src, 120.0)
-    hl["settings"].update(settings)
-    hl["candidates"] = [{**c, "source": str(src)} for c in cands]
-    hl["suggested_top"] = 1
-    cache.save_json(proj / "highlights.json", hl)
-    return proj, src
-
-
-def write_events(proj: Path, src: Path, times: list[float]) -> None:
-    events = [{**feed(t), "source": str(src)} for t in times]
-    cache.save_json(proj / "events.json", {"events": events, "windows": [], "sources": [str(src)]})
 
 
 def saved(proj: Path) -> dict[str, Any]:
@@ -1030,16 +943,6 @@ def test_place_free_merges_per_free_stretch_not_across_a_taken_window():
     assert [c.peak_t for c in sorted(out, key=lambda c: c.start)] == [48.0, 54.0]
     first, second = sorted(out, key=lambda c: c.start)
     assert first.end <= 50.0 + 1e-6 and second.start >= 52.0 - 1e-6
-
-
-# --------------------------------------------------------------------------- cycle 2 fixes
-def quiet_grid(span: float, offset: float = 0.0, index: int = 0, bumps=()):
-    """A part of ``span`` s with loudness bumps ``(second, height)``."""
-    n = int(span / DT) + 1
-    ps = analyze.PartSignals(n, {k: np.zeros(n) for k in SIGNALS}, [], [], [], [], [])
-    for t, h in bumps:
-        ps.sig["loudness"] += bump(t, n, h)
-    return analyze.GridPart(Path(SRC), index, offset, span, ps)
 
 
 def short(t: float, **flags: bool) -> dict[str, Any]:

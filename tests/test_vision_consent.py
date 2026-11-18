@@ -14,17 +14,17 @@ from typing import Any
 
 import pytest
 import requests
-from fastapi.testclient import TestClient
 
+from analyze_steps_helpers import last_states, progress_lines
 from conftest import set_config
 from cutpoint import activity, analyze, jsonout, ui, vision
 from cutpoint.assistant import cliproxy, providers
 from cutpoint.events import pipeline
 from cutpoint.pano import vlcheck
 from test_activity import fake_clip, footage  # noqa: F401
-from test_analyze_steps import last_states, progress_lines, run  # noqa: F401
-from test_assistant_byo import no_keys as no_keys  # the autouse fixture: no real keyring
 from test_vlm_vision import REPLY, Ollama, _run_vlm, extra_ok  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
 
 REMOTE = "http://10.0.0.5:11434"
 KEY = "vision-v2:ollama@10.0.0.5:11434"
@@ -296,7 +296,7 @@ def test_the_rating_cache_of_ollama_keys_on_the_host(home, monkeypatch) -> None:
 
 
 def test_analyze_vision_skips_a_remote_ollama_without_consent(
-    run,  # noqa: F811
+    run,
     home,
     wire,
     capsys,
@@ -495,7 +495,7 @@ def test_with_consent_a_hosted_provider_needs_none(home) -> None:
 
 
 def test_analyze_vision_skips_a_hosted_provider_without_consent(
-    run,  # noqa: F811
+    run,
     hosted,
     capsys,
     caplog,
@@ -743,20 +743,17 @@ def test_settings_view_asks_vision_consent_for_a_remote_ollama_only() -> None:
     assert view(REMOTE, [KEY])["needed"] is False
 
 
-def test_the_ui_consent_route_unlocks_a_remote_ollama_for_the_rater(home) -> None:
+def test_the_ui_consent_route_unlocks_a_remote_ollama_for_the_rater(home, ui_client) -> None:
     set_config(home, vision_assistant={"provider": "ollama", "url": REMOTE})
     assert vision.VisionRater().consent_needed == KEY
-    app = ui.create_app(8765)
-    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        client.headers["X-Cutpoint-Token"] = app.state.token
-        res = client.post("/api/assistant/consent", json={"role": "vision", "key": KEY})
+    res = ui_client.post("/api/assistant/consent", json={"role": "vision", "key": KEY})
     assert res.status_code == 200, res.text
     saved = json.loads((home / "config.json").read_text("utf-8"))
     assert saved["vision_assistant"]["consent"] == [KEY]
     assert vision.VisionRater().consent_needed is None
 
 
-def test_two_consents_in_a_row_both_persist(home) -> None:
+def test_two_consents_in_a_row_both_persist(home, ui_client) -> None:
     """Vision then AI Chat consent: the second save keeps the first (#1085 A255)."""
     set_config(
         home,
@@ -764,12 +761,9 @@ def test_two_consents_in_a_row_both_persist(home) -> None:
         assistant={"provider": "ollama", "url": REMOTE},
     )
     want = {"vision": KEY, "assistant": "assistant-v3:ollama@10.0.0.5:11434"}
-    app = ui.create_app(8765)
-    with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-        client.headers["X-Cutpoint-Token"] = app.state.token
-        for role, key in want.items():
-            res = client.post("/api/assistant/consent", json={"role": role, "key": key})
-            assert res.status_code == 200, res.text
+    for role, key in want.items():
+        res = ui_client.post("/api/assistant/consent", json={"role": role, "key": key})
+        assert res.status_code == 200, res.text
     saved = json.loads((home / "config.json").read_text("utf-8"))
     assert saved["vision_assistant"]["consent"] == [want["vision"]]
     assert saved["assistant"]["consent"] == [want["assistant"]]

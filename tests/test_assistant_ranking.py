@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -20,19 +19,19 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from assistant_helpers import FakeProvider, call, project, run
 from conftest import patch_ui, write
 from cutpoint import paths, ui
 from cutpoint.assistant import context, providers, ranking, session
 from cutpoint.assistant import store as ai_store
 from cutpoint.assistant.providers import Capabilities, OllamaProvider
 from cutpoint.pano import project as pano_project
-from test_assistant import FakeProvider, call, project, run
 from test_assistant_budget import as_json, many
-from test_assistant_byo import no_keys as no_keys  # the autouse fixture
 from test_rerank import lite_layers as lite_layers
 from test_rerank import make_project
 
-PORT = 8765
+pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
+
 JSON_ONLY = Capabilities(False, True)
 STYLES = [("gaming", ""), ("funny", ""), ("mine", "My own style")]
 READY = {
@@ -294,12 +293,14 @@ def test_an_old_record_without_a_key_is_never_marked() -> None:
 
 
 @pytest.fixture
-def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def no_cuda(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_ui(monkeypatch, "cuda_probe", lambda: False)
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+
+
+@pytest.fixture
+def client(no_cuda: None, ui_client: TestClient) -> TestClient:
+    """The shared ``ui_client``, made after the CUDA probe is stubbed."""
+    return ui_client
 
 
 def test_the_hook_lists_built_in_and_saved_styles_and_the_note_is_cut(home) -> None:

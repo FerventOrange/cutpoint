@@ -17,14 +17,10 @@ from conftest import needs_ffmpeg
 from cutpoint import analyze, cli, scorer, vision
 from cutpoint.styles import get_style
 from cutpoint.utils import slugify
-from test_event_candidates import (  # noqa: F401  (no_transcript is autouse there)
-    events_of,
-    grid,
-    highlights,
-    no_transcript,
-    own,
-)
+from event_candidates_helpers import events_of, grid, highlights, own
 from test_vision_stale import BLENDED, rate, talk
+
+pytestmark = pytest.mark.usefixtures("no_transcript")  # no Whisper segments
 
 
 class _HighRater:

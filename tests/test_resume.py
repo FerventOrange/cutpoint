@@ -18,6 +18,7 @@ from cutpoint import cache, cli, folders, memguard, procs, progress, runstate
 from cutpoint.errors import FolderBusyError
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.utils import command_line
+from resume_helpers import _Resp
 
 LOCK = ".analysis.run.cutpoint-lock"
 
@@ -436,17 +437,6 @@ class _Ollama:
 
 def json_dumps(data: Any) -> str:
     return json.dumps(data)
-
-
-class _Resp:
-    def __init__(self, body: Any) -> None:
-        self.body, self.status_code, self.is_redirect = body, 200, False
-
-    def raise_for_status(self) -> None:
-        pass
-
-    def json(self) -> Any:
-        return self.body
 
 
 @pytest.fixture

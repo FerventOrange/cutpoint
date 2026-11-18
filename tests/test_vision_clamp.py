@@ -14,17 +14,12 @@ import pytest
 
 from cutpoint import analyze, scorer
 from cutpoint.events import scoring
-from test_event_candidates import (  # noqa: F401  (no_transcript is autouse there)
-    events_of,
-    feed,
-    grid,
-    highlights,
-    no_transcript,
-    own,
-)
+from event_candidates_helpers import events_of, feed, grid, highlights, own
 from test_vision_stale import STYLE, _Rater, talk
 
-pytestmark = pytest.mark.usefixtures("pinned_prior")  # the rating centres on the prior
+pytestmark = pytest.mark.usefixtures(
+    "pinned_prior", "no_transcript"
+)  # the rating centres on the prior
 
 # ---- clamp_rated: rows are (score before vision, score with it or None), best first
 

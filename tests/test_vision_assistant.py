@@ -9,14 +9,13 @@ from pathlib import Path
 
 import pytest
 
+from assistant_helpers import Wire, _Resp, an_reply, oa_reply, rs_reply, rs_text
 from conftest import set_config
 from cutpoint import analyze, jsonout, vision
-from cutpoint.assistant import keys, providers
+from cutpoint.assistant import providers
 from cutpoint.assistant.providers import AnthropicProvider, OpenAIProvider, Reply, XAIProvider
 from cutpoint.pano import vlcheck
 from cutpoint.styles import get_style
-from test_assistant import _Resp
-from test_assistant_byo import NoRing, Wire, an_reply, oa_reply, rs_reply, rs_text
 
 JPEG = b"\xff\xd8jpeg"
 B64 = base64.b64encode(JPEG).decode()
@@ -204,16 +203,6 @@ API = {  # provider -> (official host, key variable, the answers to the check an
         lambda: [_Resp({"data": [{"id": "m"}]}), oa_reply(REPLY)],
     ),
 }
-
-
-@pytest.fixture
-def no_keys(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No real key variable or keyring reaches a test."""
-    for name in keys.ENV_VARS:
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(keys, "_keyring", NoRing)
-    monkeypatch.setattr(keys, "_SEEN", set())
-    monkeypatch.setattr(keys, "_CAPTURED", {})
 
 
 def api_vision(home: Path, name: str, consent: list[str], **extra) -> vision.AssistantVision:

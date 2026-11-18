@@ -15,16 +15,11 @@ from cutpoint import analyze, scorer, vision
 from cutpoint.events import scoring
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.styles import get_style
-from test_event_candidates import (  # noqa: F401  (no_transcript is autouse there)
-    SRC,
-    events_of,
-    grid,
-    highlights,
-    no_transcript,
-    own,
-)
+from event_candidates_helpers import SRC, events_of, grid, highlights, own
 
-pytestmark = pytest.mark.usefixtures("pinned_prior")  # the rating centres on the prior
+pytestmark = pytest.mark.usefixtures(
+    "pinned_prior", "no_transcript"
+)  # the rating centres on the prior
 
 STYLE = get_style("gaming")
 

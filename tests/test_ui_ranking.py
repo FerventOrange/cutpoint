@@ -8,7 +8,6 @@ import json
 import subprocess
 import sys
 import threading
-from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -24,17 +23,18 @@ from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 from test_untrusted_paths import flushed_before_replace, fsyncs  # noqa: F401 (a fixture)
 
-PORT = 8765
 BASE = "/api/projects/p/ranking"
 
 
 @pytest.fixture
-def client(home: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
+def no_cuda(home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     patch_ui(monkeypatch, "cuda_probe", lambda: False)  # never a child process here
-    app = ui.create_app(PORT)
-    with TestClient(app, base_url=f"http://127.0.0.1:{PORT}") as c:
-        c.headers["X-Cutpoint-Token"] = app.state.token
-        yield c
+
+
+@pytest.fixture
+def client(no_cuda: None, ui_client: TestClient) -> TestClient:
+    """The shared ``ui_client``, made after the CUDA probe is stubbed."""
+    return ui_client
 
 
 @pytest.fixture

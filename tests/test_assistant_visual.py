@@ -6,9 +6,9 @@ from __future__ import annotations
 
 import json
 
+from assistant_helpers import FakeProvider, call, durations
 from cutpoint import ui
 from cutpoint.assistant import context, session
-from test_assistant import FakeProvider, call, durations
 
 A, B = "/v/a.mp4", "/v/b.mp4"
 SKI = {  # an action-cam candidate's signals: the grids' maximum over the clip, 0-1
