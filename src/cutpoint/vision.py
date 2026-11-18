@@ -420,6 +420,8 @@ class VisionRater:
     it nothing goes there, and nothing to the hosted Vision role either.
     """
 
+    last_failure: str | None = None  # why the last ask_json gave None: "request" or "reply"
+
     def __init__(
         self,
         url: str | None = None,
@@ -651,7 +653,11 @@ class VisionRater:
         is loaded with more already (:meth:`_context`). ``temperature`` and ``seed`` (None: none
         sent) are Ollama's sampling options; temperature 0 and a seed make the reply repeatable
         (profile discovery, #947). A hosted Vision role ignores them.
+
+        A None reply leaves :attr:`last_failure` at ``"request"`` (no reply came back: a
+        timeout, a connection or HTTP error) or ``"reply"`` (one came back and is unusable).
         """
+        self.last_failure = None
         if self.via:
             self.check_memory()
             reply = self.via.ask(prompt, images or [], schema=schema)
@@ -659,10 +665,12 @@ class VisionRater:
                 data = _json_object(reply) if reply else None
             except ValueError as err:
                 logger.warning("Assistant reply is not JSON: %s", err)
+                self.last_failure = "reply"
                 return None
-            return _matching(data, schema, self.model)
+            return self._checked(data, schema, reply is not None)
         if self.consent_needed:
             self.warn_consent()
+            self.last_failure = "request"
             return None
         num_ctx = self._context(num_ctx)
         options = {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict}
@@ -690,10 +698,25 @@ class VisionRater:
         try:
             body = ollama_post(self.url, f"/api/{endpoint}", payload, timeout=timeout)
             data = _json_object(ollama_reply(body, generate=raw))
-        except (requests.RequestException, ValueError) as err:
+        except requests.RequestException as err:
             logger.warning("Ollama request failed: %s", err)
+            self.last_failure = "request"
             return None
-        return _matching(data, schema, self.model)
+        except ValueError as err:
+            logger.warning("Ollama request failed: %s", err)
+            self.last_failure = "reply"
+            return None
+        return self._checked(data, schema, True)
+
+    def _checked(self, data: object, schema: dict | None, answered: bool) -> dict | None:
+        """:func:`_matching` of an :meth:`ask_json` reply, noting in :attr:`last_failure`
+        that an ``answered`` reply was unusable."""
+        found = _matching(data, schema, self.model)
+        if found is None and answered:
+            self.last_failure = "reply"
+        elif found is None:
+            self.last_failure = "request"
+        return found
 
     def describe(
         self,

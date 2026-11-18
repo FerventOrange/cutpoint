@@ -1435,6 +1435,26 @@ def test_ask_json_rejects_an_ollama_reply_without_the_required_keys(monkeypatch,
     assert _ollama_says(monkeypatch, content).ask_json("q", schema=MOMENTS) is None
 
 
+@pytest.mark.parametrize("content", ["{}", '["moments"]', "not json"])
+def test_ask_json_notes_an_unusable_reply_or_a_failed_request(monkeypatch, content):
+    """#1085: ``last_failure`` tells a reply that came back unusable from no reply at all."""
+    rater = _ollama_says(monkeypatch, content)
+    assert rater.last_failure is None
+    assert rater.ask_json("q", schema=MOMENTS) is None and rater.last_failure == "reply"
+
+    def down(*_a, **_k):
+        raise vision.requests.ConnectionError("down")
+
+    monkeypatch.setattr(vision.requests, "post", down)
+    assert rater.ask_json("q", schema=MOMENTS) is None and rater.last_failure == "request"
+    monkeypatch.setattr(
+        vision.requests,
+        "post",
+        lambda *_a, **_k: _Resp({"message": {"content": '{"moments": []}'}}),
+    )
+    assert rater.ask_json("q", schema=MOMENTS) == {"moments": []} and rater.last_failure is None
+
+
 def test_a_reply_that_is_no_object_is_dropped_with_a_debug_line(monkeypatch, caplog):
     with caplog.at_level(logging.DEBUG, logger="cutpoint.vision"):
         for content in ("[1, 2]", '"secret"', "3"):

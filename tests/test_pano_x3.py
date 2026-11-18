@@ -225,7 +225,8 @@ def test_read_trailer_meta_reads_the_two_lens_calibration(monkeypatch) -> None:
     meta = x3.read_trailer_meta(Path("VID_20260101_100000_00_001.insv"))
 
     assert meta["camera"] == "Insta360 X3"
-    assert (meta["serial"], meta["firmware"]) == ("IAQEB1234", "v1.0.40")
+    assert meta["firmware"] == "v1.0.40"
+    assert "serial" not in meta and "IAQEB1234" not in str(meta)  # #1085: project files get shared
     lenses = meta["calibration"]["lenses"]
     assert lenses[0] == {"radius": 1450.0, "cx": 2960.0, "cy": 2970.0, "yaw": 0.1,
                          "pitch": 0.2, "roll": 0.3}  # fmt: skip
@@ -259,3 +260,30 @@ def test_scan_pairs_each_recording_of_a_shared_number_with_its_own_files(
     ]
     assert [Path(c.lrv).name for c in clips if c.lrv] == [SAME_NUMBER[1], SAME_NUMBER[4]]
     assert [[Path(p).name for p in c.insv] for c in clips] == [SAME_NUMBER[:1], SAME_NUMBER[2:4]]
+
+
+def test_pano_json_carries_no_camera_serial_forward(tmp_path: Path) -> None:
+    """#1085: a trailer's serial is not written, and one an older scan stored is dropped
+    when pano.json is rewritten (the other trailer fields stay)."""
+    import json  # noqa: PLC0415
+
+    from cutpoint.pano import project  # noqa: PLC0415
+
+    meta = {"camera": "Insta360 X3", "firmware": "v1.0.40", "serial": "IAQEB1234"}
+    old = x3.X3Clip(
+        clip_id="001", start_local="2026-01-01T10:00:00", mode="5.7k", lrv=None,
+        insv=["VID_20260101_100000_00_001.insv"], meta=dict(meta),
+    )  # fmt: skip
+    (tmp_path / "pano.json").write_text(
+        json.dumps({"version": 1, "clips": [old.to_json()]}), encoding="utf-8"
+    )
+    assert project.load(tmp_path)  # an old file still loads
+    new = x3.X3Clip(
+        clip_id="002", start_local="2026-01-01T11:00:00", mode="5.7k", lrv=None,
+        insv=["VID_20260101_110000_00_002.insv"], meta=dict(meta),
+    )  # fmt: skip
+    path = project.save(tmp_path, [new])
+    text = path.read_text(encoding="utf-8")
+    assert "IAQEB1234" not in text and "serial" not in text
+    clips = json.loads(text)["clips"]
+    assert [c["meta"] for c in clips] == [{"camera": "Insta360 X3", "firmware": "v1.0.40"}] * 2

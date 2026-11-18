@@ -81,8 +81,8 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument(
         "--sheets",
         action="store_true",
-        help="write visual-layer contact sheets (top beauty shots, friends, "
-        "people on lifts) to <project>/visual_check",
+        help="debugging aid: write visual-layer contact sheets (top beauty shots, friends, "
+        "people on lifts) to <project>/visual_check, to check the visual layer by eye",
     )
     ap.add_argument(
         "--avoid",

@@ -282,6 +282,9 @@ def save(project: Path, clips: list[X3Clip]) -> Path:
         src: c.to_json() if c else {**(d or {}), "clip_id": o.clip_id}
         for (src, (d, c)), o in zip(entries.items(), objs, strict=True)
     }
+    for entry in by_src.values():  # an older scan stored the camera's serial: not carried on
+        if isinstance(entry.get("meta"), dict):
+            entry["meta"] = {k: v for k, v in entry["meta"].items() if k != "serial"}
     cache.save_json(
         path,
         {

@@ -653,9 +653,9 @@ def test_without_a_crash_free_detect_caption_the_name_is_one():
     assert activity.synthesize("", None, _stub(raw), [])["detect"] == ["Skiing in deep snow."]
 
 
-def test_only_unusable_replies_and_timeouts_are_remembered(same_footage, monkeypatch):
-    """A quick None is a request error (Ollama down or loading): the next run asks again. A
-    slow None (a timeout) or an unusable reply is cached."""
+def test_only_unusable_replies_are_remembered(same_footage, monkeypatch):
+    """A quick None is a request error (Ollama down or loading) and a slow None a timeout:
+    the next run asks again (#1085). An unusable reply is cached."""
     down = _stub(None)
     rec = activity.resolve(same_footage("a"), ask=down)
     assert rec["source"] == "fallback" and _synths(down) == 2
@@ -665,14 +665,71 @@ def test_only_unusable_replies_and_timeouts_are_remembered(same_footage, monkeyp
     assert _synths(down) == 4  # asked again
     monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)  # every attempt "took" the timeout
     rec = activity.resolve(same_footage("c"), ask=down)
+    # still the fallback and the one attempt, but nothing is remembered
     assert _synths(down) == 5 and rec["discovery"]["timed_out"] == [True]
-    assert len(_cached_discoveries()) == 1
+    assert rec["source"] == "fallback" and "failed" not in rec["discovery"]
+    assert not _cached_discoveries()
     activity.resolve(same_footage("d"), ask=down)
-    assert _synths(down) == 5  # remembered
+    assert _synths(down) == 6  # asked again
+    broken = _stub({})  # an unusable reply, also a slow one: remembered
+    rec = activity.resolve(same_footage("e"), ask=broken)
+    assert rec["source"] == "fallback" and len(_cached_discoveries()) == 1
+    activity.resolve(same_footage("f"), ask=broken)
+    assert _synths(broken) == 1  # remembered
+
+
+class _Rater:
+    """A stand-in for a :class:`VisionRater`: ``ask`` returns None and says why."""
+
+    def __init__(self, failure: str) -> None:
+        self.failure, self.last_failure, self.calls = failure, None, 0
+
+    def ask(self, prompt, images, schema):
+        self.calls += 1
+        self.last_failure = self.failure
+        return None
+
+
+def test_a_none_reply_the_rater_calls_unusable_is_cached_a_request_failure_is_not(
+    same_footage, monkeypatch
+):
+    """#1085: ask_json is None for a bad reply too; ``last_failure`` tells them apart."""
+    bad = _Rater("reply")
+    rec = activity.resolve(same_footage("a"), ask=bad.ask)
+    assert rec["discovery"]["answered"] == [True, True] and bad.calls == 2
+    (entry,) = _cached_discoveries()
+    assert json.loads(entry.read_text(encoding="utf-8"))["failed"] == "no usable profile"
+    activity.resolve(same_footage("b"), ask=bad.ask)
+    assert bad.calls == 2  # remembered
+    entry.unlink()
+    down = _Rater("request")
+    rec = activity.resolve(same_footage("c"), ask=down.ask)
+    assert rec["discovery"]["answered"] == [False, False] and not _cached_discoveries()
+    monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)  # every attempt "took" the timeout
+    stats: dict = {}
+    assert activity.synthesize("kayaking", None, _Rater("reply").ask, [], stats) is None
+    assert stats["answered"] == [True] and stats["timed_out"] == [False]  # slow, but answered
+
+
+def test_the_last_attempt_decides_whether_a_failure_is_remembered(same_footage):
+    """#1085: an unusable first reply followed by no reply at all is asked again."""
+    replies = iter([{}, None])
+    seen: list[str] = []
+
+    def ask(prompt, images, schema):
+        seen.append(prompt)
+        return next(replies)
+
+    stats: dict = {}
+    assert activity.synthesize("kayaking", None, ask, [], stats) is None
+    assert stats["answered"] == [True, False] and "failed" not in stats
 
 
 def test_the_retry_is_skipped_after_a_first_attempt_near_the_timeout(monkeypatch):
     monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)
+    stats: dict = {}
+    assert activity.synthesize("kayaking", None, _stub(None), [], stats) is None
+    assert stats["attempts"] == 1 and "failed" not in stats  # a timeout: asked again next run
     broken, stats = _stub({}), {}
     assert activity.synthesize("kayaking", None, broken, [], stats) is None
     assert len(broken.calls) == 1 and stats["attempts"] == 1 and len(stats["synth_s"]) == 1
