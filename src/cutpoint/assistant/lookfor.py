@@ -25,12 +25,15 @@ uncertain. The model gets text only: ``match`` 0-10, ``confidence`` and the mome
 Without the ``events`` extra (Cutpoint lite) or without the CLIP weights the tool answers with
 the install or setup command instead (:class:`LookForError`). A project none of whose sources has
 cached embeddings (:func:`indexed`) is not offered the tool at all; if it is called anyway, the
-page shows :class:`LookForError`'s short ``reason``.
+page shows :class:`LookForError`'s short ``reason``. The bars hold for one CLIP model
+(:data:`CALIBRATED_FOR`): a source whose frame index another model made is skipped, and with
+only such sources the search answers :data:`NO_MODEL` instead.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,10 +47,16 @@ from cutpoint.events import visual as V
 from cutpoint.segments import moment_id
 from cutpoint.visual_pool import _fit, _overlap
 
+logger = logging.getLogger(__name__)
+
 NAME = "look_for"
 JSON_TOOL = f"{NAME} {{query, limit?}}"
 DEFAULT_LIMIT, MAX_LIMIT = 5, 10
 MAX_QUERY = 200  # characters
+# The CLIP model (open_clip arch, pretrained tag) the bars below were calibrated for. A frame
+# index made with another one (``params.clip`` of its cache meta) is skipped: its cosines sit
+# elsewhere, so the bars would list noise or nothing (:func:`clip_of`).
+CALIBRATED_FOR = ("ViT-L-14-quickgelu", "openai")
 # CLIP ViT-L/14 image-text cosines, calibrated on Whistler day 3 (35 GoPro sources, 10k frames)
 # and the scuba clips of #529: how high a query's best frame scores depends on the words as much
 # as on the footage (a clear "friends on the lift" 0.28-0.30, a "surfer" 0.27, "a scuba
@@ -114,6 +123,12 @@ def rules(images: bool) -> str:
 NO_INDEX = (
     "Visual search isn't available for this project: its analysis has no frame index "
     "(analyze --visual-index writes it)"
+)
+
+
+NO_MODEL = (
+    "Visual search isn't available for this project: its frame index was made with "
+    "another CLIP model than the one its match thresholds are calibrated for"
 )
 
 
@@ -194,12 +209,14 @@ class Hit:
 @dataclass
 class Found:
     """What a search gives: ``hits`` best first (each with the id it covers, or None), the
-    number of sources searched and of all, and the best ``match`` of any frame."""
+    number of sources searched and of all, the best ``match`` of any frame and the number of
+    sources skipped for another CLIP model (:data:`CALIBRATED_FOR`)."""
 
     hits: list[tuple[Hit, str | None]]
     searched: int
     total: int
     best: int
+    other: int = 0  # sources skipped: their frame index another CLIP model made
 
 
 def indexed(sources: Sequence[str]) -> bool:
@@ -213,6 +230,23 @@ def indexed(sources: Sequence[str]) -> bool:
         except OSError:  # offline footage: its cache key needs the file's size and mtime
             continue
     return False
+
+
+def clip_of(meta: Mapping[str, Any]) -> tuple[str, str]:
+    """The CLIP model (arch, pretrained tag) a frame index was made with: ``params.clip`` of its
+    cache meta, which every writer records (the full and light index and the 360 views). Meta
+    without it (a missing or damaged ``.json``) means this install's model
+    (:data:`cutpoint.events.visual.CLIP_ARCH`): the model is part of the cache key, so the
+    file found was made with it."""
+    params = meta.get("params")
+    got = params.get("clip") if isinstance(params, Mapping) else None
+    if isinstance(got, list | tuple) and len(got) == 2 and all(isinstance(x, str) for x in got):
+        return got[0], got[1]
+    return V.CLIP_ARCH, V.CLIP_PRETRAINED
+
+
+def _model_name(model: tuple[str, str]) -> str:
+    return "/".join(model)
 
 
 def unavailable() -> str | None:
@@ -270,6 +304,8 @@ class Finder:
     def __init__(self, sources: Sequence[str]) -> None:
         self.sources = list(sources)
         self._frames: dict[str, tuple[np.ndarray, np.ndarray]] | None = None
+        # sources whose frame index another CLIP model made (:data:`CALIBRATED_FOR`): skipped
+        self._other: dict[str, tuple[str, str]] = {}
 
     def _load(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         if self._frames is None:
@@ -277,10 +313,34 @@ class Finder:
             for source in self.sources:
                 # the full index wins over the light one; a damaged cache is a miss
                 data = V.load_visual(Path(source)) or V.load_visual_light(Path(source))
-                if data is not None and len(data.t):
-                    frames[source] = (data.t.astype(float), data.mean_emb)
+                if data is None or not len(data.t):
+                    continue
+                model = clip_of(data.meta)
+                if model != CALIBRATED_FOR:
+                    self._other[source] = model
+                    continue
+                frames[source] = (data.t.astype(float), data.mean_emb)
             self._frames = frames
+            if self._other:
+                logger.info(
+                    "look_for skips %d source(s): frame index made with CLIP %s, thresholds "
+                    "calibrated for %s",
+                    len(self._other),
+                    ", ".join(sorted({_model_name(m) for m in self._other.values()})),
+                    _model_name(CALIBRATED_FOR),
+                )
         return self._frames
+
+    def _other_model(self) -> LookForError:
+        """The error when only frame indexes of another CLIP model are cached."""
+        made = ", ".join(sorted({_model_name(m) for m in self._other.values()}))
+        return LookForError(
+            f"the frame index of this project was made with CLIP {made}, but the look_for match "
+            f"thresholds are calibrated for CLIP {_model_name(CALIBRATED_FOR)}, so its scores "
+            "would be wrong and nothing was searched; analyzing again keeps the same index "
+            "while this Cutpoint uses that model. Use find_moments instead",
+            NO_MODEL,
+        )
 
     def search(
         self,
@@ -299,12 +359,15 @@ class Finder:
             durations: Known source durations (windows stay inside them).
 
         Raises:
-            LookForError: In the lite edition, without cached embeddings or without the CLIP
-                weights.
+            LookForError: In the lite edition, without cached embeddings, with only embeddings
+                of another CLIP model than :data:`CALIBRATED_FOR` (those of such a source are
+                skipped) or without the CLIP weights.
         """
         if (why := unavailable()) is not None:
             raise LookForError(why, NO_LITE)
         frames = self._load()
+        if not frames and self._other:
+            raise self._other_model()
         if not frames:
             raise LookForError(
                 "no source of this project has cached frame embeddings (analyze writes them "
@@ -349,7 +412,7 @@ class Finder:
             out.append((hit, cover))
             if len(out) >= limit:
                 break
-        return Found(out, len(frames), len(self.sources), match_of(best))
+        return Found(out, len(frames), len(self.sources), match_of(best), len(self._other))
 
 
 def _covering(hit: Hit, mine: Sequence[Mapping[str, Any]]) -> str | None:
