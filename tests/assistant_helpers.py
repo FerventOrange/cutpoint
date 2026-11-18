@@ -1,6 +1,7 @@
 """Shared helpers of the ``cutpoint ui`` assistant tests: a scripted :class:`FakeProvider`, the
 sample moments, ``requests`` doubles (:class:`Wire`, :class:`_Resp`) and the reply builders of the
-OpenAI, Responses and Anthropic wire formats.
+OpenAI, Responses and Anthropic wire formats; a mix request (:data:`TURN`) and the summary
+length claims (:data:`CLAIMS`) that more than one test file reads.
 
 A plain module (not a test module): the assistant test files import these from here.
 """
@@ -216,3 +217,64 @@ def an_reply(*blocks: dict[str, Any]) -> _Resp:
 
 def tool_use(cid: str, name: str, **args: Any) -> dict[str, Any]:
     return {"type": "tool_use", "id": cid, "name": name, "input": args}
+
+
+# A request for a mix of kinds and for dialogue, in the pacing and intent tests
+TURN = (
+    "Create a ~4 minute sequence of beautiful shots, good skiing of me and my friends and an "
+    "occasional funny moment and dialogue to break up some of the skiing shots."
+)
+
+
+# One row per branch of ``intent.claimed_seconds`` and ``Turn._length_gap`` (its column
+# ``flagged``), for a proposal exported at 34 s: each cue
+# before or after a length, minutes with seconds, and each way a length is a clip's, a change, a
+# length asked for or hedged, or excused by the exported length.
+CLAIMS = [
+    # the sequence's length, a cue before it
+    ("Added the laugh; now 90 s.", 90.0, True),
+    ("Added the laugh for a total of 90 s.", 90.0, True),
+    ("Added the laugh; it now runs 1:30.", 90.0, True),
+    ("Added the laugh; your video is now 60 s.", 60.0, True),
+    ("It now runs 4 min 30 s.", 270.0, True),
+    ("It runs 34 s; 60 s in total is your target.", 34.0, False),
+    ("Lengthened m3 by 4 s; the montage now lasts about 34 seconds.", 34.0, False),
+    # ... a cue after it
+    ("Added the laugh, 90 s in all.", 90.0, True),
+    ("It is about a minute total.", 60.0, True),
+    ("Made it 4 min 30 s overall.", 270.0, True),
+    ("Made it 4 minutes and 30 seconds in total.", 270.0, True),
+    ("Now a minute and 4 s in all.", 64.0, True),
+    # a clip's length, a change in length or no cue: no claim
+    ("Each clip is now 5 s.", None, False),
+    ("m3 now runs 12 s.", None, False),
+    ("The jump now lasts 8 s.", None, False),
+    ("Extended the jump; it is now about 8 s.", None, False),
+    ("Added the laugh; the video is now 12 s longer.", None, False),
+    ("Added 3 clips (12 s in all).", None, False),
+    ("Added about 15 seconds of banter.", None, False),
+    ("Moved the laugh earlier, now at 0:12 in the video.", None, False),
+    ("Moved the laugh to the start, now as the opener.", None, False),
+    # the object of a change: no claim
+    ("Trimmed about 10 s overall from m3 and m5.", None, False),
+    ("Trimmed it by 20 s overall.", None, False),
+    ("Added three clips totalling about 15 s.", None, False),
+    ("Cut 20 s in total from the intro.", None, False),
+    ("Removed a total of 20 s of dead air.", None, False),
+    # a length asked for, negated or hypothetical: no claim
+    ("Added the laugh, short of 60 s total.", None, False),
+    ("Added the laugh, just shy of 60 s total.", None, False),
+    ("Added the laugh. 60 s in total needs more footage.", None, False),
+    ("Added the laugh. 60 s total would take more footage.", None, False),
+    ("Added the laugh, closer to 60 s overall.", None, False),
+    ("Added the laugh, toward 60 s overall.", None, False),
+    ("Added the laugh; still not at 60 s total.", None, False),
+    ("It is 34 s now, short of the 60 s total.", None, False),
+    ("Added the laugh; now 34 s of the 40 s asked.", 34.0, False),
+    ("Added the laugh; 60 s total, which was your goal, needs more footage.", None, False),
+    ("Added the laugh; 60 s total, as requested, needs more footage.", None, False),
+    # the exported length named anywhere excuses a claim, the length before a change not
+    ("Added the laugh, now the 34 s cut; 60 s total is too long for the footage.", 60.0, False),
+    ("Added the laugh, going from 0:34 to 1:00 overall.", 60.0, True),
+    ("Added the laugh, taking it from 34 s to 60 s total.", 60.0, True),
+]
