@@ -54,7 +54,7 @@ from dataclasses import dataclass
 from fractions import Fraction
 from functools import partial
 from itertools import pairwise
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any
 
 from cutpoint import cache, folders, jsonout, paths
@@ -71,6 +71,7 @@ from cutpoint.encode import (
     bt601_matrix,
     bt709_filter,
     color_kind,
+    filter_path,
     limiter_chain,
     plan_makeup,
     plan_peaks,
@@ -1117,7 +1118,7 @@ def post_process(
                 "Captions: %d chunks (whisper %s on %s)", len(chunks), tr.model_name, tr.device
             )
         cwd = ass.parent  # relative path avoids Windows drive-colon escaping in filters
-        vf = f"ass={ass.name}"
+        vf = f"ass={filter_path(PurePath(ass.name))}"
         # A BT.709 join (re-encoded, see _encode_with) keeps its tags; a stream-copied join of
         # HDR, BT.601 or full-range clips is not BT.709, so it keeps the tags ffmpeg carries.
         if not color_kind(info) and not bt601_matrix(info) and info.color_range != "pc":

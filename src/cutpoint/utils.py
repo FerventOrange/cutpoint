@@ -111,6 +111,11 @@ def positive_int(text: str) -> int:
     return _number(text, int, "a whole number", lambda v: v > 0, "must be greater than 0")
 
 
+def non_negative_float(text: str) -> float:
+    """argparse type: a number of 0 or more."""
+    return _number(text, float, "a number", lambda v: v >= 0, "must be 0 or more")
+
+
 def unit_float(text: str) -> float:
     """argparse type: a number from 0 to 1."""
     return _number(text, float, "a number", lambda v: 0 <= v <= 1, "must be from 0 to 1")

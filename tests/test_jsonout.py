@@ -228,8 +228,8 @@ def test_cli_error_without_json_prints_nothing_on_stdout(monkeypatch, capsys):
 
 
 def test_cli_unexpected_exception_still_writes_envelope(monkeypatch, capsys):
-    _paths_raising(monkeypatch, KeyError("bug"))
-    with pytest.raises(KeyError):
+    _paths_raising(monkeypatch, ZeroDivisionError("bug"))
+    with pytest.raises(ZeroDivisionError):
         cli.main(["paths", "--json"])
     assert envelope(capsys.readouterr().out)["error"]["code"] == "error"
 

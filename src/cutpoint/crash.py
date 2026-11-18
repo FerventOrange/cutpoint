@@ -469,6 +469,8 @@ def decode_window(
         )
     except FFmpegError as err:
         logger.debug("dense decode %s %.1f-%.1fs failed: %s", path.name, t0, t0 + dur, err)
+        got = []
+    if not got:
         return np.zeros(0), np.zeros((0, height, width, 3), np.uint8)
     return np.array([t for t, _ in got]), np.stack([f for _, f in got])
 
