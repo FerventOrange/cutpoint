@@ -4,8 +4,8 @@ A model piles up the clips of one kind: sixteen action clips in a row, the funny
 When the message asks to break up, mix in or intersperse kinds (:func:`intent.asks_for_mix`),
 :func:`pace` reorders the final proposal with ``move`` ops marked ``"auto": true`` so the funny,
 dialogue and scenic clips ("breakers") sit between the action clips, and adds dialogue moments
-when the message names dialogue and the sequence has none. Without such wording nothing here runs: pacing is left
-to the model.
+when the message names dialogue and the sequence has none. Without such wording nothing here
+runs: pacing is left to the model.
 
 Every try is measured with ``evaluate`` (the session's own check of ops: the same apply path as
 the model's proposal), so nothing here knows how a sequence is applied.
