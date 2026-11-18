@@ -1099,3 +1099,53 @@ def test_imu_grids_read_a_remote_unstaged_file_through_the_gpmf_remux(
     assert crash.imu_grids(src, 60.0) is not None
     assert remuxed == ([src] if unstaged else [])
     assert calls == [{"small": small, "full": full}[p] for p in parsed]
+
+
+# ---------------------------------------------------------------- the reaction pick (A491)
+def _talking_inputs(words, hits, *, kf=None):
+    """A rider at 30 km/h all along (no stop), so the clip ends at the minimum aftermath."""
+    inp = _inputs(spike=False)
+    inp.words = [{"start": s, "end": e, "word": w} for s, e, w in words]
+    inp.hits = hits
+    inp.kf_crash = kf
+    return inp
+
+
+_C = {"t0": 10.0, "t1": 10.2}  # clip: 5.0 to 18.2
+
+
+def test_the_reaction_is_the_utterance_of_the_strongest_crash_word_after_the_clip():
+    inp = _talking_inputs(
+        [(24.0, 24.3, "ok"), (40.0, 40.3, " oh"), (40.4, 40.8, " no "), (50.0, 50.4, "meh")],
+        [(24.0, 0.92, "ok"), (40.0, 0.95, "oh"), (50.0, 0.5, "meh")],
+    )
+    clip = crash.plan_clip(inp, _C, crash.CrashParams())
+    assert clip["end"] == 18.2
+    # the later 0.95 hit beats the earlier 0.92 one; its whole utterance chain is read, and a
+    # hit under 0.9 is no reaction
+    assert clip["reaction"] == {"start": 39.6, "end": 42.3, "text": "oh no"}
+
+
+def test_no_reaction_without_a_strong_hit_in_range_or_when_it_is_too_close():
+    p = crash.CrashParams()
+    weak = _talking_inputs([(24.0, 24.3, "x")], [(24.0, 0.85, "x")])
+    assert "reaction" not in crash.plan_clip(weak, _C, p)
+    close = _talking_inputs([(19.0, 19.3, "x")], [(19.0, 1.0, "x")])  # within 2 s of the end
+    assert "reaction" not in crash.plan_clip(close, _C, p)
+    far = _talking_inputs([(300.0, 300.3, "x")], [(300.0, 1.0, "x")])
+    far.duration = 400.0  # more than 240 s after the end
+    assert "reaction" not in crash.plan_clip(far, _C, p)
+
+
+def test_the_reaction_prefers_words_said_once_the_view_is_back_to_normal():
+    kf = np.zeros(60)
+    kf[24:27] = 0.95  # still lying on the ground at 24 s
+    inp = _talking_inputs(
+        [(24.0, 24.3, "ouch"), (40.0, 40.4, "fine")],
+        [(24.0, 1.0, "ouch"), (40.0, 0.92, "fine")],
+        kf=kf,
+    )
+    inp.visual = SimpleNamespace(t=np.arange(60, dtype=float))
+    clip = crash.plan_clip(inp, _C, crash.CrashParams())
+    assert clip["reaction"]["text"] == "fine"
+    assert clip["reaction"]["start"] == pytest.approx(39.6)
