@@ -19,7 +19,8 @@ def _js_words(name: str) -> set[str]:
 def test_kind_word_sets_match_pacing():
     assert _js_words("SCENIC_WORDS") == set(pacing._SCENIC_WORDS)
     assert _js_words("FUNNY_WORDS") == set(pacing._FUNNY_WORDS)
-    assert _js_words("ACTION_WORDS") == set(pacing._ACTION_WORDS)
+    assert "ACTION_WORDS" not in UTIL_JS.read_text(encoding="utf-8")  # kind and cues only (A303)
+    assert _js_words("ACTION_KINDS") == set(pacing._ACTION_KINDS)
     assert _js_words("TALK_WORDS") == set(pacing._TALK_WORDS)
 
 

@@ -33,6 +33,13 @@ _SUPERVISION_ERRORS = (
     subprocess.SubprocessError,
     FolderBusyError,
 )
+# A periodic sync that fails (say a keyring locked after screen lock) warns once per failure
+# streak and is tried again later; prepare() and finish() still fail closed. A failed sync reads
+# the keyring in full, so during a streak the wait doubles per failure, up to _SYNC_BACKOFF_MAX
+# (a locked keyring that prompts is not asked every 5 s), and is back to _SYNC_INTERVAL after a
+# success.
+_SYNC_RETRY_ERRORS = (KeyringError, OSError, ValueError)
+_SYNC_BACKOFF_MAX = 60.0
 
 
 def _parent_alive(pid: int) -> bool:
@@ -73,6 +80,25 @@ def _watch_stdin(fd: int, eof: threading.Event, started: threading.Event) -> Non
                 pass
     finally:
         eof.set()
+
+
+def _periodic_sync(store: CredentialStore, failing: bool) -> bool:
+    """Run one periodic sync and return whether it failed. The first failure of a streak is
+    printed as a WARNING; the others are silent until a sync succeeds again."""
+    try:
+        store.sync()
+    except _SYNC_RETRY_ERRORS as err:
+        if not failing:
+            detail = str(err) if isinstance(err, KeyringError) else type(err).__name__
+            print(
+                f"WARNING proxy credential sync failed, retrying: {detail}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return True
+    if failing:
+        print("proxy credential sync recovered", file=sys.stderr, flush=True)
+    return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -138,13 +164,20 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     procs.kill_with_parent(child)
                     next_sync = time.monotonic() + _SYNC_INTERVAL
+                    sync_failing = False
+                    sync_delay = _SYNC_INTERVAL
                     while child.poll() is None and not (parent_gone() or stopping.is_set()):
                         try:
                             child.wait(timeout=_POLL_INTERVAL)
                         except subprocess.TimeoutExpired:
                             if time.monotonic() >= next_sync:
-                                store.sync()
-                                next_sync = time.monotonic() + _SYNC_INTERVAL
+                                sync_failing = _periodic_sync(store, sync_failing)
+                                sync_delay = (
+                                    min(sync_delay * 2, _SYNC_BACKOFF_MAX)
+                                    if sync_failing
+                                    else _SYNC_INTERVAL
+                                )
+                                next_sync = time.monotonic() + sync_delay
                     child_status = _cleanup_child(child) if child.poll() is None else child.wait()
             except _SUPERVISION_ERRORS as err:
                 failure = True

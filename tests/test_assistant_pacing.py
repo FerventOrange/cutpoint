@@ -1,5 +1,5 @@
 """AI Chat pacing: when the message asks to break up or mix kinds, code spreads the funny,
-dialogue and scenic clips between the riding runs (labelled auto ops), and adds dialogue moments
+dialogue and scenic clips between the action clips (labelled auto ops), and adds dialogue moments
 when the message names dialogue and the proposal has none.
 
 The model is the scripted ``FakeProvider`` of ``test_assistant``.
@@ -7,7 +7,6 @@ The model is the scripted ``FakeProvider`` of ``test_assistant``.
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -110,8 +109,8 @@ def longest_run(kinds: list[str], kind: str = pacing.ACTION) -> int:
 # -- the wording --------------------------------------------------------------------------------
 
 
-# One row per branch of ``pacing.asks_for_mix``: each mix wording, a ride sport other than skiing,
-# a negation or transition before it, and each wording that only looks like a mix.
+# One row per branch of ``pacing.asks_for_mix``: each mix wording, "between the <any word> runs"
+# and "between the action clips" (no activity is named, #1085 A303), a negation or transition before it, and each wording that only looks like a mix.
 @pytest.mark.parametrize(
     ("text", "wanted"),
     [
@@ -128,6 +127,9 @@ def longest_run(kinds: list[str], kind: str = pacing.ACTION) -> int:
         ("an occasional joke", True),
         ("between the mtb runs add a funny moment", True),
         ("add dialogue between the snowboard runs", True),
+        ("put a funny moment between the action clips", True),
+        ("some laughs in between the action", True),
+        ("trim the dead time between the action", False),  # a bare "between the action"
         # an audio mix, a negated request, a transition or another word is none
         ("mix the audio", False),
         ("mix in some music", False),
@@ -151,23 +153,21 @@ def test_a_mix_request_is_found_and_look_alike_wording_is_not(text: str, wanted:
     assert pacing.asks_for_mix(text) is wanted
 
 
-@pytest.mark.parametrize("label", ["mtb-trail", "surfing"])
-def test_ride_sport_labels_are_action(label: str) -> None:
-    assert pacing.moment_kind(label, None, {}, lambda: False) == "action"
+@pytest.mark.parametrize("label", ["mtb-trail", "surfing", "ski-run", "riding"])
+def test_activity_words_in_a_label_do_not_make_a_moment_action(label: str) -> None:
+    """Which footage is action comes from the candidate's kind and cues, not from a sport's words
+    (#1085, A303): with speech over it and nothing else, such a moment is dialogue like any other,
+    and an action cue or ``kind`` makes it action."""
+    assert pacing.moment_kind(label, None, {}, lambda: True) == "dialogue"
+    assert pacing.moment_kind(label, None, {"speed": 6}, lambda: True) == "action"
+    assert pacing.moment_kind(label, {"kind": "cruise"}, {}, lambda: True) == "action"
 
 
-@pytest.mark.parametrize("label", ["drop-the-mic", "wave-hello"])
-def test_everyday_verb_labels_are_not_action_words(label: str) -> None:
-    """A moment falls back to action, so check these labels no longer name an action word."""
-    assert not set(label.split("-")) & pacing._ACTION_WORDS
-
-
-def test_python_and_web_action_words_stay_in_sync() -> None:
-    """``pacing._ACTION_WORDS`` and ``ACTION_WORDS`` in web/util.js name the same words."""
+def test_python_and_web_name_no_action_words() -> None:
+    """Neither AI Chat (pacing) nor the Moments grid (web/util.js) has a list of action words."""
     js = (Path(pacing.__file__).parents[1] / "web" / "util.js").read_text(encoding="utf-8")
-    found = re.search(r"const ACTION_WORDS = \[(.*?)\];", js, re.S)
-    assert found, "ACTION_WORDS not found in web/util.js"
-    assert set(re.findall(r"'([^']+)'", found.group(1))) == set(pacing._ACTION_WORDS)
+    assert "ACTION_WORDS" not in js
+    assert not hasattr(pacing, "_ACTION_WORDS")
 
 
 # One row per branch of ``pacing.names_dialogue``: each dialogue word, a negation before it, and
@@ -204,13 +204,17 @@ def kind(label: str, cand: dict | None = None, cues: dict | None = None, spoken:
 
 
 # One row per branch of ``pacing.moment_kind`` after the crash check: the kind, each word group of
-# the label (which wins over cues and speech), the strongest cue of a generic label, then speech.
+# the label (which wins over cues and speech), the strongest cue, then speech.
 @pytest.mark.parametrize(
     ("label", "cand", "cues", "spoken", "want"),
     [
         ("fast", None, {}, False, "action"),
-        ("jump", None, {}, True, "action"),  # speech over a skiing clip stays action
+        ("jump", None, {"airtime": 7}, True, "action"),  # speech over an action cue stays action
+        ("jump", None, {}, True, "dialogue"),  # no label word makes it action (#1085, A303)
         ("group / friends shot", {"kind": "crew"}, {}, True, "action"),
+        ("fast", {"kind": "speed"}, {"speed": 4}, True, "action"),  # an action-cam pick's kind
+        ("jump 1.2s", {"kind": "airtime"}, {}, True, "action"),
+        ("carve", {"kind": "carve"}, {}, True, "action"),
         ("stunning-mountain-views", None, {}, False, "scenic"),
         ("scenic view / beauty shot", {"kind": "view", "pool": "visual"}, {}, False, "scenic"),
         ("beauty", None, {"speed": 9}, False, "scenic"),
@@ -329,7 +333,7 @@ def test_the_real_turn_comes_out_with_no_long_action_streak() -> None:
     assert kinds[0] == "scenic"  # the opener stays
     assert longest_run(kinds) <= 4  # was 10+ in a row
     assert kinds.count("funny") == 4 and kinds.count("scenic") == 4
-    assert "Spread 4 funny and 3 scenic clips between the riding runs." in event["summary"]
+    assert "Spread 4 funny and 3 scenic clips between the action clips." in event["summary"]
     assert event["pace"]["moved"] and all(
         op.get("auto") for op in event["ops"] if op["op"] == "move"
     )
@@ -574,5 +578,5 @@ def test_the_pace_note_survives_a_long_summary_and_fill_note() -> None:
     main["auto"] = {"target": 240.0, "lengthened": [], "added": [], "reached": True}
     summary, _ = turn._paced("Long summary. " * 40, main)
     assert len(summary) <= session.MAX_SUMMARY
-    assert summary.endswith("clips between the riding runs.")
+    assert summary.endswith("clips between the action clips.")
     assert "Spread 4 funny and 3 scenic" in summary

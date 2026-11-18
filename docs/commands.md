@@ -741,17 +741,21 @@ propose an edit" (not for a question). A proposal that
 removes half or more of the clips when you did not ask to remove any is sent back and never used.
 
 Mixing kinds: when your message asks to break up, mix in or intersperse kinds ("an occasional
-funny moment to break up the riding", "sprinkle in", "now and then", "alternate", "vary the
-pace"; an audio mix is none), Cutpoint reorders the final proposal in code. Each row is riding
-(fast, speed, crash, cruise, crew), scenic (view, beauty), funny (laugh) or dialogue (spoken
-words over a clip that is not riding); the scenic, funny and dialogue clips are spread evenly
-between the riding runs, each kind keeps its order and a scenic first clip stays first. If you also
+funny moment to break up the action", "sprinkle in", "now and then", "alternate", "vary the
+pace", "between the runs", "between the action clips"; an audio mix and a bare "between the
+action", as in "trim the dead time between the action", are none), Cutpoint reorders
+the final proposal in code. Each row is action (a moment whose `kind` is `crew` or `cruise`
+from the visual pool, `airtime`, `speed` or `carve` from action-cam telemetry, or a crash, or
+whose strongest cue is an action cue such as speed, airtime or crash; no label word
+makes a moment action), scenic (view, beauty), funny (laugh) or dialogue (spoken words over a
+clip that nothing marks as action); the scenic, funny and dialogue clips are spread evenly
+between the action clips, each kind keeps its order and a scenic first clip stays first. If you also
 name dialogue (dialogue, conversation, banter, commentary, talk or chat moments) and the sequence has
 none, up to 3 dialogue moments are added (the assistant's searches first, then the best unused
 ones), within 15% of the length you asked for. When one does not fit, it replaces the
-lowest-scoring riding clip of a similar length among those the auto-fill added this turn; clips you
+lowest-scoring action clip of a similar length among those the auto-fill added this turn; clips you
 or the assistant picked are never removed, and with none to swap no dialogue is added. Negated
-wording ("don't break up the riding", "no dialogue") and a fade or transition between clips do not
+wording ("don't break up the action", "no dialogue") and a fade or transition between clips do not
 count. These are `move`, `add` and `remove` ops marked
 `auto` (one `order` op when a sequence needs more moves than the 100-op cap allows); the preview marks the rows "Auto-spread" and the summary says how many clips of each kind
 were spread. Without such wording the order is the assistant's. `move` and `add` positions

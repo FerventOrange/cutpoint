@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+from cutpoint.assistant import _proxy_guardian as guardian
+from cutpoint.assistant.keys import KeyringError
+
 _BACKEND = """
 import json, os
 from pathlib import Path
@@ -275,3 +278,124 @@ def test_store_failures_are_sanitized_and_nonzero(
     assert b"synthetic backend failure" not in stderr
     if process.stdin is not None:
         process.stdin.close()
+
+
+# A297: a failed periodic sync warns once per failure streak and is retried, the wait doubling
+# per failure up to a minute; prepare() and finish() still fail closed. In-process, with a fake
+# store, a fake daemon and a fake clock that each poll of the daemon moves on.
+
+
+class _FakeStore:
+    def __init__(self, sync_results: list[Exception | None], clock: list[float], **errors):
+        self.sync_results = sync_results
+        self.clock = clock
+        self.times: list[float] = []
+        self.prepare_error = errors.get("prepare")
+        self.finish_error = errors.get("finish")
+        self.finished = False
+
+    def prepare(self) -> None:
+        if self.prepare_error is not None:
+            raise self.prepare_error
+
+    def sync(self) -> None:
+        n = len(self.times)
+        self.times.append(self.clock[0])
+        result = self.sync_results[n] if n < len(self.sync_results) else None
+        if result is not None:
+            raise result
+
+    def finish(self) -> None:
+        self.finished = True
+        if self.finish_error is not None:
+            raise self.finish_error
+
+
+class _FakeDaemon:
+    """Runs for ``seconds`` of the fake clock, then exits with 0."""
+
+    def __init__(self, seconds: float, clock: list[float]) -> None:
+        self.seconds = seconds
+        self.clock = clock
+        self.returncode: int | None = None
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is None and self.clock[0] < self.seconds:
+            self.clock[0] += timeout or 0
+            raise subprocess.TimeoutExpired("daemon", timeout or 0)
+        self.returncode = 0 if self.returncode is None else self.returncode
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    kill = terminate
+
+
+def _run_in_process(
+    monkeypatch, tmp_path: Path, results: list[Exception | None], seconds: float, **errors
+) -> tuple:
+    clock = [0.0]
+    store = _FakeStore(results, clock, **errors)
+    daemon = _FakeDaemon(seconds, clock)
+
+    def watch(fd, eof, started):
+        started.set()
+
+    monkeypatch.setattr(guardian, "_watch_stdin", watch)
+    monkeypatch.setattr(guardian, "_parent_alive", lambda pid: True)
+    monkeypatch.setattr(guardian, "CredentialStore", lambda root: store)
+    monkeypatch.setattr(guardian, "time", type("T", (), {"monotonic": lambda: clock[0]}))
+    monkeypatch.setattr(guardian.procs, "kill_with_parent", lambda child: None)
+    monkeypatch.setattr(guardian.subprocess, "Popen", lambda *a, **k: daemon)
+    monkeypatch.setattr(guardian.sys, "stdin", type("In", (), {"fileno": lambda self: 0})())
+    code = guardian.main(["--root", str(tmp_path / "proxy"), "--parent-pid", "1", "--", "x"])
+    return code, daemon, store
+
+
+LOCKED = KeyringError("the keyring is locked")
+
+
+def test_failed_periodic_sync_keeps_the_proxy_running_and_retries(
+    monkeypatch, tmp_path: Path, capsys
+) -> None:
+    code, daemon, store = _run_in_process(monkeypatch, tmp_path, [LOCKED] * 4, seconds=150)
+    assert code == 0
+    assert not daemon.terminated  # the daemon ran until it exited on its own
+    assert store.times[:5] == [5, 15, 35, 75, 135]  # retried, waiting longer each time
+    assert store.times[5:] == [140, 145, 150]  # every 5 s again after the success
+    assert store.finished
+    err = capsys.readouterr().err
+    assert err.count("WARNING proxy credential sync failed") == 1  # once per streak, no spam
+    assert "the keyring is locked" in err
+    assert err.count("proxy credential sync recovered") == 1
+
+
+def test_a_failure_streak_backs_off_to_one_sync_a_minute(monkeypatch, tmp_path: Path) -> None:
+    code, daemon, store = _run_in_process(monkeypatch, tmp_path, [LOCKED] * 99, seconds=300)
+    assert code == 0 and not daemon.terminated
+    assert store.times == [5, 15, 35, 75, 135, 195, 255]  # not 60 keyring reads, one per 5 s
+
+
+def test_each_new_failure_streak_warns_once(monkeypatch, tmp_path: Path, capsys) -> None:
+    results = [LOCKED, LOCKED, None, OSError("x"), OSError("x")]
+    code, daemon, store = _run_in_process(monkeypatch, tmp_path, results, seconds=80)
+    assert code == 0 and not daemon.terminated
+    assert store.times[:6] == [5, 15, 35, 40, 50, 70]  # the wait starts again at 5 s
+    err = capsys.readouterr().err
+    assert err.count("WARNING proxy credential sync failed") == 2
+    assert err.count("proxy credential sync recovered") == 2
+
+
+@pytest.mark.parametrize("step", ["prepare", "finish"])
+def test_prepare_and_finish_still_fail_closed(monkeypatch, tmp_path: Path, capsys, step) -> None:
+    code, daemon, _ = _run_in_process(monkeypatch, tmp_path, [], seconds=1, **{step: LOCKED})
+    assert code == 1
+    if step == "prepare":
+        assert daemon.returncode is None  # never launched
+    assert "WARNING" not in capsys.readouterr().err

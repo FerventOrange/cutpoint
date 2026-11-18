@@ -88,10 +88,13 @@ test('kindOf: scenic views, laughter, a few spoken words, else action; scoreText
   assert.deepEqual([88.4, 9.06, 100].map((n) => u.scoreText(n, n < 10)), ['88', '9.1', '100']);
   assert.equal(u.scoreText(9.6, false), '10');
   assert.equal(u.scoreText(10, true), '10.0');
-  // pacing.moment_kind's order: scenic word, funny word, action word, talk word, then laughter, then the transcript
+  // pacing.moment_kind's order: scenic word, funny word, action kind, talk word, then laughter, then the transcript
   assert.equal(u.kindOf({ label: 'Beautiful vista', transcript: 'a b c d e' }), 'scenic');
   assert.equal(u.kindOf({ label: 'Fast joke' }), 'funny');
-  assert.equal(u.kindOf({ label: 'Banter at speed' }), 'action');
+  assert.equal(u.kindOf({ label: 'Banter', kind: 'crew' }), 'action');
+  assert.equal(u.kindOf({ label: 'fast', kind: 'speed', signals: { speed: 0.4 }, transcript: 'a b c d e' }), 'action'); // an action-cam pick's kind
+  assert.equal(u.kindOf({ label: 'Banter at speed' }), 'dialogue'); // no label word makes it action (#1085, A303)
+  assert.equal(u.kindOf({ label: 'Fast ski run', transcript: 'a b c d e' }), 'dialogue');
   assert.equal(u.kindOf({ label: 'Banter', signals: { laughter: 0.9 } }), 'dialogue');
   assert.equal(u.kindOf({ label: 'ski-moment', vision_label: 'two friends talking' }), 'dialogue');
   assert.equal(u.kindOf({ label: 'ski-moment', transcript: '' }), 'action'); // a generic label names nothing
