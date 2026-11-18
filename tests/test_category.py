@@ -411,7 +411,7 @@ def faked_probe(home, tmp_path, monkeypatch):
     faked; ``state.frames`` is the number of spread frames the fake decodes."""
     from types import SimpleNamespace  # noqa: PLC0415
 
-    from cutpoint import analyze, ffmpeg_utils  # noqa: PLC0415
+    from cutpoint import ffmpeg_utils  # noqa: PLC0415
 
     state = SimpleNamespace(src=tmp_path / "v" / "a.mp4", frames=16, probes=0)
     state.src.parent.mkdir()
@@ -420,7 +420,7 @@ def faked_probe(home, tmp_path, monkeypatch):
         ffmpeg_utils, "probe", lambda p: SimpleNamespace(duration=60.0, width=640, height=360)
     )
     monkeypatch.setattr(ffmpeg_utils, "ffprobe_json", lambda *a, **k: {})
-    monkeypatch.setattr(analyze, "has_telemetry", lambda p: False)
+    monkeypatch.setattr(category, "has_telemetry", lambda p: False)
 
     def frame_probe(*a):
         state.probes += 1

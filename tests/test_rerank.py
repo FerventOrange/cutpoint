@@ -296,20 +296,23 @@ def test_an_event_layer_the_style_plans_and_did_not_run_needs_analyze(home, tmp_
     plan = analyze.LayerPlan(
         layers={"crashes": ("crash",), "reactions": ("audio", "voice"), "keyframes": ("visual",)}
     )
+    game = analyze.LayerPlan(layers={"reactions": ("audio",), "keyframes": ("ocr",)})
     asked: list[str] = []
 
-    def plan_layers(style, sources, skip, cat=None, visual_index=False, cuda=None):
+    def plan_layers(style, sources, skip, cat=None, visual_index=False, cuda=None, quiet=False):
         asked.append(cat)
         assert sources == []  # no telemetry probe of the sources
-        return plan
+        return game if cat == "gameplay" else plan
 
     monkeypatch.setattr(analyze, "plan_layers", plan_layers)
     got = features_of(project, "action")
     assert got == {"layer:voice", "layer:visual", "layer:crash"}
-    assert asked == ["action"]
+    assert asked == ["action", "action"]  # the plan with a GPU assumed, then the real one
     asked.clear()
-    assert features_of(project, "funny") == set()  # talk: audio ran, no plan needed
-    assert asked == []
+    assert (
+        features_of(project, "funny") == set()
+    )  # gameplay: audio and ocr ran, the first plan is covered
+    assert asked == ["gameplay"]
 
 
 def test_the_chat_only_light_index_never_needs_analyze(home, tmp_path, monkeypatch):
@@ -344,6 +347,7 @@ def test_an_injected_cuda_answer_is_used_instead_of_torch(home, tmp_path, monkey
     project = make_project(home, tmp_path)  # gameplay layers: audio, ocr
     monkeypatch.setattr(rerank, "_events_extra", lambda: True)
     monkeypatch.setattr(analyze, "EVENTS_MODULES", ())  # the extra is "installed"
+    monkeypatch.setattr(analyze.event_paths, "missing_files", lambda layers: [])  # models there
 
     def boom() -> bool:
         raise AssertionError("torch's own CUDA check ran")
@@ -1353,3 +1357,15 @@ def test_a_failure_after_analyze_saved_highlights_keeps_the_new_backup(home, tmp
     with pytest.raises(KeyboardInterrupt):
         rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
     assert (project / rerank.BACKUP).read_bytes() == raw
+
+
+def test_readiness_logs_nothing_at_info_about_missing_model_files(
+    home, tmp_path, monkeypatch, caplog
+):
+    project = make_project(home, tmp_path)  # gameplay layers: audio, ocr
+    monkeypatch.setattr(rerank, "_events_extra", lambda: True)
+    monkeypatch.setattr(analyze, "EVENTS_MODULES", ())
+    monkeypatch.setattr(analyze.event_paths, "missing_files", lambda layers: [("panns", "x")])
+    with caplog.at_level("INFO"):
+        rerank.readiness(project, read(project), get_style("action"), lambda: False)
+    assert "Model files are missing" not in caplog.text

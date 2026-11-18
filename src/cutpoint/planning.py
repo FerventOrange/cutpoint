@@ -121,12 +121,7 @@ def select_moments(
         elif top is None and target:
             chosen = default_fit.fit_target(ranked, target)  # as analyze counts suggested_top
         else:
-            chosen = []
-            for c in ranked:  # an overlapping candidate (a clip inside a long stretch) is skipped
-                if len(chosen) == n:
-                    break
-                if c.get("must_include") or not default_fit.clashes(c, chosen):
-                    chosen.append(c)
+            chosen = default_fit.pick_best(ranked, count=n)  # skips the overlapping ones
         picks = len(chosen)
         # Confident crashes (action-cam analyze, crashes.json) are never left out.
         forced = [c for c in ranked if c.get("must_include") and c not in chosen]
@@ -138,14 +133,9 @@ def select_moments(
             )
             chosen += forced
     if max_total:
-        fitted, total = [], 0.0
-        for c in sorted(chosen, key=lambda c: (not c.get("must_include"), -c["score"])):
-            # Must-include crashes go first and stay even past the cap.
-            if not ids and not c.get("must_include") and default_fit.clashes(c, fitted):
-                continue
-            if c.get("must_include") or total + default_fit.length(c) <= max_total:
-                fitted.append(c)
-                total += default_fit.length(c)
+        # Must-include crashes go first and stay even past the cap.
+        ordered = sorted(chosen, key=lambda c: (not c.get("must_include"), -c["score"]))
+        fitted = default_fit.pick_best(ordered, total=max_total, clash=not ids)
         chosen = [c for c in chosen if c in fitted]
     if not ids and pool:
         chosen = _reserve(project, chosen, pool, len(chosen) if max_total else picks, max_total)

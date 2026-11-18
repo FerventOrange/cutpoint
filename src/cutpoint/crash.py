@@ -216,14 +216,10 @@ def _gpmf_copy(src: Path, tmp: Path) -> Path | None:
     network storage.
     """
     from cutpoint.errors import FFmpegError  # noqa: PLC0415
-    from cutpoint.ffmpeg_utils import ffprobe_json, run  # noqa: PLC0415
+    from cutpoint.ffmpeg_utils import run  # noqa: PLC0415
+    from cutpoint.telemetry import gpmd_stream_index  # noqa: PLC0415
 
-    try:
-        info = ffprobe_json(src, entries="stream=index,codec_tag_string", timeout=60)
-    except (OSError, FFmpegError):
-        return None
-    streams = info.get("streams") or []
-    idx = next((s.get("index") for s in streams if s.get("codec_tag_string") == "gpmd"), None)
+    idx = gpmd_stream_index(src)
     if idx is None:
         return None
     dst = tmp / f"{src.stem}.gpmf.mp4"
@@ -1183,8 +1179,9 @@ def write_sheet(
 def _project_language(project: Path) -> str | None:
     """Transcription language the analysis of ``project`` (or the one in progress) forced."""
     from cutpoint.events.common import load_highlights  # noqa: PLC0415
+    from cutpoint.sources import settings_language  # noqa: PLC0415
 
-    return (load_highlights(project).get("settings") or {}).get("language")
+    return settings_language(load_highlights(project))
 
 
 def _project_sources(project: Path) -> list[tuple[Path, float]]:
