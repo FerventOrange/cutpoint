@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from assistant_helpers import TURN, A, FakeProvider, call
-from cutpoint.assistant import ops, pacing, session
+from cutpoint.assistant import ops, pacing, proposing, session
 
 FAST, LAUGH, VIEW = "fast", "laugh", "stunning-mountain-views"
 
@@ -503,6 +503,6 @@ def test_the_pace_note_survives_a_long_summary_and_fill_note() -> None:
     main = turn._checked_real([{"op": "add", "id": c["id"]} for c in proj.candidates])[0]
     main["auto"] = {"target": 240.0, "lengthened": [], "added": [], "reached": True}
     summary, _ = turn._paced("Long summary. " * 40, main)
-    assert len(summary) <= session.MAX_SUMMARY
+    assert len(summary) <= proposing.MAX_SUMMARY
     assert summary.endswith("clips between the action clips.")
     assert "Spread 4 funny and 3 scenic" in summary

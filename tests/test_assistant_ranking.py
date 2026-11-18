@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from assistant_helpers import FakeProvider, call, project, run
 from conftest import patch_ui, write
 from cutpoint import paths, ui
-from cutpoint.assistant import context, providers, ranking, session
+from cutpoint.assistant import context, providers, ranking, session, toolcalls
 from cutpoint.assistant import store as ai_store
 from cutpoint.assistant.providers import Capabilities, OllamaProvider
 from cutpoint.pano import project as pano_project
@@ -106,18 +106,18 @@ def test_the_tool_is_offered_with_a_hook_and_its_enum_lists_the_hooks_styles() -
 def test_a_project_without_a_hook_gets_exactly_the_plain_tools_and_schema() -> None:
     fake = FakeProvider([as_json("find_moments", query="x")], JSON_ONLY)
     run(fake, proj=with_hook(None))
-    assert fake.requests[0]["schema"] == session.JSON_SCHEMA
+    assert fake.requests[0]["schema"] == toolcalls.JSON_SCHEMA
     assert "preview_ranking" not in json.dumps(fake.requests[0]["messages"])
     tooled = FakeProvider([call("find_moments", query="x")])
     run(tooled, proj=with_hook(None))
-    assert tooled.requests[0]["tools"] == session.TOOLS
+    assert tooled.requests[0]["tools"] == toolcalls.TOOLS
 
 
 @pytest.mark.parametrize("styles", [[("gaming", "")], []])
 def test_no_other_style_means_no_tool(styles: list[tuple[str, str]]) -> None:
     fake = FakeProvider([call("find_moments", query="x")])
     run(fake, proj=with_hook(Hook(styles=styles)))
-    assert fake.requests[0]["tools"] == session.TOOLS
+    assert fake.requests[0]["tools"] == toolcalls.TOOLS
 
 
 def test_json_mode_lists_the_tool_line_and_the_schema_enum() -> None:
@@ -135,7 +135,7 @@ def test_a_failing_hook_offers_no_tool_and_the_turn_goes_on() -> None:
 
     fake = FakeProvider([call("find_moments", query="x")])
     run(fake, proj=with_hook(Broken()))
-    assert fake.requests[0]["tools"] == session.TOOLS
+    assert fake.requests[0]["tools"] == toolcalls.TOOLS
 
 
 # -- the tool call -------------------------------------------------------------------------------

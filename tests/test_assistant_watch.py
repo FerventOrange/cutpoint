@@ -33,7 +33,7 @@ from assistant_helpers import (
     rs_text,
     tool_use,
 )
-from cutpoint.assistant import context, lookfor, providers, session, watch
+from cutpoint.assistant import context, lookfor, providers, session, toolcalls, watch
 from cutpoint.assistant.providers import (
     AnthropicProvider,
     Capabilities,
@@ -529,7 +529,7 @@ def test_json_mode_offers_view_moment_in_the_schema_and_sends_the_sheet(
     assert "view_moment" in first["schema"]["properties"]["tool"]["enum"]
     assert first["schema"]["properties"]["tool"]["enum"][-1] == "reply"
     assert "view_moment {id}" in first["messages"][0]["content"]
-    assert session.JSON_SCHEMA["properties"]["tool"]["enum"][-1] == "reply"  # unchanged
+    assert toolcalls.JSON_SCHEMA["properties"]["tool"]["enum"][-1] == "reply"  # unchanged
     msgs = fake.requests[1]["messages"]
     assert msgs[-2]["content"].startswith("view_moment result:")
     assert len(images_in(msgs)) == 1

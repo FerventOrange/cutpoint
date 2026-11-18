@@ -34,7 +34,7 @@ from assistant_helpers import (
 )
 from conftest import patch_ui, set_config
 from cutpoint import config
-from cutpoint.assistant import keys, ops, providers, session
+from cutpoint.assistant import keys, ops, providers, session, toolcalls
 from cutpoint.assistant.providers import (
     AnthropicProvider,
     OllamaProvider,
@@ -101,13 +101,13 @@ def test_a_compatible_server_keeps_chat_completions_with_tools(monkeypatch) -> N
     p = OpenAIProvider("https://openrouter.ai/api/v1", "gpt-x", 0, KEY)
     assert (p.local, p.host, p.context_tokens) == (False, "openrouter.ai", 32768)
     assert p.capabilities() == providers.Capabilities(True, True)
-    reply = p.chat([{"role": "user", "content": "hi"}], tools=session.TOOLS)
+    reply = p.chat([{"role": "user", "content": "hi"}], tools=toolcalls.TOOLS)
 
     check, ask = wire.sent
     assert check["method"] == "GET" and check["url"] == "https://openrouter.ai/api/v1/models"
     assert ask["url"] == "https://openrouter.ai/api/v1/chat/completions"
     assert ask["headers"] == {"Authorization": f"Bearer {KEY}"}
-    assert ask["json"]["tools"] == session.TOOLS and ask["json"]["model"] == "gpt-x"
+    assert ask["json"]["tools"] == toolcalls.TOOLS and ask["json"]["model"] == "gpt-x"
     assert "temperature" not in ask["json"]  # the server's default
     assert ask["timeout"] == (providers.CONNECT_TIMEOUT_S, providers.HOSTED_TIMEOUT_S)
     assert check["allow_redirects"] is False and ask["allow_redirects"] is False
@@ -153,7 +153,7 @@ def test_openai_makes_tool_calls_over_the_responses_api(monkeypatch) -> None:
         {"role": "assistant", "content": ""},  # an earlier turn without a reply: left out
         {"role": "user", "content": "find x"},
     ]
-    reply = p.chat(messages, tools=session.TOOLS)
+    reply = p.chat(messages, tools=toolcalls.TOOLS)
     ask = wire.sent[1]
     assert ask["url"] == "https://api.openai.com/v1/responses"
     assert ask["headers"] == {"Authorization": f"Bearer {KEY}"} and not ask["allow_redirects"]
@@ -165,7 +165,7 @@ def test_openai_makes_tool_calls_over_the_responses_api(monkeypatch) -> None:
         {"role": "assistant", "content": "hello", "phase": "final_answer"},  # an earlier reply
         {"role": "user", "content": "find x"},
     ]
-    fn = session.TOOLS[0]["function"]
+    fn = toolcalls.TOOLS[0]["function"]
     assert body["tools"][0] == {
         "type": "function",
         "name": fn["name"],
@@ -181,7 +181,7 @@ def test_openai_makes_tool_calls_over_the_responses_api(monkeypatch) -> None:
 
     convo = [*messages, reply.message, p.tool_result(reply.tool_calls[0], "found")]
     # the final answer's message items, one paragraph each, without the commentary
-    assert p.chat(convo, tools=session.TOOLS).text == "Done.\n\nBye."
+    assert p.chat(convo, tools=toolcalls.TOOLS).text == "Done.\n\nBye."
     assert wire.sent[2]["json"]["input"][3:] == [
         reasoning,
         rs_text("Looking."),
@@ -220,7 +220,7 @@ def test_a_responses_reply_cut_off_or_refused_runs_no_call(monkeypatch, answer, 
     refusal alone is an error, never a tool call to run or an empty reply."""
     Wire(monkeypatch, answer)
     with pytest.raises(ProviderError, match=want):
-        OpenAIProvider("", "m", 0, KEY).chat(HI, tools=session.TOOLS)
+        OpenAIProvider("", "m", 0, KEY).chat(HI, tools=toolcalls.TOOLS)
 
 
 @pytest.mark.parametrize(
@@ -286,17 +286,17 @@ def test_openai_json_mode_constrains_the_reply_to_the_schema(monkeypatch) -> Non
     )
     hi = [{"role": "user", "content": "hi"}]
     reply = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).chat(
-        hi, schema=session.JSON_SCHEMA
+        hi, schema=toolcalls.JSON_SCHEMA
     )
     assert wire.sent[0]["json"]["response_format"] == {
         "type": "json_schema",
-        "json_schema": {"name": "cutpoint_reply", "schema": session.JSON_SCHEMA},
+        "json_schema": {"name": "cutpoint_reply", "schema": toolcalls.JSON_SCHEMA},
     }
     assert "tools" not in wire.sent[0]["json"] and reply.text.startswith("{")
     # over the Responses API (api.openai.com) the schema is text.format
-    reply = OpenAIProvider("", "gpt-x", 0, KEY).chat(hi, schema=session.JSON_SCHEMA)
+    reply = OpenAIProvider("", "gpt-x", 0, KEY).chat(hi, schema=toolcalls.JSON_SCHEMA)
     assert wire.sent[1]["json"]["text"] == {
-        "format": {"type": "json_schema", "name": "cutpoint_reply", "schema": session.JSON_SCHEMA}
+        "format": {"type": "json_schema", "name": "cutpoint_reply", "schema": toolcalls.JSON_SCHEMA}
     }
     assert "tools" not in wire.sent[1]["json"] and reply.text.startswith("{")
 
@@ -314,11 +314,11 @@ def test_a_server_refusing_response_format_is_asked_once_without_it(monkeypatch)
     )
     p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
     hi = [{"role": "user", "content": "hi"}]
-    assert p.chat(hi, schema=session.JSON_SCHEMA).text == '{"a": 1}'
+    assert p.chat(hi, schema=toolcalls.JSON_SCHEMA).text == '{"a": 1}'
     assert "response_format" in wire.sent[0]["json"]
     assert "response_format" not in wire.sent[1]["json"]
     # remembered: the next call does not offer it again
-    assert p.chat(hi, schema=session.JSON_SCHEMA).text == '{"a": 2}'
+    assert p.chat(hi, schema=toolcalls.JSON_SCHEMA).text == '{"a": 2}'
     assert len(wire.sent) == 3 and "response_format" not in wire.sent[2]["json"]
 
 
@@ -329,7 +329,7 @@ def test_other_failures_are_not_retried_without_response_format(monkeypatch, ans
     wire = Wire(monkeypatch, answer)
     p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
     with pytest.raises(ProviderError):
-        p.chat([{"role": "user", "content": "hi"}], schema=session.JSON_SCHEMA)
+        p.chat([{"role": "user", "content": "hi"}], schema=toolcalls.JSON_SCHEMA)
     assert len(wire.sent) == 1
 
 
@@ -348,7 +348,7 @@ def test_other_failures_are_not_retried_without_response_format(monkeypatch, ans
 def test_a_server_refusing_tools_raises_tools_unsupported(monkeypatch, url, why) -> None:
     wire = Wire(monkeypatch, _Resp({"error": {"message": why}}, 400))
     with pytest.raises(ToolsUnsupportedError):
-        OpenAIProvider(url, "m", 0, KEY).chat([], tools=session.TOOLS)
+        OpenAIProvider(url, "m", 0, KEY).chat([], tools=toolcalls.TOOLS)
     endpoint = "/v1/chat/completions" if url else "/v1/responses"
     assert wire.sent[0]["url"].endswith(endpoint)
 
@@ -377,7 +377,7 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
         {"role": "assistant", "content": ""},  # an earlier turn without a reply: left out
         {"role": "user", "content": "find x"},
     ]
-    reply = p.chat(messages, tools=session.TOOLS)
+    reply = p.chat(messages, tools=toolcalls.TOOLS)
     ask = wire.sent[1]
     assert check["allow_redirects"] is False and ask["allow_redirects"] is False
     assert ask["url"] == "https://api.anthropic.com/v1/messages"
@@ -393,7 +393,7 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
     ]
     first = body["tools"][0]
     assert first["name"] == "find_moments"
-    assert first["input_schema"] == session.TOOLS[0]["function"]["parameters"]
+    assert first["input_schema"] == toolcalls.TOOLS[0]["function"]["parameters"]
     assert reply.text == "Looking."
     assert [(c.name, c.arguments, c.id) for c in reply.tool_calls] == [
         ("find_moments", {"query": "x"}, "tu1")
@@ -407,7 +407,7 @@ def test_anthropic_messages_api_with_tool_use(monkeypatch) -> None:
         p.tool_result(reply.tool_calls[0], "found"),
         p.tool_result(second, "moment"),
     ]
-    assert p.chat(convo, tools=session.TOOLS).text == "Done."
+    assert p.chat(convo, tools=toolcalls.TOOLS).text == "Done."
     wire_msgs = wire.sent[2]["json"]["messages"]
     assert wire_msgs[1] == {
         "role": "assistant",
@@ -465,7 +465,7 @@ def test_hosted_errors_say_what_failed_never_the_key(monkeypatch, kind, answer, 
     Wire(monkeypatch, answer)
     p = (OpenAIProvider if kind == "openai" else AnthropicProvider)("", "m", 0, KEY)
     with pytest.raises(ProviderError) as err:
-        p.chat([{"role": "user", "content": "hi"}], tools=session.TOOLS)
+        p.chat([{"role": "user", "content": "hi"}], tools=toolcalls.TOOLS)
     assert want in str(err.value) and KEY not in str(err.value)
 
 
@@ -1232,7 +1232,7 @@ def test_an_unknown_field_error_drops_chat_template_kwargs_before_response_forma
 ) -> None:
     wire = Wire(monkeypatch, _refusal("Extra inputs are not permitted"), oa_reply("{}"))
     p = OpenAIProvider("http://127.0.0.1:1234", "m", 0, None)
-    p.chat(HI, schema=session.JSON_SCHEMA)
+    p.chat(HI, schema=toolcalls.JSON_SCHEMA)
     assert "response_format" in wire.sent[1]["json"]
     assert "chat_template_kwargs" not in wire.sent[1]["json"]
     assert not p._no_schema
@@ -1245,7 +1245,7 @@ def test_both_optional_fields_can_be_refused_in_turn(monkeypatch) -> None:
         _refusal("Unsupported parameter: 'response_format'"),
         oa_reply("{}"),
     )
-    OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).chat(HI, schema=session.JSON_SCHEMA)
+    OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).chat(HI, schema=toolcalls.JSON_SCHEMA)
     last = wire.sent[2]["json"]
     assert len(wire.sent) == 3 and "response_format" not in last
     assert "chat_template_kwargs" not in last

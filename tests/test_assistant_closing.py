@@ -28,7 +28,7 @@ from assistant_helpers import (
     run,
     tool_use,
 )
-from cutpoint.assistant import providers, session, watch
+from cutpoint.assistant import providers, session, toolcalls, watch
 from cutpoint.assistant.providers import AnthropicProvider, OpenAIProvider, Reply
 
 pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
@@ -82,7 +82,7 @@ def test_a_model_that_keeps_looking_ends_with_a_plain_answer_not_no_answer(name:
         assert "view_moment" not in tool_names(r) and "find_moments" in tool_names(r)
         assert not closing_noted(r)
     for r in fake.requests[LAST:]:  # the closing round and its one retry
-        assert tool_names(r) == [session.FINAL_TOOL] and closing_noted(r)
+        assert tool_names(r) == [toolcalls.FINAL_TOOL] and closing_noted(r)
     # the closing round's lookup was not run: its result says to answer
     assert results(fake.requests[-1])[-1] == session.NOT_RUN
     ran = [e for e in turn.events if e["kind"] == "tool"]
@@ -156,9 +156,9 @@ def test_json_mode_closing_round_allows_only_propose_edit_and_reply() -> None:
     turn = run(fake, ASK)
     assert turn.status == "done" and turn.error is None
     assert len(fake.requests) == session.MAX_ROUNDS + 1
-    assert fake.requests[0]["schema"] is session.JSON_SCHEMA
+    assert fake.requests[0]["schema"] is toolcalls.JSON_SCHEMA
     for r in fake.requests[LAST:]:
-        assert r["schema"]["properties"]["tool"]["enum"] == [session.FINAL_TOOL, "reply"]
+        assert r["schema"]["properties"]["tool"]["enum"] == [toolcalls.FINAL_TOOL, "reply"]
         assert any(m.get("content") == session.CLOSING_JSON for m in r["messages"])
     sent = fake.requests[-1]["messages"][-1]["content"]
     assert sent == f"find_moments result:\n{session.NOT_RUN}"
@@ -222,7 +222,9 @@ def test_a_view_refused_for_the_limit_makes_the_next_round_the_closing_one(
     assert turn.status == "done" and turn.error is None
     refused = results(fake.requests[2])[-1]
     assert "limit is reached; answer the user now" in refused
-    assert tool_names(fake.requests[2]) == [session.FINAL_TOOL] and closing_noted(fake.requests[2])
+    assert tool_names(fake.requests[2]) == [toolcalls.FINAL_TOOL] and closing_noted(
+        fake.requests[2]
+    )
     if then == "answers":
         assert len(fake.requests) == 3 and replies(turn) == [FOUND_NONE]
     else:  # well before the rounds run out
@@ -262,7 +264,7 @@ def test_hosted_closing_round_offers_propose_edit_and_answers_every_call(
     for body in chats[:LAST]:
         assert len(body["tools"]) > 1
     for body in chats[LAST:]:
-        assert [t["name"] for t in body["tools"]] == [session.FINAL_TOOL]
+        assert [t["name"] for t in body["tools"]] == [toolcalls.FINAL_TOOL]
     last = chats[-1]
     if kind == "openai":
         outs = [i for i in last["input"] if i.get("type") == "function_call_output"]

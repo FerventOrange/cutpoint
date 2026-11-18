@@ -6,7 +6,7 @@ the project (labels, transcripts, what the vision model saw, file names) is untr
 read from the footage (#1085 A654): it goes inside marked data blocks (:func:`data_block`) that
 the rules say are never instructions, also in every tool result. Not wrapped: the file names
 of the earlier find_words hits that session adds to an earlier reply (``_hits_of``) and those
-an add_range error lists (``session._source_of``). Only file names are shown, not
+an add_range error lists (``proposing._source_of``). Only file names are shown, not
 paths: the project's own files too (:func:`project_files`, for "where is the transcript?"), with
 the project folder's path only for a model on this machine (:func:`files_block`).
 

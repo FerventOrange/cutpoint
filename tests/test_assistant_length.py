@@ -265,7 +265,7 @@ def test_a_proposal_that_removes_every_clip_needs_the_user_to_ask_for_it() -> No
 def test_a_rejected_attempt_is_an_event_saved_with_the_turn(caplog) -> None:
     bad = propose("x", {"op": "trim", "id": "m2", "end": 999})
     fake = FakeProvider([bad, propose("Add the laugh", {"op": "add", "id": "m1"})])
-    with caplog.at_level("INFO", logger="cutpoint.assistant.session"):
+    with caplog.at_level("INFO", logger="cutpoint.assistant.proposing"):
         turn = run(fake, "add the laugh")
     assert kinds(turn) == ["rejected", "proposal"]
     event = turn.record()["events"][0]

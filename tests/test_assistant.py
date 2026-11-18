@@ -28,7 +28,7 @@ from assistant_helpers import (
 )
 from conftest import set_config
 from cutpoint import config
-from cutpoint.assistant import context, ops, providers, session
+from cutpoint.assistant import context, ops, providers, session, toolcalls
 from cutpoint.assistant.providers import Capabilities, Reply, ToolCall
 
 # -- ops -------------------------------------------------------------------------------------
@@ -103,7 +103,7 @@ def test_ollama_streams_native_chat_with_tools_format_and_num_ctx(monkeypatch) -
     p = providers.OllamaProvider("http://h:1/", "qwen3.5:9b", 8192)
     assert p.capabilities() == Capabilities(True, True, False)
     msgs = [{"role": "user", "content": "hi"}]
-    reply = p.chat(msgs, tools=session.TOOLS)
+    reply = p.chat(msgs, tools=toolcalls.TOOLS)
     assert reply.tool_calls == [ToolCall("get_moment", {"id": "m2"})]
     assert reply.message == {"role": "assistant", "content": "", "tool_calls": calls}
     assert answers["chat"].closed
@@ -127,12 +127,12 @@ def test_ollama_streams_native_chat_with_tools_format_and_num_ctx(monkeypatch) -
     }
 
     answers["chat"] = _Resp(lines=_chunks('{"tool": "reply", "text": "ok"}'))
-    assert p.chat(msgs, schema=session.JSON_SCHEMA).text == '{"tool": "reply", "text": "ok"}'
-    assert sent[-1][1]["format"] == session.JSON_SCHEMA and "tools" not in sent[-1][1]
+    assert p.chat(msgs, schema=toolcalls.JSON_SCHEMA).text == '{"tool": "reply", "text": "ok"}'
+    assert sent[-1][1]["format"] == toolcalls.JSON_SCHEMA and "tools" not in sent[-1][1]
 
     answers["chat"] = _Resp({"error": "registry/x does not support tools"}, 400)
     with pytest.raises(providers.ToolsUnsupportedError):
-        p.chat(msgs, tools=session.TOOLS)
+        p.chat(msgs, tools=toolcalls.TOOLS)
     answers["show"] = _Resp({"error": "model 'qwen3.5:9b' not found"}, 404)
     with pytest.raises(providers.ProviderError, match=r"ollama pull qwen3\.5:9b"):
         providers.OllamaProvider("http://h:1", "qwen3.5:9b", 8192).capabilities()
@@ -297,7 +297,7 @@ def test_json_mode_when_the_model_has_no_tool_calls(how: str) -> None:
     turn = run(fake)
     assert turn.status == "done", turn.error
     asked = fake.requests[-3:]
-    assert all(r["tools"] is None and r["schema"] == session.JSON_SCHEMA for r in asked)
+    assert all(r["tools"] is None and r["schema"] == toolcalls.JSON_SCHEMA for r in asked)
     assert '{"tool": "<tool name>"' in asked[0]["messages"][0]["content"]
     assert asked[1]["messages"][-1]["content"].startswith("error: reply with one JSON object")
     assert asked[2]["messages"][-1]["content"].startswith("get_moment result:\n<<<DATA moment>>>")
