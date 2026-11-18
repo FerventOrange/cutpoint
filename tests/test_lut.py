@@ -320,16 +320,13 @@ def test_manifest_entry_records_the_grade_and_reads_it_back(tmp_path):
 
 
 @pytest.fixture
-def exports(monkeypatch) -> list[tuple]:
-    """Stub probe and the encoder of extend (no ffmpeg); returns the export arguments."""
+def exports(monkeypatch, fake_export) -> list[tuple]:
+    """Stub probe and the encoder of extend (no ffmpeg); returns the export arguments after
+    ``out``, as passed positionally."""
     calls: list[tuple] = []
-
-    def fake_export(src, info, start, end, out, *args):
-        calls.append(args)
-        write(out, "encoded")
-
+    fake_export.content = b"encoded"
+    fake_export.on_call = lambda call: calls.append(call.args[5:])
     monkeypatch.setattr(extend, "probe", media_info)
-    monkeypatch.setattr(extend, "export_clip_checked", fake_export)
     monkeypatch.setattr(planning.sources, "readable_range", lambda src, t, d: (0.0, d))
     return calls
 

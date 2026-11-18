@@ -16,16 +16,12 @@ FMT = {"width": 1920, "height": 1080, "fps": 30, "vertical": False}
 
 
 @pytest.fixture
-def reads(monkeypatch) -> list[Path]:
+def reads(monkeypatch, fake_export) -> list[Path]:
     """Stub probe and the encoder (no ffmpeg); returns the files clips were encoded from."""
     encoded: list[Path] = []
-
-    def fake_export(src, info, start, end, out, *args):
-        encoded.append(src)
-        write(out, "encoded")
-
+    fake_export.content = b"encoded"
+    fake_export.on_call = lambda call: encoded.append(call.arguments["src"])
     monkeypatch.setattr(extend, "probe", media_info)
-    monkeypatch.setattr(extend, "export_clip_checked", fake_export)
     monkeypatch.setattr(planning.sources, "readable_range", lambda src, t, d: (0.0, d))
     return encoded
 
@@ -323,17 +319,19 @@ def test_extend_subtitles_from_the_transcript_of_the_analysis_language(
     assert word in (tmp_path / "proj" / "ext" / "001_a.srt").read_text(encoding="utf-8")
 
 
-def test_extend_keeps_an_exact_clip_at_its_own_edges_and_short_fade(tmp_path, monkeypatch):
+def test_extend_keeps_an_exact_clip_at_its_own_edges_and_short_fade(
+    tmp_path, monkeypatch, fake_export
+):
     """A word splice (manifest ``exact``) gets no padding, not from ``--extend`` nor from
     ``--clip-override``, and keeps its 10 ms fade; a normal clip next to it is padded."""
     fades: dict[str, float] = {}
+    fake_export.content = b"encoded"
 
-    def fake_export(src, info, start, end, out, fmt, vertical, crop, audio_fade, *args):
-        fades[out.name] = audio_fade
-        write(out, "encoded")
+    def record(call):
+        fades[call.arguments["out"].name] = call.arguments["audio_fade"]
 
+    fake_export.on_call = record
     monkeypatch.setattr(extend, "probe", media_info)
-    monkeypatch.setattr(extend, "export_clip_checked", fake_export)
     monkeypatch.setattr(planning.sources, "readable_range", lambda src, t, d: (0.0, d))
     monkeypatch.setattr(sources, "source_words", lambda *_a: None)
     src = str(write(tmp_path / "a.mp4"))

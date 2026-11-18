@@ -13,7 +13,6 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, needs_ffmpeg, write
@@ -22,18 +21,17 @@ from cutpoint.errors import FFmpegError
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.ffmpeg_utils import RunCancelled
 from cutpoint.styles import get_style
+from scene_helpers import CUDA, concat_clip, fake_source_io, late_copy, near, nvdec_source
 
 ENV = "CUTPOINT_SCENE_DECODE"
-CUDA = ffmpeg_utils.HwDecoder("cuda")
 
 
 @pytest.fixture(autouse=True)
 def plain(monkeypatch):
     """No env override, 8 logical CPUs, NVDEC present, H.264; tests change what they check."""
     monkeypatch.delenv(ENV, raising=False)
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0))
+    nvdec_source(monkeypatch, 600.0)
     monkeypatch.setattr(analyze.os, "cpu_count", lambda: 8)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: CUDA)
 
 
 def plan(cpu_free=True, duration=600.0, offset=0.0, limit=None):
@@ -469,11 +467,7 @@ def world(home, tmp_path, monkeypatch):
 
     monkeypatch.setattr(analyze, "scene_cuts", scene)
     monkeypatch.setattr(analyze, "_SceneJob", Job)
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, audio_streams=1))
-    monkeypatch.setattr(analyze, "extract_audio", lambda io, wav, *a, **k: write(wav, "wav"))
-    monkeypatch.setattr(analyze, "check_read", lambda *a, **k: None)
-    times = np.arange(0.0, 600.0, 0.5)
-    monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (times, np.full(len(times), -30.0)))
+    fake_source_io(monkeypatch, 600.0, flat_lufs=-30.0)
     w.source = lambda tr=None, **kw: analyze.analyze_source(
         src, get_style("action"), tr or StubTranscriber(), True, None, {}, **kw
     )
@@ -530,18 +524,8 @@ def cuts_clip(tmp_path) -> Path:
         ("testsrc2", 4.0), ("color=c=red", 4.0), ("testsrc", 3.0), ("color=c=blue", 0.6),
         ("smptebars", 3.4), ("color=c=green", 0.3), ("rgbtestsrc", 3.7), ("color=c=white", 5.0),
     ]  # fmt: skip
-    args: list[str] = []
-    for name, dur in parts:
-        sep = ":" if "=" in name else "="
-        args += ["-f", "lavfi", "-i", f"{name}{sep}size=160x120:rate=10:duration={dur}"]
-    graph = "".join(f"[{i}]" for i in range(len(parts))) + f"concat=n={len(parts)}:v=1[v]"
-    out = tmp_path / "cuts.mp4"
-    subprocess.run(
-        [shutil.which("ffmpeg"), "-v", "error", *args, "-filter_complex", graph, "-map", "[v]",
-         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "20", str(out)],
-        check=True,
-    )  # fmt: skip
-    return out
+    codec = ("-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "20")
+    return concat_clip(tmp_path / "cuts.mp4", parts, *codec)
 
 
 @needs_ffmpeg
@@ -566,17 +550,13 @@ def test_a_split_anywhere_gives_the_cuts_of_one_pass(cuts_clip, tmp_path, monkey
 @pytest.fixture
 def late_and_ts(cuts_clip, tmp_path) -> tuple[Path, Path]:
     """``cuts_clip`` with an audio track and its video 0.25 s late (MP4), and an MPEG-TS copy."""
-    ff = shutil.which("ffmpeg")
-    late, ts = tmp_path / "late.mp4", tmp_path / "cuts.ts"
+    late = late_copy(cuts_clip, tmp_path / "late.mp4", "aac")
+    ts = tmp_path / "cuts.ts"
     subprocess.run(
-        [ff, "-v", "error", "-itsoffset", "0.25", "-i", str(cuts_clip), "-f", "lavfi", "-i",
-         "sine=frequency=440:sample_rate=48000:duration=24", "-map", "0:v", "-map", "1:a",
-         "-c:v", "copy", "-c:a", "aac", str(late)],
+        [shutil.which("ffmpeg"), "-v", "error", "-i", str(late), "-c", "copy", "-f", "mpegts",
+         str(ts)],
         check=True,
     )  # fmt: skip
-    subprocess.run(
-        [ff, "-v", "error", "-i", str(late), "-c", "copy", "-f", "mpegts", str(ts)], check=True
-    )
     return late, ts
 
 
@@ -592,13 +572,6 @@ def test_auto_splits_a_late_mp4_but_not_mpegts(cuts_clip, late_and_ts, monkeypat
 
 
 CLIP_CUTS = [4.0, 8.0, 11.0, 11.6, 15.0, 19.0]  # one pass of cuts_clip (15.3 dropped)
-
-
-def near(got: list[float], want: list[float]) -> bool:
-    """``got`` and ``want`` hold the same cuts within one 0.1 s proxy frame."""
-    return len(got) == len(want) and all(
-        abs(a - b) <= analyze.SCENE_GRID_S + 1e-6 for a, b in zip(got, want, strict=True)
-    )
 
 
 def one_pass(src: Path, cdir: Path) -> list[float]:

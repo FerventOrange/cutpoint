@@ -31,6 +31,7 @@ from cutpoint import (
     procs,
 )
 from cutpoint.errors import FFmpegError, FolderBusyError
+from export_helpers import install_fake_export
 
 
 @pytest.fixture(autouse=True)
@@ -205,12 +206,8 @@ def _old_clip(project: Path) -> Path:
 
 def _fake_export(monkeypatch):
     """Export without ffmpeg: every clip is the bytes b"new"."""
-
-    def export(src, info, start, end, out, *_a, **_kw):
-        out.write_bytes(b"new")
-
     monkeypatch.setattr(clips, "probe", media_info)
-    monkeypatch.setattr(clips, "export_clip_checked", export)
+    install_fake_export(monkeypatch, clips)
 
 
 @pytest.mark.usefixtures("no_sleep")

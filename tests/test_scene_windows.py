@@ -13,12 +13,12 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, write
 from cutpoint import analyze, cache
 from cutpoint.styles import STYLES, get_style
+from scene_helpers import fake_source_io
 
 WINDOWS = analyze.SCENE_WINDOWS_FILE
 PAD = analyze.WINDOW_PAD_S
@@ -268,12 +268,7 @@ def world(home, tmp_path, monkeypatch, decodes):
         return [16.4]
 
     monkeypatch.setattr(analyze, "scene_cuts", full)
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0, audio_streams=1))
-    monkeypatch.setattr(analyze, "extract_audio", lambda io, wav, *a, **k: write(wav, "wav"))
-    monkeypatch.setattr(analyze, "check_read", lambda *a, **k: None)
-    times = np.arange(0.0, 60.0, 0.5)
-    lufs = -50.0 + 35.0 * np.exp(-(((times - 20.0) / 3.0) ** 2))
-    monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (times, lufs))
+    fake_source_io(monkeypatch)  # 60 s, one loud burst at 20 s
     w.timings = {}
     w.source = lambda style: analyze.analyze_source(
         src, style, StubTranscriber(), True, None, w.timings

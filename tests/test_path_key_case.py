@@ -18,6 +18,7 @@ import pytest
 
 from conftest import media_info, write
 from cutpoint import clips, config, folders, planning, reset_state, sources, srt
+from export_helpers import install_fake_export
 
 WORDS = [{"start": 101.0, "end": 101.4, "word": "hello"}]
 
@@ -171,17 +172,13 @@ def _project(home: Path) -> tuple[Path, Path, Path]:
     return project, seg, project / "clips"
 
 
-def _fake_export(src, info, start, end, out, *_a, **_kw) -> None:
-    out.write_bytes(b"new")
-
-
 @pytest.fixture
 def exported(home, monkeypatch):
     """A project whose first ``clips`` run wrote ``001_a.mp4``, ``001_a.srt`` and a
     manifest.json that names them ``001_A.mp4`` / ``001_A.srt`` (edited by hand)."""
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: media_info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     write(out / "001_a.mp4", b"old")
@@ -218,7 +215,7 @@ def test_clips_force_pairs_a_listed_srt_renamed_in_case(home, monkeypatch, case_
     and the run replaces 001_a.mp4 without a transcript, so the old .srt goes too."""
     project, seg, out = _project(home)
     monkeypatch.setattr(clips, "probe", lambda p: media_info(p, 200.0))
-    monkeypatch.setattr(clips, "export_clip_checked", _fake_export)
+    install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     clips.export_clips(project, segments=seg)
     (out / "001_a.srt").rename(out / "001_A.srt")

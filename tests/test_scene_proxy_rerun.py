@@ -8,18 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from conftest import media_info
 from cutpoint import analyze, ffmpeg_utils
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import ProgressResult
-
-CUDA = ffmpeg_utils.HwDecoder("cuda")
+from scene_helpers import CUDA, nvdec_source
 
 
 @pytest.fixture(autouse=True)
 def plain(monkeypatch):
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0))
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: CUDA)
+    nvdec_source(monkeypatch, 60.0)
 
 
 class Calls(list):

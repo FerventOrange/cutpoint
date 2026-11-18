@@ -14,12 +14,14 @@ import pytest
 import cutpoint.analyze
 from conftest import envelope
 from cutpoint import cache, cli, folders, procs, progress, runstate
+from resume_helpers import fake_events, read_progress
 
 KEYS = {
     "version", "generator", "command", "argv", "cwd", "options_key", "status", "pid", "host",
     "started", "updated", "exit_code", "error", "sources", "steps",
 }  # fmt: skip
 LOCK = ".analysis.run.cutpoint-lock"
+STEPS = ("one", "two")  # the fake events command's progress steps
 
 
 @pytest.fixture
@@ -30,34 +32,10 @@ def project(home: Path) -> Path:
     return p
 
 
-def _read(project: Path) -> dict:
-    return json.loads((project / runstate.FILE).read_text(encoding="utf-8"))
-
-
-def _fake_events(monkeypatch, body=None) -> list[dict]:
-    """``cutpoint events`` as a fake that runs two progress steps, then ``body``; returns
-    the progress.json records seen at the start of the command and at the second step."""
-    seen: list[dict] = []
-
-    def cmd(a):
-        project = runstate._ACTIVE.project
-        seen.append(_read(project))
-        with progress.run(("one", "two")) as steps:
-            with steps.step("one"):
-                pass
-            with steps.step("two"):
-                seen.append(_read(project))
-                if body is not None:
-                    body(project)
-
-    monkeypatch.setattr(cli, "_cmd_events", cmd)
-    return seen
-
-
 def test_events_writes_the_schema_and_ends_done(project, monkeypatch):
-    seen = _fake_events(monkeypatch)
+    calls = fake_events(monkeypatch, steps=STEPS)
     assert cli.main(["events", "p"]) == 0
-    start, second = seen
+    ((start, second),) = [(c["record"], c["last_step"]) for c in calls]
     assert set(start) == KEYS and start["version"] == 1
     assert start["status"] == "running" and start["command"] == "events"
     assert start["argv"] == ["events", "p"] and start["cwd"] == str(Path.cwd())
@@ -67,7 +45,7 @@ def test_events_writes_the_schema_and_ends_done(project, monkeypatch):
     assert start["exit_code"] is None and start["error"] is None and start["steps"] == {}
     assert second["steps"]["one"] == {"state": "done", "done": None, "total": None, "pct": 100}
     assert second["steps"]["two"]["state"] == "running"
-    end = _read(project)
+    end = read_progress(project)
     assert end["status"] == "done" and end["exit_code"] == 0 and end["error"] is None
     assert end["steps"]["two"]["state"] == "done"
     assert end["options_key"] == start["options_key"]
@@ -75,13 +53,13 @@ def test_events_writes_the_schema_and_ends_done(project, monkeypatch):
 
 
 def test_options_key_follows_the_options_not_json_or_verbose(project, monkeypatch):
-    _fake_events(monkeypatch)
+    fake_events(monkeypatch, steps=STEPS)
     cli.main(["events", "p"])
-    plain = _read(project)["options_key"]
+    plain = read_progress(project)["options_key"]
     cli.main(["-v", "events", "p", "--json"])
-    assert _read(project)["options_key"] == plain
+    assert read_progress(project)["options_key"] == plain
     cli.main(["events", "p", "--no-vlm"])
-    assert _read(project)["options_key"] != plain
+    assert read_progress(project)["options_key"] != plain
 
 
 @pytest.mark.parametrize(
@@ -96,9 +74,9 @@ def test_status_per_exit_code(project, monkeypatch, error, code, status, err_cod
     def body(project):
         raise error
 
-    _fake_events(monkeypatch, body)
+    fake_events(monkeypatch, body, STEPS)
     assert cli.main(["events", "p"]) == code
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == status and rec["exit_code"] == code
     assert rec["error"]["code"] == err_code
     if status == "interrupted":
@@ -120,9 +98,9 @@ def test_a_failed_write_never_stops_the_run_and_keeps_the_last_file(project, mon
         replace(src, dst)
 
     monkeypatch.setattr(cache.os, "replace", flaky)
-    _fake_events(monkeypatch, lambda project: denied.append(True))
+    fake_events(monkeypatch, lambda project: denied.append(True), STEPS)
     assert cli.main(["events", "p"]) == 0
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["status"] == "running" and rec["steps"]["two"]["state"] == "running"
     assert sorted(p.name for p in project.iterdir()) == ["highlights.json", runstate.FILE]
     assert sum("Could not write" in r.message for r in caplog.records) == 1
@@ -135,7 +113,7 @@ def test_read_reports_a_running_record_of_a_dead_process_as_interrupted(project,
     assert runstate.read(project)["status"] == "running"
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: False)
     assert runstate.read(project)["status"] == "interrupted"
-    assert _read(project)["status"] == "running"  # read never rewrites the file
+    assert read_progress(project)["status"] == "running"  # read never rewrites the file
     cache.save_json(project / runstate.FILE, {**rec, "host": "elsewhere"})
     assert runstate.read(project)["status"] == "running"  # another computer: cannot tell
     cache.save_json(project / runstate.FILE, {**rec, "pid": os.getpid()})
@@ -169,9 +147,9 @@ def test_a_second_run_on_the_project_gets_folder_busy(project, monkeypatch, caps
 def test_a_stale_lock_of_a_dead_process_is_taken_over(project, monkeypatch):
     _other_runs_lock(project, 4242)
     monkeypatch.setattr(procs, "pid_alive", lambda pid, not_after=None: False)
-    _fake_events(monkeypatch)
+    fake_events(monkeypatch, steps=STEPS)
     assert cli.main(["events", "p"]) == 0
-    assert _read(project)["status"] == "done" and not (project / LOCK).exists()
+    assert read_progress(project)["status"] == "done" and not (project / LOCK).exists()
 
 
 def test_nested_records_and_hooks_do_not_lock_the_run_out(project, monkeypatch):
@@ -185,9 +163,9 @@ def test_nested_records_and_hooks_do_not_lock_the_run_out(project, monkeypatch):
             runstate.transcribed(project, [Path("/videos/b.mp4")])
         assert (project / LOCK).exists()
 
-    _fake_events(monkeypatch, body)
+    fake_events(monkeypatch, body, STEPS)
     assert cli.main(["events", "p"]) == 0
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["command"] == "events" and rec["status"] == "done"
     assert rec["sources"] == ["/videos/a.mp4"]  # written from the start: not replaced
 
@@ -234,7 +212,7 @@ def test_first_run_keeps_its_folder_once_a_source_is_transcribed(
     assert cli.main(argv) == code
     project = home / "projects" / "new"
     assert sorted(p.name for p in project.iterdir()) == [runstate.FILE]  # no lock left
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["command"] == command and rec["status"] == status
     assert rec["exit_code"] == code and rec["argv"] == argv
     assert rec["sources"] == [str(s) for s in sources]
@@ -270,7 +248,7 @@ def test_a_rerun_of_analyze_records_and_locks_at_once(project, tmp_path, monkeyp
         == 1
     )
     assert lock_seen == [True]
-    rec = _read(project)  # nothing transcribed, yet this run's record replaced the old one
+    rec = read_progress(project)  # nothing transcribed, yet this run's record replaced the old one
     assert "run" not in rec and rec["command"] == "analyze" and rec["status"] == "failed"
     assert rec["sources"] == ["/videos/a.mp4"]  # from highlights.json until a transcript
     assert not (project / LOCK).exists()
@@ -284,7 +262,7 @@ def test_a_rerun_of_analyze_records_its_sources_once_transcribed(project, tmp_pa
         )
         == 1
     )
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["command"] == "analyze" and rec["status"] == "failed"
     assert rec["sources"] == [str(s) for s in sources]
 
@@ -398,7 +376,7 @@ def test_360_analyze_records_once_and_does_not_lock_itself_out(project, monkeypa
     monkeypatch.setattr(candidates, "cache_candidate_paths", lambda p: {"seconds": 0.0})
     assert cli.main(["360", "analyze", "p"]) == 0
     assert order == ["analyze", "events"]
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
     # written from the start, then this run's sources
     assert rec["sources"] == [str(Path("/v/a.lrv"))]
@@ -437,7 +415,7 @@ def test_360_analyze_scan_of_a_new_project_locks_and_records_once_scanned(
     monkeypatch.setattr(views, "run_layer", run_layer)
     assert cli.main(["360", "analyze", "new", "--scan", str(footage), "--views-only"]) == 0
     assert locked == [True]
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
     assert not (project / LOCK).exists()
 
@@ -465,7 +443,7 @@ def test_360_analyze_scan_of_a_new_project_records_the_transcribed_sources(
     def analyze(sources, style, out_dir, **kw):
         with folders.output_dir(out_dir), runstate.project_ready(out_dir):
             runstate.transcribed(out_dir, sources)
-            seen.append(_read(out_dir)["sources"])
+            seen.append(read_progress(out_dir)["sources"])
 
     monkeypatch.setattr(pano_cli, "_scan", scan)
     monkeypatch.setattr(pano_cli, "_require_detector", lambda: None)
@@ -481,7 +459,7 @@ def test_360_analyze_scan_of_a_new_project_records_the_transcribed_sources(
     monkeypatch.setattr(candidates, "cache_candidate_paths", lambda p: {"seconds": 0.0})
     assert cli.main(["360", "analyze", "new", "--scan", str(footage)]) == 0
     assert seen == [[str(Path("/v/a.lrv"))]]  # written at once, not only at the end
-    rec = _read(project)
+    rec = read_progress(project)
     assert rec["command"] == "360 analyze" and rec["status"] == "done"
     assert rec["sources"] == [str(Path("/v/a.lrv"))]
     assert not (project / LOCK).exists()
