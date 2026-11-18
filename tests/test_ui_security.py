@@ -15,7 +15,8 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from cutpoint import cache, ui
-from test_ui import X3_CLIPS, cli_project, fake_start, make_project
+from test_ui import X3_CLIPS, cli_project, make_project
+from ui_helpers import JobSpy
 
 PORT = 8765
 BLANK = {"X-Cutpoint-Token": ""}
@@ -67,8 +68,7 @@ def test_an_input_in_highlights_json_that_is_an_option_never_reaches_the_job(
     hl = cache.load_json(p / "highlights.json")
     hl["settings"]["inputs"], hl["style"] = ["--force"], "gaming"
     cache.save_json(p / "highlights.json", hl)
-    seen: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    seen = JobSpy(monkeypatch, check=False).args
     for body in ({"action": "analyze"}, {"action": "edit", "kind": "highlights"}):
         res = ui_client.post("/api/projects/cli/jobs", json=body)
         assert res.status_code == 400 and "'--force'" in res.json()["detail"], res.text
@@ -86,8 +86,7 @@ def test_a_360_clip_in_meta_json_that_is_not_a_number_never_reaches_the_job(
     meta_file = ui.project_dir(pid) / ui.META_FILE
     meta = cache.load_json(meta_file)
     cache.save_json(meta_file, {**meta, "clips": ["001", "--force"]})
-    seen: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    seen = JobSpy(monkeypatch, check=False).args
     res = ui_client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 400 and "not clip ids" in res.json()["detail"]
     assert seen == []

@@ -16,24 +16,11 @@ from cutpoint.assistant import providers
 from cutpoint.assistant.providers import AnthropicProvider, OpenAIProvider, Reply, XAIProvider
 from cutpoint.pano import vlcheck
 from cutpoint.styles import get_style
+from vision_helpers import FakeSubscription, no_ollama
 
 JPEG = b"\xff\xd8jpeg"
 B64 = base64.b64encode(JPEG).decode()
 CONSENT = "vision-v2:codex@chatgpt.com"
-
-
-class FakeSubscription:
-    name, model, local, host = "codex", "gpt-x", False, "chatgpt.com"
-
-    def __init__(self, text: str) -> None:
-        self.text, self.sent = text, []
-
-    def capabilities(self) -> None:
-        pass
-
-    def chat(self, messages, **_kw) -> Reply:
-        self.sent.append(messages)
-        return Reply(self.text)
 
 
 @pytest.fixture
@@ -41,12 +28,7 @@ def fake(home, monkeypatch) -> FakeSubscription:
     """Ollama is unreachable (any request fails the test); the provider is a fake."""
     fake = FakeSubscription('{"score": 8, "label": "big jump"}')
     monkeypatch.setattr(providers, "make", lambda *_a, **_k: fake)
-
-    def no_network(*_a, **_k):
-        raise AssertionError("Ollama was asked")
-
-    monkeypatch.setattr(vision.requests, "post", no_network)
-    monkeypatch.setattr(vision.requests, "get", no_network)
+    no_ollama(monkeypatch)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: JPEG)
     set_config(home, vision_assistant={"provider": "codex", "model": "gpt-x", "consent": [CONSENT]})
     return fake

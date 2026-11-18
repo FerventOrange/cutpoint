@@ -8,21 +8,7 @@ from typing import Any
 import pytest
 
 from cutpoint import vision
-
-
-class _Resp:
-    status_code = 200
-    is_redirect = False
-
-    def __init__(self, body: dict[str, Any]) -> None:
-        self.body = body
-        self.headers: dict[str, str] = {}
-
-    def raise_for_status(self) -> None:
-        pass
-
-    def json(self) -> dict[str, Any]:
-        return self.body
+from vision_helpers import Resp
 
 
 @pytest.fixture
@@ -31,11 +17,11 @@ def sent(monkeypatch) -> list[tuple[str, Any]]:
 
     def post(url, json=None, **_k):
         calls.append((url, json))
-        return _Resp({"response": '{"ok": true}'})
+        return Resp({"response": '{"ok": true}'})
 
     def get(url, **_k):
         calls.append((url, None))
-        return _Resp({"models": [{"name": "qwen3.5:9b", "size_vram": 1}]})
+        return Resp({"models": [{"name": "qwen3.5:9b", "size_vram": 1}]})
 
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision.requests, "get", get)
