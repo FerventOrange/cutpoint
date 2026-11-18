@@ -29,7 +29,6 @@ from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
     ANALYZE_KEYS,
     ProjectStyle,
-    _action_cam_style,
     _analyze_args,
     _auto_picks,
     _color_args,
@@ -191,10 +190,7 @@ def _analyze_job(r: _JobRequest) -> JobSpec:
     _no_options(inputs, "an input")
     # The header's style button (#897): analyze again in another style (auto: detected)
     new = body.get("style")
-    if new is not None and (
-        not isinstance(new, str)
-        or (new != AUTO and new not in ui_styles() and not _action_cam_style(new))
-    ):
+    if new is not None and (not isinstance(new, str) or (new != AUTO and new not in ui_styles())):
         raise bad(f"unknown style {new!r}")
     if new is None and (live := ps.library(style)) != style:
         new = str(live)  # a deleted style: analyze again in its base, and keep that
