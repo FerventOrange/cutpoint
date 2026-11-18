@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from conftest import envelope, run_json, warning_codes, write
+from conftest import envelope, run_json, warned_about, warning_codes, write
 from cutpoint import activity, analyze, cache, cli, crash, jsonout
 
 N = 600  # 60 s on the 0.1 s grid
@@ -128,6 +128,15 @@ def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
     assert doc["outputs"]["count"] == 0 and doc["outputs"]["candidates"] == []
 
 
+def _with_unreachable(ski: tuple[Path, Path], tmp_path: Path) -> tuple[Path, Path]:
+    """The ``ski`` project with an unreachable source before its own: ``(project, gone)``."""
+    project, src = ski
+    gone = tmp_path / "gone.mp4"
+    sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
+    cache.save_json(project / "highlights.json", {"sources": sources})
+    return project, gone
+
+
 @pytest.mark.parametrize("warn_unreachable, expected", [(True, 1), (False, 0)])
 def test_detect_project_warns_once_for_an_unreachable_source(
     ski, tmp_path, capsys, caplog, warn_unreachable, expected
@@ -135,21 +144,14 @@ def test_detect_project_warns_once_for_an_unreachable_source(
     """``crashes`` gives one WARNING line and one JSON warning for an unreachable source; the
     events and analyze paths (which already warned, ``warn_unreachable=False``) neither. The
     profile is detected from the footage, so the keyframe read skips the source too."""
-    project, src = ski
-    gone = tmp_path / "gone.mp4"
-    sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
-    cache.save_json(project / "highlights.json", {"sources": sources})
+    project, gone = _with_unreachable(ski, tmp_path)
     with caplog.at_level(logging.DEBUG), jsonout.run("crashes") as result:
         crash.detect_project(
             project, dense=False, sheets=0, llm=False, warn_unreachable=warn_unreachable
         )
     capsys.readouterr()
     assert warning_codes(result.warnings).count("footage_unreachable") == expected
-    warns = [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and str(gone) in r.getMessage()
-    ]
+    warns = warned_about(caplog, str(gone))
     assert len(warns) == expected, warns
 
 
@@ -241,10 +243,7 @@ def test_profile_shows_the_negatives_crashes_uses_for_an_old_record(ski, capsys)
 def test_profile_warns_once_for_an_unreachable_source(ski, tmp_path, monkeypatch, capsys, caplog):
     """The profile detected from the footage: one WARNING line per unreachable source and,
     with --json, one ``footage_unreachable`` warning, as on ``crashes``."""
-    project, src = ski
-    gone = tmp_path / "gone.mp4"
-    sources = [{"path": str(gone), "duration": 60}, {"path": str(src), "duration": 60}]
-    cache.save_json(project / "highlights.json", {"sources": sources})
+    _project, gone = _with_unreachable(ski, tmp_path)
     monkeypatch.setattr(activity, "default_ask", lambda: (None, None))  # no Ollama
     with caplog.at_level(logging.DEBUG):
         code, doc = run_json(capsys, ["profile", "ski"])
@@ -252,11 +251,7 @@ def test_profile_warns_once_for_an_unreachable_source(ski, tmp_path, monkeypatch
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [
         [str(gone)]
     ]
-    warns = [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and str(gone) in r.getMessage()
-    ]
+    warns = warned_about(caplog, str(gone))
     assert len(warns) == 1 and warns[0].endswith("; skipped"), warns
 
 

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import envelope, run_json, warning_codes, write
+from conftest import envelope, run_json, warned_about, warning_codes, write
 from cutpoint import analyze, cache, cli, crash
 from cutpoint.events import pipeline, scoring
 
@@ -171,11 +171,7 @@ def test_events_crash_layer_one_warning_line_per_unreachable_source(
     with caplog.at_level(logging.DEBUG):
         code, doc = run_json(capsys, ["events", "ev", "--layers", "crash", "--no-rescore"])
     assert code == 0 and doc["ok"] is True, doc
-    warns = [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelno >= logging.WARNING and str(gone) in r.getMessage()
-    ]
+    warns = warned_about(caplog, str(gone))
     assert len(warns) == 1, warns
     assert warning_codes(doc).count("footage_unreachable") == 1, doc
     assert [w["files"] for w in doc["warnings"] if w["code"] == "footage_unreachable"] == [

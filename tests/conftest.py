@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -465,6 +466,15 @@ def messages(caplog: pytest.LogCaptureFixture, level: str = "WARNING", logger=No
         r.getMessage()
         for r in caplog.records
         if r.levelname == level and (logger is None or r.name == logger)
+    ]
+
+
+def warned_about(caplog: pytest.LogCaptureFixture, text: str) -> list[str]:
+    """Messages logged at WARNING or above that contain ``text``."""
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING and text in r.getMessage()
     ]
 
 

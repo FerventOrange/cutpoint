@@ -164,22 +164,20 @@ def _moved(sent):
     return call
 
 
-def test_unload_ollama_does_not_follow_a_redirect(monkeypatch):
-    """#719: a 307 on the listing is Ollama not answering: no request goes further."""
+@pytest.mark.parametrize("on", ["listing", "unload"])
+def test_unload_ollama_does_not_follow_a_redirect(monkeypatch, on):
+    """#719: a 307 on the listing is Ollama not answering: no request goes further; one on the
+    unload counts it as failed (and nothing is waited for)."""
+    _no_sleep(monkeypatch)
     sent = []
-    monkeypatch.setattr(common.requests, "get", _moved(sent))
+    listing = (
+        _moved(sent) if on == "listing" else lambda url, **k: _Resp({"models": [{"name": "m"}]})
+    )
+    monkeypatch.setattr(common.requests, "get", listing)
     monkeypatch.setattr(common.requests, "post", _moved(sent))
     assert common.unload_ollama("http://127.0.0.1:11434") == []
-    assert sent == [("http://127.0.0.1:11434/api/ps", False)]
-
-
-def test_unload_ollama_counts_a_redirected_unload_as_failed(monkeypatch):
-    _no_sleep(monkeypatch)
-    posts = []
-    monkeypatch.setattr(common.requests, "get", lambda url, **k: _Resp({"models": [{"name": "m"}]}))
-    monkeypatch.setattr(common.requests, "post", _moved(posts))
-    assert common.unload_ollama("http://127.0.0.1:11434") == []
-    assert posts == [("http://127.0.0.1:11434/api/generate", False)]
+    path = "/api/ps" if on == "listing" else "/api/generate"
+    assert sent == [(f"http://127.0.0.1:11434{path}", False)]
 
 
 # --------------------------------------------------------------------------- 360 analyze

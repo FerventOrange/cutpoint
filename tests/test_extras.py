@@ -105,6 +105,10 @@ def _set_install(monkeypatch, tmp_path, *, receipt=None, direct_url=None, uv=Fal
     monkeypatch.setattr(extras, "uv_managed", lambda: uv)
 
 
+def _receipt_with(source: str) -> str:
+    return f'[tool]\nrequirements = [{{ name = "cutpoint", {source} }}]\n'
+
+
 _RERUN = f"{extras.INSTALL_SH} (Linux, macOS) or {extras.INSTALL_PS1} (Windows PowerShell)"
 
 
@@ -112,9 +116,10 @@ _RERUN = f"{extras.INSTALL_SH} (Linux, macOS) or {extras.INSTALL_PS1} (Windows P
     "receipt",
     [
         RECEIPT,
+        _receipt_with('extras = ["all"]'),  # no index options
         "[tool\nnot toml {{{",  # an unreadable receipt still marks a tool install
     ],
-    ids=["pypi", "malformed"],
+    ids=["pypi", "pypi-no-index", "malformed"],
 )
 @pytest.mark.parametrize(
     ("edition", "lite"),
@@ -126,10 +131,6 @@ def test_install_hint_uv_tool_reruns_the_installer(monkeypatch, tmp_path, receip
     _set_install(monkeypatch, tmp_path, receipt=receipt, uv=True)
     monkeypatch.setattr(extras, "edition", lambda: edition)
     assert extras.install_hint("gpu") == f"re-run the installer{lite}: {_RERUN}"
-
-
-def _receipt_with(source: str) -> str:
-    return f'[tool]\nrequirements = [{{ name = "cutpoint", {source} }}]\n'
 
 
 @pytest.mark.parametrize(
@@ -185,12 +186,6 @@ def test_installer_hint_keeps_the_tool_source(
     assert extras.install_hint("events") == want + (f" ({note})" if note else "")
     cuda = "; ".join([n for n in (note, "it installs CUDA torch when it finds an NVIDIA GPU") if n])
     assert extras.torch_cuda_hint() == f"{want} ({cuda})"
-
-
-def test_installer_hint_pypi_tool_has_no_source(monkeypatch, tmp_path):
-    _set_install(monkeypatch, tmp_path, receipt=_receipt_with('extras = ["all"]'), uv=True)
-    monkeypatch.setattr(extras, "edition", lambda: "full")
-    assert extras.install_hint("events") == f"re-run the installer: {_RERUN}"
 
 
 _FORK = "https://github.com/someone/cutpoint"

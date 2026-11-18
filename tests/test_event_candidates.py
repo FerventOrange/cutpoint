@@ -227,8 +227,7 @@ NO_POINTS = EventType("flavour", (Matcher("banner", prefix=("FLAVOUR",)),))
         (banner(10, "BOX PLACED 2"), (PLACER, *DEFAULT_EVENT_TYPES), STYLE, ["placer"]),
         (banner(10, "BOX PLACED 2"), DEFAULT_EVENT_TYPES, STYLE, []),
         (sound(10), DEFAULT_EVENT_TYPES, STYLE, ["laughter"]),
-        (sound(10, "Scream"), DEFAULT_EVENT_TYPES, STYLE, ["scream"]),
-        (sound(10, "Cheering"), DEFAULT_EVENT_TYPES, STYLE, ["cheering"]),
+        (sound(10, "Scream"), DEFAULT_EVENT_TYPES, STYLE, ["scream"]),  # Cheering: the same set
         # nothing that scores: a death (reaction points only), bigtext, notice, other sounds,
         # a sound without confidence, a type without points, one that is not for this style
         (feed(10, player_kill=False, player_death=True), DEFAULT_EVENT_TYPES, STYLE, []),
@@ -844,11 +843,10 @@ def test_a_source_with_scenes_and_no_audio_nominates_on_both_paths(tmp_path):
         (30.0, [], (0.0, 100.0)),
         (30.0, [(10.0, 20.0), (40.0, 60.0)], (20.0, 40.0)),  # between two
         (5.0, [(10.0, 20.0)], (0.0, 10.0)),  # before the first
-        (90.0, [(10.0, 20.0)], (20.0, 100.0)),  # after the last
         (15.0, [(10.0, 20.0)], (15.0, 15.0)),  # inside one: nothing is free
         (40.0, [(40.0, 50.0), (10.0, 20.0)], (20.0, 40.0)),  # at a start, the list unsorted
         (50.0, [(40.0, 50.0)], (50.0, 100.0)),  # at an end
-        (90.0, [(10.0, 20.0), (130.0, 140.0)], (20.0, 100.0)),  # a window past the part
+        (90.0, [(10.0, 20.0), (130.0, 140.0)], (20.0, 100.0)),  # after the last; one past the part
     ],
 )
 def test_free_around_is_the_stretch_no_taken_window_covers(t, taken, expected):
