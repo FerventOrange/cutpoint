@@ -3,31 +3,13 @@ replaced, so no Ollama and no network."""
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 import requests
 
 from cutpoint import vision
+from vision_helpers import Resp
 
 URL = "http://127.0.0.1:1"
-
-
-class _Resp:
-    is_redirect = False
-    status_code = 200
-
-    def __init__(self, body: Any = None, *, status: int = 200, bad_json: bool = False) -> None:
-        self.body, self.status_code, self.bad_json = body, status, bad_json
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}")
-
-    def json(self) -> Any:
-        if self.bad_json:
-            raise ValueError("not json")
-        return self.body
 
 
 def _redirect() -> requests.Response:
@@ -67,7 +49,7 @@ def _get(monkeypatch, reply) -> None:
 
 
 def test_load_success_sends_a_promptless_generate(monkeypatch, rater):
-    sent = _post(monkeypatch, _Resp({"done": True}))
+    sent = _post(monkeypatch, Resp({"done": True}))
     assert rater.load(30) is True
     assert rater.timed_out is False and rater.used is True
     assert sent == [
@@ -85,7 +67,7 @@ def test_load_with_num_ctx_sends_it_and_describe_is_not_rechecked(monkeypatch):
     monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: checks.append(1))
     monkeypatch.setattr(vision.memguard, "ollama_context", lambda _u, _m: None)
     rater = vision.VisionRater(url=URL, model="qwen-test")
-    sent = _post(monkeypatch, _Resp({"message": {"content": "{}"}}))
+    sent = _post(monkeypatch, Resp({"message": {"content": "{}"}}))
     assert rater.load(30, num_ctx=16384) is True
     assert sent[0]["json"] == {"model": "qwen-test", "options": {"num_ctx": 16384}}
     assert checks == [1]
@@ -99,7 +81,7 @@ def test_load_with_num_ctx_keeps_a_larger_loaded_context(monkeypatch):
     monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: checks.append(1))
     monkeypatch.setattr(vision.memguard, "ollama_context", lambda _u, _m: 50000)
     rater = vision.VisionRater(url=URL, model="qwen-test")
-    sent = _post(monkeypatch, _Resp({"message": {"content": "{}"}}))
+    sent = _post(monkeypatch, Resp({"message": {"content": "{}"}}))
     assert rater.load(30, num_ctx=16384) is True
     assert sent[0]["json"]["options"] == {"num_ctx": 50000}
     rater.describe("p", [], {}, num_ctx=16384)
@@ -112,8 +94,8 @@ def test_load_with_num_ctx_keeps_a_larger_loaded_context(monkeypatch):
     [
         (requests.ReadTimeout("slow"), True),
         (requests.ConnectTimeout("slow"), True),
-        (_Resp(status=400), False),
-        (_Resp(status=500), False),
+        (Resp(status=400), False),
+        (Resp(status=500), False),
         (requests.ConnectionError("refused"), False),
         (_redirect(), False),
     ],
@@ -128,12 +110,12 @@ def test_load_failure(monkeypatch, rater, reply, timed_out):
 def test_load_resets_timed_out(monkeypatch, rater):
     _post(monkeypatch, requests.ReadTimeout("slow"))
     assert rater.load(5) is False and rater.timed_out is True
-    _post(monkeypatch, _Resp({"done": True}))
+    _post(monkeypatch, Resp({"done": True}))
     assert rater.load(5) is True and rater.timed_out is False
 
 
 def test_load_hosted_sends_nothing(monkeypatch, rater):
-    sent = _post(monkeypatch, _Resp({}))
+    sent = _post(monkeypatch, Resp({}))
     rater.via = object()  # type: ignore[assignment]
     assert rater.load(5) is True
     assert sent == [] and rater.used is False
@@ -169,7 +151,7 @@ def test_load_hosted_sends_nothing(monkeypatch, rater):
     ],
 )
 def test_on_gpu_from_api_ps(monkeypatch, rater, models, expected):
-    _get(monkeypatch, _Resp({"models": models}))
+    _get(monkeypatch, Resp({"models": models}))
     assert rater.on_gpu() is expected
 
 
@@ -178,7 +160,7 @@ def test_on_gpu_probe_has_a_short_connect_timeout(monkeypatch, rater):
 
     def get(url, timeout=None, allow_redirects=True, **_k):
         seen.append(timeout)
-        return _Resp({"models": []})
+        return Resp({"models": []})
 
     monkeypatch.setattr(vision.requests, "get", get)
     rater.on_gpu()
@@ -188,9 +170,9 @@ def test_on_gpu_probe_has_a_short_connect_timeout(monkeypatch, rater):
 @pytest.mark.parametrize(
     "reply",
     [
-        _Resp(bad_json=True),
-        _Resp([1, 2]),  # a JSON list: no .get
-        _Resp(status=500),
+        Resp(bad_json=True),
+        Resp([1, 2]),  # a JSON list: no .get
+        Resp(status=500),
         requests.ConnectionError("refused"),
         requests.ReadTimeout("slow"),
         _redirect(),
@@ -211,8 +193,8 @@ def test_on_gpu_hosted_asks_nothing(monkeypatch, rater):
     assert rater.on_gpu() is None
 
 
-def _chat_ok() -> _Resp:
-    return _Resp({"message": {"content": '{"score": 7}'}})
+def _chat_ok() -> Resp:
+    return Resp({"message": {"content": '{"score": 7}'}})
 
 
 def _describe(rater: vision.VisionRater, timeout: float = 5) -> dict | None:
@@ -225,7 +207,7 @@ def _describe(rater: vision.VisionRater, timeout: float = 5) -> dict | None:
         (requests.ReadTimeout("slow"), True),
         (requests.ConnectTimeout("slow"), True),
         (requests.ConnectionError("refused"), False),
-        (_Resp(status=500), False),
+        (Resp(status=500), False),
     ],
     ids=["read-timeout", "connect-timeout", "refused", "500"],
 )

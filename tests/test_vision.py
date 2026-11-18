@@ -24,19 +24,7 @@ import cutpoint.analyze
 from conftest import HOP, SLED, needs_ffmpeg
 from cutpoint import activity, cache, cli, errors, vision
 from cutpoint.styles import get_style
-
-
-class _Resp:
-    is_redirect = False
-
-    def __init__(self, body: dict) -> None:
-        self.body = body
-
-    def raise_for_status(self) -> None:
-        pass
-
-    def json(self) -> dict:
-        return self.body
+from vision_helpers import Resp
 
 
 @pytest.fixture
@@ -50,8 +38,8 @@ def posts(monkeypatch) -> list[tuple[str, dict]]:
         if url.endswith("/api/chat"):
             chats = sum(u.endswith("/api/chat") for u, _ in seen)
             content = "" if chats % 2 else '{"score": 7, "label": "big jump"}'
-            return _Resp({"message": {"content": content}, "done_reason": "length"})
-        return _Resp({"done": True})
+            return Resp({"message": {"content": content}, "done_reason": "length"})
+        return Resp({"done": True})
 
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
@@ -171,7 +159,7 @@ def test_other_styles_keep_the_default_prompts(posts):
 )
 def test_ask_json_and_parse_share_the_reply_json(monkeypatch, content, want):
     monkeypatch.setattr(
-        vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": content}})
+        vision.requests, "post", lambda *_a, **_k: Resp({"message": {"content": content}})
     )
     assert vision.VisionRater(url="http://127.0.0.1:1", model="m").ask_json("q") == want
     assert vision._parse(content) == (vision.VisionResult(7.0, "x") if want else None)
@@ -685,7 +673,7 @@ def test_a_failed_request_is_not_cached(posts, src, monkeypatch):
 def test_an_unparseable_reply_is_not_cached(monkeypatch, src):
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
     monkeypatch.setattr(
-        vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": "no json"}})
+        vision.requests, "post", lambda *_a, **_k: Resp({"message": {"content": "no json"}})
     )
     assert (
         vision.VisionRater(url="http://127.0.0.1:1", model="m").rate(src, 0, 4, "action-cam")
@@ -758,7 +746,7 @@ def ollama(posts, monkeypatch) -> dict:
         if not state["up"]:
             raise requests.ConnectionError("refused")
         assert url.endswith("/api/tags")
-        return _Resp({"models": [{"name": "m:latest", "digest": state["digest"]}]})
+        return Resp({"models": [{"name": "m:latest", "digest": state["digest"]}]})
 
     def post(*a, **k):
         assert state["up"], "a request went to Ollama while it was down"
@@ -845,9 +833,7 @@ def test_an_entry_without_a_digest_is_used_only_when_ollama_is_down(posts, src, 
 
 
 def test_no_digest_is_stored_when_ollama_lists_none(posts, src, monkeypatch):
-    monkeypatch.setattr(
-        vision.requests, "get", lambda *_a, **_k: _Resp({"models": [{"name": "m"}]})
-    )
+    monkeypatch.setattr(vision.requests, "get", lambda *_a, **_k: Resp({"models": [{"name": "m"}]}))
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
     assert rater.available() and rater.digest is None
     rater.rate(src, 0, 4, "action-cam")
@@ -920,7 +906,7 @@ def test_a_profiled_model_gets_one_sheet_of_six_frames_and_the_expected_score(mo
     def post(url, json, timeout, **_k):
         seen.append(json)
         lp = _logprobs([("7", {"7": 0.5, "8": 0.3, "6": 0.2})])
-        return _Resp({"message": {"content": '{"score": 7, "label": "jump"}'}, "logprobs": lp})
+        return Resp({"message": {"content": '{"score": 7, "label": "jump"}'}, "logprobs": lp})
 
     monkeypatch.setattr(vision, "grab_frame_jpeg", grab)
     monkeypatch.setattr(vision.requests, "post", post)
@@ -994,7 +980,7 @@ def test_a_reply_without_logprobs_keeps_the_given_score(monkeypatch):
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda *_a, **_k: _jpeg(64, 36, 100))
     monkeypatch.setattr(
         vision.requests, "post",
-        lambda *_a, **_k: _Resp({"message": {"content": '{"score": 6, "label": "x"}'}}),
+        lambda *_a, **_k: Resp({"message": {"content": '{"score": 6, "label": "x"}'}}),
     )  # fmt: skip
     res = vision.VisionRater(url="http://127.0.0.1:1", model="qwen3.5:9b").rate(
         Path("a"), 0, 7, "action-cam"
@@ -1207,8 +1193,8 @@ def _timed_post(monkeypatch, body: dict) -> None:
 
     def post(url, json, timeout, **_k):
         if url.endswith("/api/chat"):
-            return _Resp({"message": {"content": '{"score": 7, "label": "big jump"}'}} | body)
-        return _Resp({"done": True})
+            return Resp({"message": {"content": '{"score": 7, "label": "big jump"}'}} | body)
+        return Resp({"done": True})
 
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
@@ -1312,7 +1298,7 @@ def test_a_failed_ollama_request_still_counts_as_a_call(monkeypatch, src):
     def post(url, json, timeout, **_k):
         if url.endswith("/api/chat"):
             raise vision.requests.Timeout("read timed out")
-        return _Resp({"done": True})
+        return Resp({"done": True})
 
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
@@ -1421,7 +1407,7 @@ MOMENTS = {  # the shape of the dialogue reader's schema (#920)
 
 def _ollama_says(monkeypatch, content: str) -> vision.VisionRater:
     monkeypatch.setattr(
-        vision.requests, "post", lambda *_a, **_k: _Resp({"message": {"content": content}})
+        vision.requests, "post", lambda *_a, **_k: Resp({"message": {"content": content}})
     )
     return vision.VisionRater(url="http://127.0.0.1:1", model="m")
 
@@ -1450,7 +1436,7 @@ def test_ask_json_notes_an_unusable_reply_or_a_failed_request(monkeypatch, conte
     monkeypatch.setattr(
         vision.requests,
         "post",
-        lambda *_a, **_k: _Resp({"message": {"content": '{"moments": []}'}}),
+        lambda *_a, **_k: Resp({"message": {"content": '{"moments": []}'}}),
     )
     assert rater.ask_json("q", schema=MOMENTS) == {"moments": []} and rater.last_failure is None
 
@@ -1496,7 +1482,7 @@ def test_ollama_s_empty_replies_stop_the_rating_too(monkeypatch, src, caplog):
 
     def post(url, json, timeout, **_k):
         chats.append(url)
-        return _Resp({"message": {"content": ""}, "done_reason": "stop", "eval_count": 0})
+        return Resp({"message": {"content": ""}, "done_reason": "stop", "eval_count": 0})
 
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
@@ -1540,7 +1526,7 @@ def test_ollama_s_failed_requests_stop_the_rating_too(ollama, src, monkeypatch, 
 )
 def test_an_ollama_reply_cut_off_is_logged_as_cut_off(monkeypatch, src, caplog, reason, word):
     def post(url, json, timeout, **_k):
-        return _Resp({"message": {"content": '{"sc'}, "done_reason": reason})
+        return Resp({"message": {"content": '{"sc'}, "done_reason": reason})
 
     monkeypatch.setattr(vision.requests, "post", post)
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")

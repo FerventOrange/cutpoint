@@ -74,28 +74,12 @@ from cutpoint.ui.routes import assistant as assistant_routes
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
 from proxy_helpers import FakeLauncher, not_running
+from ui_helpers import JobSpy
 
 PORT = 8765
 # The longest wait for a real process to start, print, be cancelled or die: generous, as two
 # interpreter starts can be slow under a loaded suite; a passing run never waits it out.
 PROC_WAIT_S = 60.0
-
-
-def job_args(args: list[str]) -> list[str]:
-    """The CLI args of a job as ``start_job`` built them, before the ``--json`` it always adds
-    (so the envelope's error code and outputs reach the job)."""
-    assert args[-1] == "--json", args
-    return args[:-1]
-
-
-def fake_start(captured: list[list[str]]):
-    """A ``Jobs.start`` stand-in that records the CLI args of each job and reports "running"."""
-
-    def start(self, project_id, action, args, *rest, **kw):
-        captured.append(job_args(args))
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    return start
 
 
 @pytest.fixture
@@ -242,8 +226,7 @@ def test_create_project_accepts_auto_and_defaults_to_it(
     footage = tmp_path / "footage"
     footage.mkdir()
     (footage / "a.mp4").write_bytes(b"x")
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     for extra in ({}, {"style": "auto"}):
         res = client.post("/api/projects", json={"name": "T", "source": str(footage), **extra})
         assert res.status_code == 200, res.text
@@ -312,8 +295,7 @@ def test_create_project_from_several_inputs_lists_and_analyzes_them_all(
     assert [s["name"] for s in view["sources"]] == ["a.mp4", "b.mp4", "c.mkv"]
     assert view["preset_problem"] is None  # edit takes several inputs too
 
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     ns = cli.build_parser().parse_args(captured[0][3:])
@@ -345,8 +327,7 @@ def test_create_project_from_a_folder_passes_recursive_and_exclude_to_analyze(
     )
     assert "--recursive" in view["preset_problem"]  # edit takes neither option
 
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     assert [a for a in captured[0] if a.startswith("--exclude")] == [
@@ -370,8 +351,7 @@ def test_analyze_again_keeps_options_a_command_line_reanalysis_of_a_ui_project_a
     settings = {"inputs": [str(footage)], "exclude": ["*DVR*"], "recursive": True}
     hl = {"style": "funny", "settings": settings, "sources": []}
     cache.save_json(ui.project_dir(pid) / "highlights.json", hl)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     assert client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"}).status_code == 200
     ns = cli.build_parser().parse_args(captured[0][3:])
     assert (ns.exclude, ns.recursive) == (["*DVR*"], True)
@@ -513,9 +493,8 @@ def test_360_file_pick_takes_its_recording_when_another_has_its_number(
     p = ui.project_dir(res.json()["id"])
     assert ui.read_meta(p)["clips"] == ["20260122_132929_029"]
     assert [Path(e["path"]).name for e in ui.source_entries(p, None)] == [names[3]]
-    seen: list[list[str]] = []
     patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    seen = JobSpy(monkeypatch, check=False).args
     res = client.post(f"/api/projects/{res.json()['id']}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     assert seen[0][-2:] == ["--only", "20260122_132929_029"]
@@ -552,9 +531,8 @@ def test_360_analyze_job_runs_the_360_command_with_a_plan(
         (folder / name).write_bytes(b"")
     source = folder / X3_00 if only else folder
     pid = client.post("/api/projects", json={"name": "T", "source": str(source)}).json()["id"]
-    seen: list[list[str]] = []
     patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(seen))
+    seen = JobSpy(monkeypatch, check=False).args
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     p = ui.project_dir(pid)
@@ -2095,8 +2073,7 @@ def test_reanalyze_keeps_a_recorded_recover(
     hl["style"] = "funny"
     hl["settings"]["recover"] = recover
     cache.save_json(p / "highlights.json", hl)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     res = client.post("/api/projects/cli/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     assert ("--recover" in captured[0]) is passed
@@ -2194,8 +2171,7 @@ def test_analyze_options_reach_the_analyze_command_line_unchanged(
             **ANALYZE_DEFAULTS, "model": "large-v3", "language": "de", "max_candidates": 30,
             "no_scenes": True, "recover": True, "skip": [], "vision_detect_all": False,
         }  # fmt: skip
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     if isinstance(body, list):
         for bad_body, message in zip(
             body, ("skip must be a list of", "model must be a whisper"), strict=True
@@ -2212,13 +2188,9 @@ def test_analyze_options_reach_the_analyze_command_line_unchanged(
 
 def _auto_project(tmp_path: Path, **settings: object) -> Path:
     """A command-line project analyzed with ``--style auto`` (it chose gaming)."""
-    p, _ = cli_project(tmp_path)
-    hl = cache.load_json(p / "highlights.json")
-    hl["style"] = "gaming"
-    hl["detection"] = {"style": "gaming", "category": "gameplay"}
-    hl["settings"].update(style_requested="auto", **settings)
-    cache.save_json(p / "highlights.json", hl)
-    return p
+    det = {"style": "gaming", "category": "gameplay"}
+    settings = {"style_requested": "auto", **settings}
+    return cli_project(tmp_path, settings=settings, style="gaming", detection=det)[0]
 
 
 @pytest.mark.parametrize(
@@ -2267,8 +2239,7 @@ def test_an_auto_analyze_job_sends_vision_detect_all_explicitly(
     flag: str | None,
 ) -> None:
     _auto_project(tmp_path, **({"vision_detect_all": True} if recorded else {}))
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     res = client.post("/api/projects/cli/jobs", json={"action": "analyze", **body})
     assert res.status_code == 200, res.text
     args = _cli_args(captured[0])
@@ -2286,8 +2257,7 @@ def test_other_styles_send_no_vision_detect_all(
     hl["style"] = style
     hl["settings"]["vision_detect_all"] = True
     cache.save_json(p / "highlights.json", hl)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     body = {"action": "analyze", "vision_detect_all": True}
     assert client.post("/api/projects/cli/jobs", json=body).status_code == 200
     assert not [a for a in captured[0] if a.endswith("-vision-detect-all")]
@@ -2297,8 +2267,7 @@ def test_a_non_boolean_vision_detect_all_is_refused(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _auto_project(tmp_path)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     for bad_value in ("yes", 1, [True]):
         body = {"action": "analyze", "vision_detect_all": bad_value}
         res = client.post("/api/projects/cli/jobs", json=body)
@@ -2316,8 +2285,7 @@ def test_one_click_edit_repeats_an_auto_analyses_vision_detect_all(
     flag: str | None,
 ) -> None:
     _auto_project(tmp_path, **({"vision_detect_all": True} if recorded else {}))
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     res = client.post("/api/projects/cli/jobs", json={"action": "edit", "kind": "clips"})
     assert res.status_code == 200, res.text
     args = _cli_args(captured[0])
@@ -2335,16 +2303,8 @@ def test_the_analyze_skip_is_kept_for_analyze_again_and_one_click_edit(
     hl = cache.load_json(p / "highlights.json")
     hl.update(style="funny", created="2026-10-01T10:00:00")
     cache.save_json(p / "highlights.json", hl)
-    captured: list[list[str]] = []
-    done: list[Callable[[], None] | None] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        captured.append(job_args(args))
-        done.append(on_success)
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    spy = JobSpy(monkeypatch)
+    captured, done = spy.args, spy.on_success
     body = {"action": "analyze", "skip": ["crashes", "keyframes"]}
     assert client.post("/api/projects/cli/jobs", json=body).status_code == 200
     assert _cli_args(captured[0])[-3:] == ["--skip", "keyframes", "crashes"]
@@ -2433,9 +2393,7 @@ def test_reanalyze_passes_recorded_vision_and_ollama_options(
     footage.write_bytes(b"x")
     settings = {"inputs": [str(footage)], **saved}
     cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
-    captured: list[list[str]] = []
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     assert client.post("/api/projects/cli-made/jobs", json={"action": "analyze"}).status_code == 200
     args = captured[0]
     assert [a for a in args if a.startswith(("--vision-top", "--ollama"))] == flags
@@ -2473,9 +2431,7 @@ def test_analyze_job_passes_the_settings_vision_explicitly(
     footage.write_bytes(b"x")
     settings = {"inputs": [str(footage)], **saved}
     cache.save_json(p / "highlights.json", {"style": "gaming", "settings": settings, "sources": []})
-    captured: list[list[str]] = []
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     res = client.post("/api/projects/cli-made/jobs", json={"action": "analyze", **body})
     assert res.status_code == 200
     assert ("--vision" in captured[0]) is (vision is True)
@@ -2489,8 +2445,7 @@ def test_put_settings_saves_visual_index_and_jobs_pass_it_explicitly(
     --no-visual-index on every analysis and preset the page starts."""
     assert client.get("/api/settings").json()["visual_index"] is False
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     for value in (True, False):
         res = client.put("/api/settings", json={"visual_index": value})
         assert res.status_code == 200, res.text
@@ -2511,9 +2466,7 @@ def test_analyze_follows_settings_saved_just_before(
 ) -> None:
     """Saving Settings changes the next analysis at once, without a reload or restart."""
     pid, _ = make_project(client, tmp_path, {"a.mp4": b"x"})
-    captured: list[list[str]] = []
-
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     for value in (True, False, True):
         assert client.put("/api/settings", json={"vision": value}).status_code == 200
         res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
@@ -4121,8 +4074,7 @@ def peaks_job(
     cache.save_json(p / "clips_ui_1" / "manifest.json", {"clips": []})
     (p / "clips_ui_1" / "001_a.mp4").write_bytes(b"x")
     cache.save_json(p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1"}]})
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     return client.post("/api/projects/cli/jobs", json=body), captured
 
 
@@ -4590,14 +4542,28 @@ def test_a_failing_post_processing_step_fails_the_job_with_a_clean_message(
     assert any(r.exc_info for r in caplog.records if r.levelno >= logging.ERROR) is not refused
 
 
-def cli_project(tmp_path: Path) -> tuple[Path, dict[str, object]]:
-    """A command-line project: ``highlights.json`` only, no ``ui`` folder. Returns it and a segment."""
+def cli_project(
+    tmp_path: Path,
+    *,
+    settings: dict[str, Any] | None = None,
+    meta: dict[str, Any] | None = None,
+    **hl_over: object,
+) -> tuple[Path, dict[str, object]]:
+    """The command-line project ``cli``: ``highlights.json`` only, no ``ui`` folder. Returns it
+    and a segment. ``settings``: extra ``settings`` it records; ``hl_over``: extra top-level
+    ``highlights.json`` keys (such as ``style``); ``meta``: written as ``ui/meta.json``."""
     src = tmp_path / "clip.mp4"
     src.write_bytes(b"x")
     p = ui.projects_dir() / "cli"
     p.mkdir(parents=True)
-    hl = {"sources": [{"path": str(src), "duration": 10.0}], "settings": {"inputs": [str(src)]}}
+    hl = {
+        "sources": [{"path": str(src), "duration": 10.0}],
+        "settings": {"inputs": [str(src)], **(settings or {})},
+        **hl_over,
+    }
     cache.save_json(p / "highlights.json", hl)
+    if meta is not None:
+        write(p / "ui" / "meta.json", json.dumps(meta))
     seg = {"id": "h001", "source": str(src), "start": 1, "end": 4.5, "label": "good"}
     return p, seg
 
@@ -7146,14 +7112,8 @@ def test_clips_job_hands_the_trims_to_the_smart_flags(
 ) -> None:
     p, seg = cli_project(tmp_path)
     assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
-    captured: list[list[str]] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        captured.append(job_args(args))
-        same_folder()  # the check under the jobs lock, which writes the segments file
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    # the check runs under the jobs lock, which writes the segments file
+    captured = JobSpy(monkeypatch).args
     res = client.post("/api/projects/cli/jobs", json={"action": "clips", **body})
     assert res.status_code == 200, res.text
     args = captured[0]
@@ -7398,17 +7358,8 @@ def options_job(
     cache.save_json(
         p / "ui" / "exports.json", {"exports": [{"dir": "clips_ui_1", "vertical": True}]}
     )
-    captured: list[list[str]] = []
-    done: list[Callable[[], None] | None] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        captured.append(job_args(args))
-        done.append(on_success)
-        same_folder()  # the check under the jobs lock, which writes the segments file
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
-    return client.post("/api/projects/cli/jobs", json=body), captured, done, p
+    spy = JobSpy(monkeypatch)  # the check under the jobs lock writes the segments file
+    return client.post("/api/projects/cli/jobs", json=body), spy.args, spy.on_success, p
 
 
 def _cli_args(args: list[str]) -> list[str]:
@@ -7709,24 +7660,10 @@ def preset_job(
 ) -> tuple[object, list[list[str]], list[Callable[[], None] | None], Path]:
     """Start ``body``'s edit job on a command-line project analysed in the ``style`` (extra
     ``settings`` recorded, an optional ``ui/meta.json``). Returns as :func:`options_job`."""
-    p, _ = cli_project(tmp_path)
-    hl = cache.load_json(p / "highlights.json")
-    hl["style"] = style
-    hl["settings"].update(settings or {})
-    cache.save_json(p / "highlights.json", hl)
-    if meta is not None:
-        write(p / "ui" / "meta.json", json.dumps(meta))
-    captured: list[list[str]] = []
-    done: list[Callable[[], None] | None] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        captured.append(job_args(args))
-        done.append(on_success)
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
-    return client.post("/api/projects/cli/jobs", json={"action": "edit", **body}), captured, done, p
+    p, _ = cli_project(tmp_path, settings=settings, meta=meta, style=style)
+    spy = JobSpy(monkeypatch)
+    res = client.post("/api/projects/cli/jobs", json={"action": "edit", **body})
+    return res, spy.args, spy.on_success, p
 
 
 @pytest.mark.parametrize("kind", list(edit.KINDS))
@@ -8896,33 +8833,20 @@ def test_every_project_job_runs_from_the_projects_folder_with_json(
         p / "highlights.json", {**cache.load_json(p / "highlights.json"), "style": "funny"}
     )
     assert client.put("/api/projects/cli/review", json={"segments": [seg]}).status_code == 200
-    seen: list[dict[str, object]] = []
-
-    def start(self, project_id, action, args, *rest, **kw):
-        seen.append({"args": args, **kw})
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    seen = JobSpy(monkeypatch, check=False).calls
     for action in ("analyze", "clips"):
         assert client.post("/api/projects/cli/jobs", json={"action": action}).status_code == 200
     assert [s["cwd"] for s in seen] == [ui.projects_dir(), ui.projects_dir()]
     for s in seen:  # --json last, and the CLI takes it there
-        assert s["args"][-1] == "--json"
-        cli.build_parser().parse_args(s["args"][3:])
+        assert s["raw"][-1] == "--json"
+        cli.build_parser().parse_args(s["raw"][3:])
 
 
 def resume_job(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, pid: str
 ) -> tuple[object, list[dict[str, object]]]:
     """POST a resume job of ``pid`` with ``Jobs.start`` recording what it was given."""
-    seen: list[dict[str, object]] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **kw):
-        seen.append({"action": action, "args": args, "rest": rest, **kw})
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    seen = JobSpy(monkeypatch).calls
     return client.post(f"/api/projects/{pid}/jobs", json={"action": "resume"}), seen
 
 
@@ -8934,7 +8858,7 @@ def test_the_resume_job_runs_cutpoint_resume_on_the_project(
     res, seen = resume_job(client, monkeypatch, "stopped")
     assert res.status_code == 200, res.text
     assert seen[0]["action"] == "resume"
-    assert seen[0]["args"] == [*ui.cutpoint_cmd("resume", str(p)), "--json"]
+    assert seen[0]["raw"] == [*ui.cutpoint_cmd("resume", str(p)), "--json"]
     assert seen[0]["cwd"] == ui.projects_dir()
 
 
@@ -9128,7 +9052,7 @@ def test_a_resumed_360_export_stitches_what_its_command_line_exports(
     patch_ui(monkeypatch, "stitch_first", lambda job, *a: stitched.append(a) and None)
     res, seen = resume_job(client, monkeypatch, "cli")
     assert res.status_code == 200, res.text
-    before = seen[0]["rest"][1]  # Jobs.start(..., plan, before)
+    before = seen[0]["before"]  # Jobs.start(..., plan, before)
     assert before(SimpleNamespace()) is None
     project, seg_file, chosen = stitched[0]
     assert project == p
@@ -9889,14 +9813,7 @@ def _assemble_with(
     lock does before the job starts. Returns the response and the captured CLI args."""
     res = client.put("/api/projects/cli/review", json={"segments": [seg], "joins": joins})
     assert res.status_code == 200, res.text
-    captured: list[list[str]] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        captured.append(job_args(args))
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    captured = JobSpy(monkeypatch).args
     return client.post("/api/projects/cli/jobs", json={"action": "assemble", **body}), captured
 
 
@@ -10024,13 +9941,7 @@ def _assemble_to_success(
     """Save ``joins``, start an assemble job and return the ``on_success`` hook it registered."""
     res = client.put("/api/projects/cli/review", json={"segments": [seg], "joins": joins})
     assert res.status_code == 200, res.text
-    hooks: list = []
-
-    def start(self, project_id, action, args, on_success, *rest, **_kw):
-        hooks.append(on_success)
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    hooks = JobSpy(monkeypatch, check=False).on_success
     res = client.post("/api/projects/cli/jobs", json={"action": "assemble", **(body or {})})
     assert res.status_code == 200, res.text
     return hooks
@@ -10340,11 +10251,7 @@ def test_subscription_roles(
 # ------------------------------------------------ Describe the footage / Look closer with vision (#486)
 def refine_project(tmp_path: Path, style: str = "action", **hl_over: object) -> Path:
     """A command-line project analysed in ``style`` (extra ``highlights.json`` keys)."""
-    p, _ = cli_project(tmp_path)
-    hl = cache.load_json(p / "highlights.json")
-    hl.update(style=style, **hl_over)
-    cache.save_json(p / "highlights.json", hl)
-    return p
+    return cli_project(tmp_path, style=style, **hl_over)[0]
 
 
 @pytest.mark.parametrize("body", [{"action": "analyze"}, {"action": "edit", "kind": "highlights"}])
@@ -10365,14 +10272,7 @@ def refine_job(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, body: dict, *, lite: str | None = None
 ) -> tuple[object, list[dict[str, object]]]:
     """POST ``body`` as a job of ``cli``, ``Jobs.start`` recording what it was given."""
-    seen: list[dict[str, object]] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **kw):
-        seen.append({"action": action, "args": job_args(args), "before": rest[1], **kw})
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    seen = JobSpy(monkeypatch).calls
     patch_ui(monkeypatch, "events_unavailable", lambda: lite)
     return client.post("/api/projects/cli/jobs", json=body), seen
 
@@ -10549,7 +10449,7 @@ def test_resuming_a_refining_run_starts_the_proxy_of_a_subscription_vision_model
     set_config(home, vision_assistant={"provider": "codex"})
     res, seen = resume_job(client, monkeypatch, "cli")
     assert res.status_code == 200, res.text
-    assert (seen[0]["rest"][1] is not None) is proxy
+    assert (seen[0]["before"] is not None) is proxy
 
 
 def test_the_project_says_the_description_it_has_and_whether_events_run_here(
@@ -10619,17 +10519,10 @@ def auto_project(
 ) -> Path:
     """The command-line project ``cli`` analyzed with ``--style auto`` (``det`` None: with the
     style ``meta`` names, no detection), with ``meta`` as its ui/meta.json (None: none)."""
-    p, _ = cli_project(tmp_path)
-    hl = cache.load_json(p / "highlights.json")
-    if det is not None:
-        hl.update(style=det["style"], detection=det)
-        hl["settings"]["style_requested"] = "auto"
-    else:
-        hl["style"] = (meta or {}).get("style", "gaming")
-    cache.save_json(p / "highlights.json", hl)
-    if meta is not None:
-        write(p / "ui" / "meta.json", json.dumps(meta))
-    return p
+    if det is None:
+        return cli_project(tmp_path, meta=meta, style=(meta or {}).get("style", "gaming"))[0]
+    auto = {"style_requested": "auto"}
+    return cli_project(tmp_path, settings=auto, meta=meta, style=det["style"], detection=det)[0]
 
 
 def test_the_detected_view_of_a_sure_auto_project(client: TestClient, tmp_path: Path) -> None:
@@ -10800,8 +10693,7 @@ def test_a_command_line_project_that_fell_back_analyzes_again_with_its_request(
         style_fallback={"from": "action-cam", "reason": "no telemetry"},
     )
     cache.save_json(p / "highlights.json", hl)
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     assert client.post("/api/projects/cli/jobs", json={"action": "analyze"}).status_code == 200
     assert _after(_cli_args(captured[0]), "--style") == "action-cam"
 
@@ -10825,8 +10717,7 @@ def test_a_command_line_auto_project_analyzes_again_with_style_auto(
     again keeps --style auto (not the style auto picked)."""
     auto_project(tmp_path, detection(), None)
     assert client.get("/api/projects/cli").json()["detected"]["chosen"] == "auto"
-    captured: list[list[str]] = []
-    monkeypatch.setattr(ui.Jobs, "start", fake_start(captured))
+    captured = JobSpy(monkeypatch, check=False).args
     assert client.post("/api/projects/cli/jobs", json={"action": "analyze"}).status_code == 200
     assert _after(_cli_args(captured[0]), "--style") == "auto"
 
@@ -10836,15 +10727,12 @@ def cli_reranked_project(tmp_path: Path, meta: dict[str, Any] | None) -> tuple[P
     funny``: highlights.json is in funny and records the re-rank and keeps the detection; the
     command line leaves ui/meta.json (``meta``) as it was."""
     det = detection()
-    p = auto_project(tmp_path, det, meta)
-    hl = cache.load_json(p / "highlights.json")
-    hl["style"] = "funny"
-    hl["settings"].update(
-        style_requested="funny",
-        reranked={"from": "gaming", "requested": "auto"},
-        rerank_backup="0123456789abcdef",
-    )
-    cache.save_json(p / "highlights.json", hl)
+    settings = {
+        "style_requested": "funny",
+        "reranked": {"from": "gaming", "requested": "auto"},
+        "rerank_backup": "0123456789abcdef",
+    }
+    p, _ = cli_project(tmp_path, settings=settings, meta=meta, style="funny", detection=det)
     return p, det
 
 
@@ -10963,11 +10851,8 @@ def test_an_older_meta_without_the_rerank_mark_lets_the_rerank_win() -> None:
 def deleted_style_project(tmp_path: Path, base: str | None) -> Path:
     """The command-line project ``cli`` analyzed in the user style ``gone`` (deleted since), which
     ui/meta.json also names; ``base``: the built-in style highlights.json records for it."""
-    p = auto_project(tmp_path, None, {"style": "gone"})
-    if base is not None:
-        hl = cache.load_json(p / "highlights.json")
-        cache.save_json(p / "highlights.json", hl | {"style_base": base})
-    return p
+    recorded = {} if base is None else {"style_base": base}
+    return cli_project(tmp_path, meta={"style": "gone"}, style="gone", **recorded)[0]
 
 
 def test_analyze_again_of_a_deleted_user_style_runs_in_its_base_and_keeps_it(
@@ -11002,14 +10887,7 @@ def edit_job(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
 ) -> tuple[Any, list[list[str]]]:
     """Post an edit (preset) job to the project ``cli``; the job starts and its check runs."""
-    captured: list[list[str]] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        captured.append(job_args(args))
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    captured = JobSpy(monkeypatch).args
     return client.post("/api/projects/cli/jobs", json={"action": "edit", **body}), captured
 
 
@@ -11060,15 +10938,8 @@ def test_360_analyze_of_a_deleted_user_style_runs_in_its_base_and_keeps_it(
     meta = cache.load_json(p / "ui" / "meta.json")
     cache.save_json(p / "ui" / "meta.json", meta | {"style": "gone"})
     cache.save_json(p / "highlights.json", {"style": "gone", "style_base": "action-cam"})
-    seen: list[list[str]] = []
     patch_ui(monkeypatch, "cutpoint_cmd", lambda *a: ["cutpoint", *a])
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        seen.append(job_args(args))
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    seen = JobSpy(monkeypatch).args
     res = client.post(f"/api/projects/{pid}/jobs", json={"action": "analyze"})
     assert res.status_code == 200, res.text
     assert _after(seen[0], "--style") == "action-cam"
@@ -11088,16 +10959,8 @@ def style_job(
     starts: bool = True,
 ) -> tuple[Any, list[list[str]]]:
     """Post an analyze job with ``body``; the job starts (its check runs) when ``starts``."""
-    captured: list[list[str]] = []
-
-    def start(self, project_id, action, args, on_success, same_folder, *rest, **_kw):
-        if not starts:
-            raise HTTPException(409, "another job is already running")
-        captured.append(job_args(args))
-        same_folder()
-        return SimpleNamespace(view=lambda: {"status": "running"})
-
-    monkeypatch.setattr(ui.Jobs, "start", start)
+    refuse = None if starts else HTTPException(409, "another job is already running")
+    captured = JobSpy(monkeypatch, refuse=refuse).args
     return client.post("/api/projects/cli/jobs", json={"action": "analyze", **body}), captured
 
 

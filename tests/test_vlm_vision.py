@@ -14,11 +14,11 @@ import requests
 from conftest import set_config
 from cutpoint import cache, jsonout, vision
 from cutpoint.assistant import providers
-from cutpoint.assistant.providers import Reply
 from cutpoint.events import pipeline
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source, layer_cache_path
 from events_fakes import stub_run_events
+from vision_helpers import FakeSubscription, Resp, no_ollama
 
 JPEGS = [b"\xff\xd8one", b"\xff\xd8two", b"\xff\xd8three"]
 REPLY: dict[str, Any] = {
@@ -28,19 +28,6 @@ REPLY: dict[str, Any] = {
     "highlight_score": 6,
     "label": "Kill After Banter",
 }
-
-
-class Resp:
-    def __init__(self, body: Any, status: int = 200) -> None:
-        self.body, self.status_code = body, status
-        self.is_redirect = False
-
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            raise requests.HTTPError(f"HTTP {self.status_code}")
-
-    def json(self) -> Any:
-        return self.body
 
 
 class Ollama:
@@ -140,32 +127,12 @@ def test_describe_refuses_a_redirect(ollama, monkeypatch, caplog) -> None:
     assert any("redirect" in r.getMessage() for r in caplog.records)
 
 
-class FakeSubscription:
-    name, model, local, host = "codex", "gpt-x", False, "chatgpt.com"
-
-    def __init__(self, text: str) -> None:
-        self.text = text
-        self.sent: list[tuple[list[dict[str, Any]], dict[str, Any]]] = []
-
-    def capabilities(self) -> None:
-        pass
-
-    def chat(self, messages, **kw) -> Reply:
-        self.sent.append((messages, kw))
-        return Reply(self.text)
-
-
 @pytest.fixture
 def hosted(home, monkeypatch) -> FakeSubscription:
     """The Vision role is a hosted subscription the user agreed to; Ollama is never asked."""
     fake = FakeSubscription("Here you go: " + json.dumps(REPLY))
     monkeypatch.setattr(providers, "make", lambda *_a, **_k: fake)
-
-    def no_network(*_a, **_k):
-        raise AssertionError("Ollama was asked")
-
-    monkeypatch.setattr(vision.requests, "post", no_network)
-    monkeypatch.setattr(vision.requests, "get", no_network)
+    no_ollama(monkeypatch)
     set_config(
         home,
         vision_assistant={
@@ -181,7 +148,8 @@ def test_describe_goes_to_the_hosted_vision_role_with_the_schema(hosted) -> None
     rater = vision.VisionRater()
     assert rater.available()
     assert rater.describe("describe", JPEGS, vw.RESPONSE_SCHEMA) == REPLY
-    ((msgs, kw),) = hosted.sent
+    (msgs,) = hosted.sent
+    (kw,) = hosted.kwargs
     assert kw["schema"] == vw.RESPONSE_SCHEMA
     (msg,) = msgs
     assert msg["content"][0] == {"type": "text", "text": "describe"}
