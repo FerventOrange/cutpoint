@@ -205,6 +205,34 @@ export const scoreText = (score, visual = false) => (visual ? Number(score).toFi
  */
 export const themeFromStored = (v) => (v === 'light' || v === 'blue' ? v : 'graphite');
 
+/**
+ * This browser's stored value of ``key``: the string as stored, or with ``json`` its parsed value;
+ * ``fallback`` when it is absent, storage is blocked (private mode, site data off) or it is not JSON.
+ */
+export function readStore(key, fallback = null, { json = false } = {}) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) return fallback;
+    return json ? JSON.parse(raw) : raw;
+  } catch {
+    return fallback;
+  }
+}
+
+/**
+ * Store ``value`` under ``key`` in this browser: null or undefined removes it, a string is stored as
+ * is, anything else as JSON. False when storage is blocked or full: the choice then lasts the session.
+ */
+export function writeStore(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(key);
+    else localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Why a clip got no grade, in plain words: ``color.skip`` in clips/manifest.json (cutpoint.color's
 // skip reasons). A count follows a reason shared by several ("already looked good: 2").
 const COLOR_SKIPS = {
