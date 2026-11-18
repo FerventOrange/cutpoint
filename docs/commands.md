@@ -2471,7 +2471,11 @@ cutpoint mix <project> [--target S] [--quotas CAT=SHARE,...] [--out FILE] [--exc
 
 Action-cam module. Picks a varied set of moments (runs, jumps, crashes with reactions, lift
 rides, views, social) under per-category quotas, and writes `mix_segments.json`,
-`mix_report.json` and `mix_sheet.jpg`. Default target 240 s. `--json` writes the result as one
+`mix_report.json` and `mix_sheet.jpg`. Default target 240 s. The content QA in the report checks
+a length of 0.75-1.25 times the target (`content_qa.length_window_s`) and only requires the
+categories that have candidates. No category goes past 40% of the length. When only `n` < 3
+categories have candidates, the selection holds each to 1 / n of the budget (40% minimum) and the
+check accepts up to 60% of the length with two categories and 100% with one. `--json` writes the result as one
 [JSON envelope](#json-output) on stdout.
 
 If nothing is selected (no candidate fits `--target`, or every candidate is excluded), `mix`
