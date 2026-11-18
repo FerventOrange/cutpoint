@@ -27,20 +27,18 @@ from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
     ANALYZE_KEYS,
+    ProjectStyle,
     _action_cam_style,
-    _analysis_inputs,
     _analyze_args,
     _auto_picks,
     _color_args,
     _compress_peaks,
     _flag,
     _keep_style,
-    _library_style,
     _no_options,
     _note_warnings,
     _opt,
     _picture_args,
-    _reranked_style,
     _saved_skip,
     _seconds,
     _speech_args,
@@ -148,7 +146,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             only = [
                 x3.clip_key(f["date"], f["time"], f["num"]) if c == f["num"] else c for c in only
             ]
-        live = _library_style(style, hl)  # a deleted style: its recorded base
+        live = ProjectStyle.of(meta, hl).library(style)  # a deleted style: its recorded base
         _own(p, "highlights.json")  # the analysis rewrites it
         _own(p, "pano.json")  # and the scan this
         args = cutpoint_cmd("360", "analyze", str(p), "--scan", str(_pano_folder(meta["source"])))
@@ -163,7 +161,8 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             args += ["--only", *only]
         plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]
     elif action == "analyze":
-        inputs, style = _analysis_inputs(meta, hl)
+        ps = ProjectStyle.of(meta, hl)
+        inputs, style = ps.inputs, ps.chosen
         if not inputs or not style:
             raise bad("project has no recorded source to analyze")
         _no_options(inputs, "an input")
@@ -174,9 +173,9 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             or (new != AUTO and new not in ui_styles() and not _action_cam_style(new))
         ):
             raise bad(f"unknown style {new!r}")
-        if new is None and (live := _library_style(style, hl)) != style:
+        if new is None and (live := ps.library(style)) != style:
             new = str(live)  # a deleted style: analyze again in its base, and keep that
-        if new is None and style == _reranked_style(hl, meta) != meta.get("style"):
+        if new is None and style == ps.reranked != meta.get("style"):
             # a re-rank's style: kept in meta.json, as the analysis records no re-rank and
             # the next one would go back to the chosen style (#902)
             new = str(style)
@@ -248,9 +247,10 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
             raise bad(f"kind must be one of {', '.join(KINDS)}")
         if why := preset_problem(meta, hl):
             raise bad(why)
-        inputs, style = _analysis_inputs(meta, hl)
+        ps = ProjectStyle.of(meta, hl)
+        inputs, style = ps.inputs, ps.chosen
         _no_options(inputs or [], "an input")
-        live = _library_style(style, hl)  # a deleted style: the edit runs in its base
+        live = ps.library(style)  # a deleted style: the edit runs in its base
         vertical = _flag(body, "vertical")
         force = _flag(body, "force")
         clips_name = "clips_vertical" if vertical else "clips"
@@ -281,7 +281,7 @@ def start_job(request: Request, pid: str, body: dict[str, Any]):
 
         # a re-rank's style is kept in meta.json too: the edit's analysis records no
         # re-rank, and the next job would go back to the chosen style (#902)
-        from_rerank = style == _reranked_style(hl, meta) != meta.get("style")
+        from_rerank = style == ps.reranked != meta.get("style")
         keep = live != style or from_rerank
         if keep:
             _own(p, META_FILE)  # refuse now, not when the job starts

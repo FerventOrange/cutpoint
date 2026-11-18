@@ -96,10 +96,10 @@ from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import get_style
 from cutpoint.ui.analysis import (
     REFINE_WARNINGS,
+    ProjectStyle,
     _analysis_inputs,
     _auto_picks,
     _note_warnings,
-    _resolved_style,
     _style_crash,
     _subscription_roles,
     _vision_detect_all,

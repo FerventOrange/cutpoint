@@ -17,12 +17,10 @@ from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
+    ProjectStyle,
     _action_cam_style,
-    _analysis_inputs,
     _flag,
     _gaming_style,
-    _reranked_style,
-    _resolved_style,
     _style_crash,
     analyze_options,
     detected_view,
@@ -206,12 +204,13 @@ def get_project(request: Request, pid: str):
         views = pano_views(app, pid, p, listing, hl=hl)
         for c in highlights["candidates"]:
             c["pano"] = views.get(str(c.get("cli_id")))
+    ps = ProjectStyle.of(meta, hl)
     view = {
         "id": pid,
         "name": meta.get("name") or pid,
-        "style": _analysis_inputs(meta, hl)[1] or "",
+        "style": ps.chosen or "",
         # the page's Color starts at Off for gaming footage, as config.json's color does
-        "gaming": _gaming_style(_resolved_style(meta, hl), hl),
+        "gaming": _gaming_style(ps.resolved, ps),
         # the header's style button (#897): the detected category and the chosen style
         "detected": detected_view(meta, hl),
         "kind": "360" if meta.get("kind") == "360" else "video",
@@ -233,9 +232,7 @@ def get_project(request: Request, pid: str):
         "analyze_options": analyze_options(p, meta, hl),
         "must_include_crash_default": None
         if meta.get("kind") == "360"
-        else _style_crash(
-            _reranked_style(hl, meta) or meta.get("style") or (hl or {}).get("style"), hl
-        ),
+        else _style_crash(ps.reranked or meta.get("style") or ps.recorded, ps),
         # "Describe the footage" (crashes --context) and "Look closer with vision" (events)
         "refine": refine_state(p, meta, hl),
         "preset_taken": preset_taken(p),
