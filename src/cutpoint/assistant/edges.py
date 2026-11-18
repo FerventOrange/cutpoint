@@ -237,7 +237,7 @@ class EdgePlanner:
             events=events,
             event_settings=EventTailSettings(
                 enabled=events is not None,
-                **({"window": opts.event_window} if opts.event_window else {}),
+                **({"window": opts.event_window} if opts.event_window is not None else {}),
             ),
             speech=SpeechSettings.from_style(
                 style,

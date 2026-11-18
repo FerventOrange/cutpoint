@@ -1471,7 +1471,8 @@ def export_clips(
             project,
         )
     ev_settings = EventTailSettings(
-        enabled=project_events is not None, **({"window": event_window} if event_window else {})
+        enabled=project_events is not None,
+        **({"window": event_window} if event_window is not None else {}),
     )
     project_cfg = cache.load_json(project / "project.json")
     out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")

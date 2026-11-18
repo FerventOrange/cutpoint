@@ -1541,7 +1541,7 @@ def _add_export_arguments(
     )
     p.add_argument(
         "--event-window",
-        type=non_negative_float,
+        type=positive_float,
         metavar="S",
         help="payoff must start within S s after the speech (default: 10)",
     )
@@ -2238,21 +2238,21 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     )
     cr.add_argument(
         "--lead",
-        type=float,
+        type=non_negative_float,
         default=5.0,
         metavar="S",
         help="clip lead-in before the first impact (default 5)",
     )
     cr.add_argument(
         "--max-after",
-        type=float,
+        type=non_negative_float,
         default=30.0,
         metavar="S",
         help="aftermath cap after the last impact (default 30)",
     )
     cr.add_argument(
         "--max-clip",
-        type=float,
+        type=positive_float,
         default=40.0,
         metavar="S",
         help="crash clip length cap (default 40)",

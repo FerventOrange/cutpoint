@@ -816,7 +816,8 @@ def _seconds(body: dict[str, Any], key: str, hi: float, *, positive: bool = Fals
         return None
     v = finite_number(body[key])
     if v is None or v > hi or v < 0 or (positive and v == 0):
-        raise bad(f"{key} must be {'above 0' if positive else '0'}-{hi:g} seconds")
+        rule = f"above 0 and at most {hi:g}" if positive else f"0-{hi:g}"
+        raise bad(f"{key} must be {rule} seconds")
     return v
 
 
