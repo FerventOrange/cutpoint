@@ -185,12 +185,20 @@ def _regions(data: dict[str, Any], where: str = "preset") -> tuple[Region, ...]:
     """Regions of preset JSON (unknown keys are ignored); a region outside the frame is
     clamped or dropped (:func:`guard_entry`)."""
     names = {f.name for f in fields(Region)}
-    return tuple(
-        guard_regions(
-            (Region(**{k: v for k, v in r.items() if k in names}) for r in data.get("regions", [])),
-            where,
-        )
-    )
+    built = []
+    for r in as_list(data.get("regions")):
+        try:
+            built.append(Region(**{k: v for k, v in r.items() if k in names}))
+        except (AttributeError, TypeError):
+            shown = repr(r)[:80]
+            if (where, shown) not in _WARNED:
+                _WARNED.add((where, shown))
+                logger.warning(
+                    "%s: region %s dropped: not a region (needs name, kind, x, y, w, h)",
+                    where,
+                    shown,
+                )
+    return tuple(guard_regions(built, where))
 
 
 # Game-agnostic banner vocabulary for the generic big-text check, merged into
@@ -337,7 +345,7 @@ def preset_from_dict(data: dict[str, Any], path: Path | None = None) -> HudPrese
         game=game,
         regions=_regions(data, f"preset {game}"),
         phrases=phrases,
-        player_tags=tuple(data.get("player_tags", [])),
+        player_tags=tuple(as_list(data.get("player_tags"))),
         feed=dict(data.get("feed") or {}),
         bigtext=bool(data.get("bigtext", True)),
         path=path,
@@ -419,7 +427,7 @@ def preset_for_path(
     low = path.lower()
     for p in preset_files(project):
         data = _read_json(p) or {}
-        if any(str(h).lower() in low for h in data.get("match", [])):
+        if any(str(h).lower() in low for h in as_list(data.get("match"))):
             return str(data.get("game") or p.stem)
     return None
 

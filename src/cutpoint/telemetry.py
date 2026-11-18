@@ -512,7 +512,8 @@ def _crash_events(
             stopped = moving and v_after <= max(p.still_kmh + 2, 0.25 * v_before)
         else:  # no GPS: moving before (vibration), still after
             moving = (med(tp - 3, tp - 0.5, vib) or 0) > 0.12
-            stopped = moving and (med(tp + 1.5, tp + 4.0, vib) or 1) < p.still_vibration_g
+            after = med(tp + 1.5, tp + 4.0, vib)
+            stopped = moving and (1 if after is None else after) < p.still_vibration_g
         if not stopped:
             continue
         pre = (t >= tp - 2.5) & (t <= tp - 0.5)

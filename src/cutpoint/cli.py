@@ -69,6 +69,7 @@ from cutpoint.styles import (
 from cutpoint.utils import (
     command_line,
     input_name,
+    non_negative_float,
     parse_size,
     positive_float,
     positive_int,
@@ -1520,13 +1521,13 @@ def _add_export_arguments(
     )
     p.add_argument(
         "--tail-min",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="guaranteed tail after the last word (default: style, 1.5 s)",
     )
     p.add_argument(
         "--tail-max",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="max extension after the last word (default: style, 5 s)",
     )
@@ -1540,25 +1541,28 @@ def _add_export_arguments(
     )
     p.add_argument(
         "--event-window",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="payoff must start within S s after the speech (default: 10)",
     )
     p.add_argument(
         "--extend",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="pad both ends of every clip by S seconds, after smart/event tails "
         "(clamped to the source and its readable range; default 0)",
     )
     p.add_argument(
         "--extend-start",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="padding before the start (overrides --extend)",
     )
     p.add_argument(
-        "--extend-end", type=float, metavar="S", help="padding after the end (overrides --extend)"
+        "--extend-end",
+        type=non_negative_float,
+        metavar="S",
+        help="padding after the end (overrides --extend)",
     )
     _add_speech_arguments(p, "on, per style", audio_fade)
     _add_pano_arguments(p, "auto")
@@ -1596,19 +1600,19 @@ def _add_speech_arguments(
     )
     p.add_argument(
         "--speech-max-extend",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="max seconds an end moves later to finish an utterance (default 8)",
     )
     p.add_argument(
         "--speech-max-lead",
-        type=float,
+        type=non_negative_float,
         metavar="S",
         help="max seconds a start moves earlier to catch an utterance's start (default 5)",
     )
     p.add_argument(
         "--audio-fade",
-        type=float,
+        type=non_negative_float,
         default=0.25,
         metavar="S",
         help=audio_fade or "audio fade in/out baked into every clip (default 0.25; 0 = off)",
@@ -1627,7 +1631,7 @@ def _add_pano_arguments(p: argparse.ArgumentParser, default: str | None) -> None
     )
     p.add_argument(
         "--pano-cmd-every",
-        type=int,
+        type=positive_int,
         metavar="N",
         help="360 clips: update the virtual camera every N frames (default 1 = smoothest; "
         "higher = faster, less smooth)",
@@ -2131,13 +2135,15 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     ex.add_argument("clips_dir")
     ex.add_argument(
         "--seconds",
-        type=float,
+        type=non_negative_float,
         default=0.0,
         metavar="S",
         help="padding added to both ends (default 0)",
     )
-    ex.add_argument("--start", type=float, metavar="S", help="padding before (overrides)")
-    ex.add_argument("--end", type=float, metavar="S", help="padding after (overrides)")
+    ex.add_argument(
+        "--start", type=non_negative_float, metavar="S", help="padding before (overrides)"
+    )
+    ex.add_argument("--end", type=non_negative_float, metavar="S", help="padding after (overrides)")
     ex.add_argument(
         "--out",
         help="output folder (default: sibling <clips_dir>_ext<S>s, _ext<A>-<B>s with "
@@ -2698,17 +2704,23 @@ def _run(args: argparse.Namespace, argv: Sequence[str] = ()) -> int:
         OSError,
         ValueError,
         TypeError,
+        LookupError,
+        AttributeError,
         RuntimeError,
         ImportError,
         subprocess.CalledProcessError,
         shutil.Error,
         urllib.error.URLError,
     ) as err:
-        # FileNotFoundError / FileExistsError are OSErrors; URLError too. TypeError is a fallback
-        # for a wrongly typed setting that get_config does not check.
+        # FileNotFoundError / FileExistsError are OSErrors; URLError too. TypeError, LookupError
+        # and AttributeError are fallbacks for a wrongly typed or shaped setting or file.
         logger.debug("command failed", exc_info=True)
-        logger.error("%s", err)
-        jsonout.fail(jsonout.error_code(err), str(err))
+        message = str(err)
+        if isinstance(err, (LookupError, AttributeError)):
+            detail = err.args[0] if isinstance(err, KeyError) and len(err.args) == 1 else message
+            message = f"{type(err).__name__}: {detail}" if detail else type(err).__name__
+        logger.error("%s", message)
+        jsonout.fail(jsonout.error_code(err), message)
         return 1
     except KeyboardInterrupt:
         logger.error("interrupted")

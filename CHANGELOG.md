@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A HUD preset with a malformed region (a missing field, or something that is not a region) no longer crashes the analysis: the region is skipped with a WARNING (#1085, A141).
+- A HUD preset whose `match` or `player_tags` is a single string is read as one entry, not letter by letter, so `"match": "siege"` no longer claims unrelated files (#1085, A140).
+- Without GPS, a crash followed by a perfectly still camera (vibration exactly 0) is no longer dropped as "not stopped" (#1085, A184).
+- A dense crash-check window where ffmpeg returns no frame no longer marks the whole source as failed and skips its other windows (#1085, A183).
+- An unexpected lookup or attribute error in a command now ends with the one-line ERROR and, with `--json`, the error envelope, instead of a raw traceback (#1085, A230).
+- `assemble --captions` works when the `--out` name contains `,`, `'`, `[`, `]`, `;` or `:` (for example `best, part 2.mp4`) (#1085, A231).
+- Negative values for `--tail-min`, `--tail-max`, `--event-window`, `--extend`, `--extend-start`, `--extend-end`, `--speech-max-extend`, `--speech-max-lead`, `--audio-fade` and a `--pano-cmd-every` below 1 are refused with a usage error (exit 2) (#1085, A232). `extend --seconds/--start/--end` already refused negatives when it ran (exit 1); it now refuses them as a usage error (exit 2) too.
 - Two analyses of the same source from different projects no longer write the same temp file: the analysis WAV is written under a temp name with the process id and a random part beside its final name, and the temps of runs that no longer exist are removed at the next start (#1085, A250). The audio-extraction progress follows the new names.
 - A subscription login that succeeded no longer ends in a server error (500) in the `cutpoint ui` Models tab when saving its credentials fails with a damaged auth file or marker; it, `cutpoint login` and logout report 'secure credential storage failed' naming only the error type (#1085, A296). A login error the proxy sends as an object (`{"error": {"message": ...}}`) is reported by its message instead of crashing the login poll, and proxy error answers of that shape show their message, not the raw object (#1085, A295).
 - A page address with a malformed `#` part (such as `#%`) no longer leaves `cutpoint ui` blank: the first project opens (#1085, A283).
