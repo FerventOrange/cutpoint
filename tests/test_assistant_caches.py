@@ -50,7 +50,6 @@ def test_the_keys_file_is_checked_once_until_it_is_replaced(checks: list[str]) -
     for _ in range(3):
         assert cliproxy.port() == 8317
         assert cliproxy._read_keys_file() is not None
-        cliproxy.redact("nothing secret")
     assert checks == ["cliproxy/", "keys.json"]  # one check each before the first read
 
     checks.clear()

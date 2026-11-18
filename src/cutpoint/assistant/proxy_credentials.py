@@ -11,7 +11,6 @@ import os
 import re
 import secrets
 import stat
-import tempfile
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -22,7 +21,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from cutpoint import folders
 from cutpoint.assistant import keys
-from cutpoint.assistant.private_files import private_directory, private_file
+from cutpoint.assistant.private_files import private_directory, private_file, write_private
 from cutpoint.errors import FolderBusyError
 
 _PREFIX = "proxy-credentials-v1"
@@ -56,31 +55,6 @@ def _fail(action: str, err: Exception) -> keys.KeyringError:
     return keys.KeyringError(
         f"the keyring could not {action} proxy credentials ({type(err).__name__})"
     )
-
-
-def _private_write(path: Path, content: str | bytes) -> None:
-    private_directory(path.parent)
-    if path.exists() or path.is_symlink():
-        private_file(path)
-    fd, name = tempfile.mkstemp(prefix=".credentials-", dir=path.parent)
-    temp = Path(name)
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            private_file(temp)
-            stream.write(content.encode("utf-8") if isinstance(content, str) else content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temp.replace(path)
-        private_file(path)
-        if os.name != "nt":
-            parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                os.fsync(parent_fd)
-            finally:
-                os.close(parent_fd)
-    finally:
-        with contextlib.suppress(FileNotFoundError):
-            temp.unlink()
 
 
 def _read_file(path: Path) -> str:
@@ -172,7 +146,12 @@ class CredentialStore:
         nonce = secrets.token_bytes(12)
         aad = _RECOVERY_MAGIC + self.user.encode("ascii")
         encrypted = AESGCM(key).encrypt(nonce, payload, aad)
-        _private_write(self._recovery_journal, _RECOVERY_MAGIC + nonce + encrypted)
+        write_private(
+            self._recovery_journal,
+            _RECOVERY_MAGIC + nonce + encrypted,
+            directory=private_directory,
+            file=private_file,
+        )
 
     def _open_recovery(self) -> tuple[dict[str, bytes], bool]:
         key = self._cached_recovery_key
@@ -443,11 +422,13 @@ class CredentialStore:
         return marker
 
     def _write_marker(self, status: str, managed: set[str], *, stage: bool = False) -> None:
-        _private_write(
+        write_private(
             self._marker,
             json.dumps(
                 {"version": 1, "status": status, "managed": sorted(managed), "stage": stage}
             ),
+            directory=private_directory,
+            file=private_file,
         )
 
     def _recover_stage(self, marker: dict[str, Any] | None) -> None:

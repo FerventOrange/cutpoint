@@ -226,12 +226,12 @@ def test_redact_secrets(temp_home: Path) -> None:
         f"Error connecting with Bearer {mgmt} or Bearer my_super_secret_token_12345 "
         f"and client key {client} and token sk-12345678901234567890"
     )
-    scrubbed = cliproxy.redact(raw)
+    scrubbed = keys.redact(raw)
     assert mgmt not in scrubbed
     assert client not in scrubbed
     assert "my_super_secret_token_12345" not in scrubbed
     assert "sk-12345678901234567890" not in scrubbed
-    assert "[REDACTED]" in scrubbed
+    assert "[redacted]" in scrubbed
 
 
 def test_status_offline_no_raise(temp_home: Path) -> None:

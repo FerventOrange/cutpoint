@@ -93,9 +93,7 @@ TITLES = {
     "openai": "OpenAI-compatible",
     "anthropic": "Anthropic API",
     "xai": "xAI-compatible",
-    "claude-code": "Claude Code subscription",
-    "codex": "Codex subscription",
-    "antigravity": "Antigravity (Gemini)",
+    **cliproxy.TITLES,  # the subscriptions' titles: one table, in cliproxy
 }
 OFFICIAL_TITLES = {
     "openai": "OpenAI API",
@@ -1532,7 +1530,7 @@ def _format_openai_message(m: dict[str, Any]) -> dict[str, Any]:
 
 
 class SubscriptionProvider(OpenAIProvider):
-    """A subscription provider (Claude Code, ChatGPT Codex, or Google Antigravity)
+    """A subscription provider (Claude Code, Codex, or Antigravity)
     routed through the external CLIProxyAPI daemon over loopback.
     """
 

@@ -2574,8 +2574,8 @@ cutpoint proxy [--port PORT]
 ```
 
 `proxy` runs the local authenticated [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
-daemon in the foreground. **Use at your own risk**. Subscriptions (Claude Code, ChatGPT Codex,
-Google Antigravity) route their OAuth authorization, token refresh and inference requests
+daemon in the foreground. **Use at your own risk**. Subscriptions (Claude Code, Codex,
+Antigravity) route their OAuth authorization, token refresh and inference requests
 through this loopback service (`127.0.0.1`). Available in both full and lite installs without
 requiring local models or PyTorch. `cutpoint ui` starts this proxy itself when it needs it (see
 [`ui`](#ui)) and stops it on exit, so `cutpoint proxy` is no longer needed for sign-in there. Run it

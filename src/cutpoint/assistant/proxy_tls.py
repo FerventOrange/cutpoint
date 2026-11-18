@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import contextlib
 import ipaddress
-import os
-import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -14,7 +11,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from cutpoint.assistant.private_files import private_directory, private_file
+from cutpoint.assistant.private_files import private_directory, private_file, write_private
 
 
 def ensure_identity(root: Path) -> tuple[Path, Path]:
@@ -57,18 +54,5 @@ def ensure_identity(root: Path) -> tuple[Path, Path]:
         ),
     )
     for path, content in material:
-        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=root)
-        temp_path = Path(temp_name)
-        try:
-            os.close(fd)
-            fd = -1
-            private_file(temp_path)
-            temp_path.write_bytes(content)
-            temp_path.replace(path)
-        finally:
-            if fd >= 0:
-                with contextlib.suppress(OSError):
-                    os.close(fd)
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
+        write_private(path, content, directory=private_directory, file=private_file)
     return cert_path, key_path

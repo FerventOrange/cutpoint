@@ -42,7 +42,14 @@ MIN_SECRET = 8  # shorter values are not searched for (they would match ordinary
 # "ya29...."), redacted even when not read here.
 _KEY_LIKE = re.compile(r"\b(?:(?:sk|xai)-[A-Za-z0-9_\-]{16,}|ya29\.[A-Za-z0-9_\-]{20,})")
 # The token of an ``Authorization: Bearer ...`` header (the proxy's keys, OAuth tokens)
-_BEARER = re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-.~+/=]{16,}", re.IGNORECASE)
+_BEARER = re.compile(r"(\bBearer\s+)[A-Za-z0-9_\-.~+/=$]{16,}", re.IGNORECASE)
+# The value after a key's name in a message or JSON text (``api_key=...``, ``"token": "..."``,
+# ``secret-key: ...``); 16 characters or more, as the bearer tokens above, so prose such as
+# "the token limit" stays
+_KEY_PARAM = re.compile(
+    r"((?:secret|api)[-_]key|token|password)([\"':\s=]+)[A-Za-z0-9_\-.~+/=$]{16,}",
+    re.IGNORECASE,
+)
 # The operating-system stores a key may be kept in: never a plaintext file backend
 # (keyrings.alt, or one PYTHON_KEYRING_BACKEND names)
 OS_BACKENDS = {
@@ -280,7 +287,8 @@ def redact(text: str) -> str:
     secrets.update(v for name in ENV_VARS if len(v := _env(name)) >= MIN_SECRET)
     for secret in sorted(secrets, key=len, reverse=True):
         text = text.replace(secret, REDACTED)
-    return _BEARER.sub(rf"\g<1>{REDACTED}", _KEY_LIKE.sub(REDACTED, text))
+    text = _BEARER.sub(rf"\g<1>{REDACTED}", _KEY_LIKE.sub(REDACTED, text))
+    return _KEY_PARAM.sub(rf"\g<1>\g<2>{REDACTED}", text)
 
 
 class RedactFilter(logging.Filter):

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import stat
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -453,6 +455,47 @@ def private_file(path: Path) -> os.stat_result:
         return os.fstat(fd)
     finally:
         os.close(fd)
+
+
+def write_private(
+    path: Path,
+    data: str | bytes,
+    *,
+    directory: Callable[[Path], object] = private_directory,
+    file: Callable[[Path], object] = private_file,
+) -> None:
+    """Write ``data`` (text as UTF-8, newlines as given) to the private file ``path``
+    atomically: its folder is made private (``directory``) and an existing ``path`` is checked
+    (``file``) first, then a temporary file in the same folder is made owner-only (``file``: mode
+    0o600 on POSIX, the owner-only DACL on Windows) before any byte is written, flushed and
+    fsync-ed, and replaces ``path`` (``Path.replace``), which is checked again; on POSIX the folder
+    is fsync-ed too. The temporary file is removed when it can be, also when a step fails.
+
+    ``directory`` / ``file``: the checks to run (the callers pass their module's names, so a
+    test that replaces them is honoured, as for :class:`Checked`)."""
+    path = Path(path)
+    directory(path.parent)
+    if path.exists() or path.is_symlink():
+        file(path)
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            file(temp)
+            stream.write(data.encode("utf-8") if isinstance(data, str) else data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temp.replace(path)
+        file(path)
+        if os.name != "nt":
+            parent_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(parent_fd)
+            finally:
+                os.close(parent_fd)
+    finally:
+        with contextlib.suppress(OSError):
+            temp.unlink()
 
 
 def stamp(info: os.stat_result) -> tuple[int, ...]:
