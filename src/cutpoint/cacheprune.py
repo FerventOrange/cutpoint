@@ -5,7 +5,10 @@ are removed, least recently used first. Their last use is the newest modificatio
 folder and of everything in it: :func:`cutpoint.cache.source_dir` sets the folder's to now when
 a run uses it, and every write into it changes it too. Everything else in the cache folder
 stays (the profile discovery and 360 check caches, the timeline index, symlinks, unknown
-files).
+files). The profile discovery (``activity/``) and 360 check (``pano_vl/``) caches are a few KB
+per footage or clip and stand for model calls, so they are not pruned. After a prune that
+removed folders, the timeline index (:data:`cutpoint.stage.TIMELINE_INDEX`) drops the entries
+of the copies that were in them.
 
 A folder is kept when it was used within DAYS days, when it belongs to a project in the
 projects folder (unless ``include_projects``), and always while it is in use: its project's
@@ -41,8 +44,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, folders, jsonout, paths, runstate
+from cutpoint import cache, folders, jsonout, paths, runstate, stage
 from cutpoint.config import projects_dir
+from cutpoint.errors import FolderBusyError
 
 logger = logging.getLogger(__name__)
 
@@ -381,4 +385,39 @@ def prune(
                 report.removed.append(Removed(path, tree_stats(path)[0], newest))
             elif (done := _remove(path, report, cutoff, owners)) is not None:
                 report.removed.append(done)
+        if not dry_run and report.removed:
+            _drop_timeline_entries(root, {os.path.normcase(r.path.name) for r in report.removed})
     return report
+
+
+def _drop_timeline_entries(root: Path, removed: set[str]) -> None:
+    """Drop the entries of tsrepair's timeline index (:data:`cutpoint.stage.TIMELINE_INDEX`)
+    whose copy was in one of the ``removed`` cache folders (names as ``os.path.normcase``
+    gives them: an entry's case can differ from the disk's on Windows) and is still missing (a run may
+    have made it again meanwhile). Under the index's lock; when another run holds it, the
+    index stays as it is (readers reject an entry whose copy is missing), as when it cannot be
+    written."""
+    path = root / stage.TIMELINE_INDEX
+    if not path.is_file():
+        return
+    try:
+        with stage.index_lock(path):
+            data = cache.load_json(path)
+            if not isinstance(data, dict):
+                return
+            keep = {
+                k: v
+                for k, v in data.items()
+                if not (
+                    isinstance(v, dict)
+                    and isinstance(file := v.get("file"), str)
+                    # as tsrepair writes it (posix)
+                    and os.path.normcase(file.split("/", 1)[0]) in removed
+                    and not os.path.lexists(root / file)
+                )
+            }
+            if len(keep) < len(data):
+                cache.save_json(path, keep)
+                logger.debug("timeline index: %d entries dropped", len(data) - len(keep))
+    except (FolderBusyError, OSError) as err:
+        logger.debug("timeline index not cleaned (%s)", err)
