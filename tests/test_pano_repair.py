@@ -11,7 +11,7 @@ import pytest
 from conftest import link_file, messages
 from cutpoint import cache, cli, config, mix
 from cutpoint.mix import Cand, apply_exclusions
-from cutpoint.pano.repair import _fit_budget, plan, repair
+from cutpoint.pano.repair import _fit_budget, _length_window, plan, repair
 
 
 @pytest.fixture
@@ -194,8 +194,35 @@ def test_rendered_tail_problem_caps_the_tail_and_keeps_the_segment(project: Path
     assert not rep["trimmed"] and not rep["dropped"] and rep["exclusions"] == 0
     assert [s["id"] for s in rep["capped"]] == ["m002"]
     # 18 s - 2.25 s of tail, plus m001 / m003 (not rendered) at their own 5 + 6 s
-    assert rep["rendered_s"] == {"before": 18.0, "after": 26.8, "limit": 300.0}
+    # the limit is the top of the window of the 25 s target in mix_report.json (A190)
+    assert rep["rendered_s"] == {"before": 18.0, "after": 26.8, "limit": 31.25}
+    assert rep["content_qa"]["length_window_s"] == [18.75, 31.25]
+    checks = rep["content_qa"]["checks"]  # available: derived from the report's candidates
+    assert checks["categories"] == {"value": 3, "ok": True}
+    assert checks["opener"]["ok"]
     assert not (project / mix.EXCLUDE_FILE).exists()
+
+
+def test_repair_of_an_older_report_without_a_window_keeps_the_old_limit(project: Path) -> None:
+    report_file = project / "mix_report.json"
+    report = cache.load_json(report_file)
+    assert report["content_qa"]["length_window_s"] == [18.75, 31.25]
+    del report["content_qa"]["length_window_s"]
+    cache.save_json(report_file, report)
+    clips_dir = project / "clips_mix"
+    clips_dir.mkdir()
+    (clips_dir / "002_laugh.mp4").write_bytes(b"")
+    entry = {"file": "002_laugh.mp4", "id": "m002", "source": str(project / "a.mp4")}
+    entry |= {"start": 300.0, "end": 309.0, "duration": 9.0, "original_end": 309.0}
+    entry["pick"] = {"start": 300.0}
+    cache.save_json(clips_dir / "manifest.json", {"clips": [entry]})
+    qa = project / "clips_mix_qa" / "qa.json"
+    qa.parent.mkdir()
+    clip = {"file": "002_laugh.mp4", "duration": 9.0, "frames": []}
+    cache.save_json(qa, {"source_dir": str(clips_dir), "clips": [clip]})
+    rep = repair(project, project / "mix_segments.json", qa, sheet=False)
+    assert rep["rendered_s"]["limit"] == mix.QA_LENGTH_S[1]
+    assert rep["content_qa"]["length_window_s"] == list(mix.QA_LENGTH_S)
 
 
 def test_fit_budget_caps_quiet_social_tails_first_then_the_longest() -> None:
@@ -767,3 +794,17 @@ def test_failed_repair_keeps_the_out_folders_it_did_not_create_or_that_are_not_e
     else:
         _failing_repair(tmp_path, monkeypatch, out, mine)
         assert mine.read_text() == "keep me"
+
+
+@pytest.mark.parametrize(
+    "qa",
+    [
+        {"length_window_s": [float("nan"), float("nan")]},
+        {"length_window_s": [300, -5]},
+        {"length_window_s": "12"},
+        [],
+    ],
+)
+def test_length_window_of_odd_report_values_keeps_the_old_limit(qa) -> None:
+    assert _length_window({"content_qa": qa}) == mix.QA_LENGTH_S
+    assert _length_window({"content_qa": qa})[1] == 300

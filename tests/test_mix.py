@@ -267,6 +267,156 @@ def test_content_qa_flags_each_failed_check() -> None:
     assert failed == {"categories", "max_share", "near_dups", "runs_covered", "opener", "length_s"}
 
 
+def _timed(cats: list[str], secs: float) -> list[dict]:
+    return [_seg(i + 1, c, 1, 1, start=i * secs, end=(i + 1) * secs) for i, c in enumerate(cats)]
+
+
+def test_content_qa_full_category_day_is_checked_as_before() -> None:
+    """A lift day (candidates in every category) keeps every rule, with or without ``available``."""
+    every = set(mix.CATEGORIES)
+    good = _timed(["lift", "run", "social", "crash", "jump"], 48)  # 240 s, five groups
+    assert content_qa(good, runs_covered=7, runs=10)["pass"]
+    assert content_qa(good, runs_covered=7, runs=10, available=every) == content_qa(
+        good, runs_covered=7, runs=10
+    )
+    for segs in (good[1:3], good[1:]):
+        old = content_qa(segs, near_dups=1, runs_covered=6, runs=10)
+        new = content_qa(segs, near_dups=1, runs_covered=6, runs=10, available=every)
+        assert old["checks"] == new["checks"] and not new["pass"]
+    assert content_qa(good)["length_window_s"] == [180.0, 300.0]
+    assert mix.length_window(240.0) == mix.QA_LENGTH_S
+
+
+def test_content_qa_skips_categories_without_candidates() -> None:
+    """Surf / FPV day: no lift, scenery or run candidates; three groups, no lifts."""
+    segs = _timed(["jump", "crash", "social"], 80)  # 240 s, opens with a jump
+    strict = content_qa(segs, runs_covered=0, runs=3)
+    assert {k for k, v in strict["checks"].items() if not v["ok"]} == {
+        "categories",
+        "runs_covered",
+        "opener",
+    }
+    ok = content_qa(segs, runs_covered=0, runs=3, available={"jump", "crash", "social"})
+    assert ok["pass"] and ok["checks"]["runs_covered"]["value"] is None
+    assert ok["checks"]["categories"] == {"value": 3, "ok": True}
+
+
+def test_content_qa_still_requires_what_the_footage_has() -> None:
+    segs = _timed(["jump", "crash", "social"], 80)
+    have = {"jump", "crash", "social", "scenery"}  # scenery exists: the opener rule stays
+    bad = content_qa(segs, available=have)["checks"]
+    assert not bad["opener"]["ok"] and not bad["categories"]["ok"]  # 3 of 4 groups
+    runs = content_qa(segs, runs_covered=0, runs=3, available={"run", "jump"})["checks"]
+    assert not runs["runs_covered"]["ok"]
+
+
+@pytest.mark.parametrize("target", [60.0, 240.0, 600.0])
+def test_content_qa_length_window_follows_the_target(target: float) -> None:
+    window = mix.length_window(target)
+    assert window == (0.75 * target, 1.25 * target)
+    segs = _timed(["lift", "run", "social", "crash"], target / 4)
+    assert content_qa(segs, length_window_s=window)["checks"]["length_s"]["ok"]
+    short = _timed(["lift", "run", "social", "crash"], target / 8)
+    assert not content_qa(short, length_window_s=window)["checks"]["length_s"]["ok"]
+
+
+def _fake_day(monkeypatch: pytest.MonkeyPatch, cands: list[Cand]) -> None:
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix, "part_candidates", lambda _d: cands)
+    monkeypatch.setattr(mix, "load_crashes", lambda _p: None)
+    monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))
+    monkeypatch.setattr(mix, "_embed", lambda _c: None)
+
+
+def test_effective_share_follows_the_categories_present() -> None:
+    r = MixRules()
+    assert [mix.effective_share(r, n) for n in (0, 1, 2, 3, 4, 5)] == [0.4, 1.0, 0.5, 0.4, 0.4, 0.4]
+
+
+@pytest.mark.parametrize(
+    "cats",
+    [("scenery", "social"), ("run", "social"), ("run", "jump"), ("social",)],
+)
+def test_run_mix_of_one_or_two_categories_passes_the_content_qa(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cats: tuple[str, ...]
+) -> None:
+    """A day with one or two categories reaches the length with realistic unequal clip
+    lengths and passes every content check, max_share included."""
+    durs = {"scenery": 5.6, "social": 7.3, "run": 6.8, "jump": 4.2}
+    cands = [
+        _c(cat, 100, 1.0 + i, src=f"{cat}{i}", dur=durs[cat]) for cat in cats for i in range(60)
+    ]
+    _fake_day(monkeypatch, cands)
+    rep = mix.run_mix(tmp_path, target_s=240.0, sheet=False)
+    checks = rep["content_qa"]["checks"]
+    assert checks["max_share"]["ok"] and checks["max_share"]["value"] <= (
+        1.0 if len(cats) == 1 else 0.6
+    )
+    assert checks["length_s"]["ok"]
+    assert rep["content_qa"]["pass"], checks
+
+
+def test_run_mix_of_three_categories_keeps_the_forty_percent_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cats = ("run", "social", "jump")
+    _fake_day(
+        monkeypatch, [_c(c, 100, 1.0 + i, src=f"{c}{i}", dur=36.0) for c in cats for i in range(8)]
+    )
+    rep = mix.run_mix(tmp_path, target_s=240.0, sheet=False)
+    assert max(v["share"] for v in rep["categories"].values()) <= 0.4 + 1e-9
+    assert rep["content_qa"]["checks"]["max_share"]["ok"]
+
+
+def test_content_qa_max_share_follows_the_available_categories() -> None:
+    segs = _timed(["scenery", "social", "scenery"], 40)  # scenery 2/3 of the length
+    assert not content_qa(segs, available={"scenery", "social", "jump"})["checks"]["max_share"][
+        "ok"
+    ]
+    two = _timed(["scenery", "social"], 60)
+    assert content_qa(two, available={"scenery", "social"})["checks"]["max_share"]["ok"]
+    assert not content_qa(two)["checks"]["max_share"]["ok"]  # all categories: 40%
+
+
+def test_content_qa_two_categories_accept_up_to_sixty_percent() -> None:
+    two = {"scenery", "social"}
+
+    def pair(a: float, b: float) -> list[dict]:
+        return [
+            _seg(1, "scenery", 1, 1, start=0, end=a),
+            _seg(2, "social", 1, 1, start=a, end=a + b),
+        ]
+
+    assert content_qa(pair(52, 48), available=two)["checks"]["max_share"]["ok"]
+    assert content_qa(pair(60, 40), available=two)["checks"]["max_share"]["ok"]
+    assert not content_qa(pair(70, 30), available=two)["checks"]["max_share"]["ok"]
+    assert content_qa(_timed(["social"], 200), available={"social"})["checks"]["max_share"]["ok"]
+
+
+def test_run_mix_stores_the_length_window_and_passes_length_for_any_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cands = [
+        _c(cat, 100, 1.0 + i, src=f"s{i}", dur=6.0)
+        for cat in ("run", "social", "scenery", "jump")
+        for i in range(4)
+    ]
+    monkeypatch.setattr(mix.actioncam, "load_project_features", lambda _p: [{}])
+    monkeypatch.setattr(mix, "part_candidates", lambda _d: cands)
+    monkeypatch.setattr(mix, "load_crashes", lambda _p: None)
+    monkeypatch.setattr(mix, "_runs_index", lambda _p, _k: ([], {}))
+    monkeypatch.setattr(mix, "_embed", lambda _c: None)
+    rep = mix.run_mix(tmp_path, target_s=30.0, sheet=False)
+    qa = rep["content_qa"]
+    assert qa["length_window_s"] == [22.5, 37.5]
+    assert qa["checks"]["length_s"]["ok"]  # 30 s would fail a fixed 180-300 s window
+    assert cache.load_json(tmp_path / "mix_report.json")["content_qa"]["length_window_s"] == [
+        22.5,
+        37.5,
+    ]
+    assert qa["checks"]["categories"]["ok"]  # no crash or lift candidates: three groups
+
+
 @pytest.fixture
 def one_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
     """run_mix on a project whose only candidate is a 6 s run in a.mp4 (features faked)."""

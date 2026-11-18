@@ -26,8 +26,9 @@ lead-in and tails around each segment: QA time ``t`` is source time
 ``entry.start + t`` and the entry's ``id`` names the segment. Problems inside the
 segment are repaired as above; a blocking span in the lead-in or tail only caps it
 (``min_start`` / ``max_end`` on the segment, honoured by ``cutpoint clips``). When
-the rendered edit runs past ``mix.QA_LENGTH_S`` the longest extensions are capped
-the same way, social tails without speech first.
+the rendered edit runs past the mix's length window (``content_qa.length_window_s`` of
+``mix_report.json``, 0.75-1.25 x the target; ``mix.QA_LENGTH_S`` for an older report) the
+longest extensions are capped the same way, social tails without speech first.
 
 A segments file not written by ``cutpoint mix`` (``[{source, start, end, label}]``,
 a segment without ``id`` and ``category``) is kept as picked: its own ``id`` names a
@@ -336,15 +337,34 @@ def _rendered(
     return core, ext, quiet
 
 
-def _fit_budget(segs: list[dict[str, Any]], manifest: dict[str, Any]) -> dict[str, float]:
-    """Cap lead-ins / tails (bounds, in place) until the rendered edit fits
-    ``mix.QA_LENGTH_S``: social tails without speech first, then the longest of all.
+def _length_window(report: dict[str, Any]) -> tuple[float, float]:
+    """The length window of a ``mix_report.json`` (``content_qa.length_window_s``); an
+    older report without it gets :data:`mix.QA_LENGTH_S`."""
+    qa = report.get("content_qa")
+    win = qa.get("length_window_s") if isinstance(qa, dict) else None
+    if not isinstance(win, (list, tuple)) or len(win) != 2:
+        return mix.QA_LENGTH_S
+    try:
+        lo, hi = float(win[0]), float(win[1])
+    except (TypeError, ValueError):
+        return mix.QA_LENGTH_S
+    return (lo, hi) if math.isfinite(lo) and math.isfinite(hi) and 0 < lo <= hi else mix.QA_LENGTH_S
+
+
+def _fit_budget(
+    segs: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    window: tuple[float, float] = mix.QA_LENGTH_S,
+) -> dict[str, float]:
+    """Cap lead-ins / tails (bounds, in place) until the rendered edit fits the upper
+    end of ``window`` (the mix's length window): social tails without speech first,
+    then the longest of all.
 
     Returns:
         The estimated rendered length per segment id.
     """
     core, ext, quiet = _rendered(segs, manifest)
-    over = sum(core.values()) + sum(ext.values()) - mix.QA_LENGTH_S[1]
+    over = sum(core.values()) + sum(ext.values()) - window[1]
     cut: dict[tuple[str, str], float] = {}
     for pool in (quiet, set(ext)):
         if over <= 0.05:
@@ -509,19 +529,23 @@ def _repair(
         _bound(new, _near(new, excl, key))
     _bound(new, bounds)
     if manifest is not None and not picked:
-        est = _fit_budget(new, manifest)
+        window = _length_window(report)
+        est = _fit_budget(new, manifest, window)
         before = sum(e["duration"] for e in manifest.get("clips", []))
         rep["rendered_s"] = {
             "before": round(before, 1),
             "after": round(sum(est.values()), 1),
-            "limit": mix.QA_LENGTH_S[1],
+            "limit": window[1],
         }
+        counts = report.get("candidates")  # an older report has none: every category
         rep["content_qa"] = mix.content_qa(
             order_moments(index_sources([dict(s) for s in new]), "arc"),
             near_dups=report.get("near_dup_pairs", 0),
             runs_covered=report.get("runs_covered", 0),
             runs=report.get("runs", 0),
             durations=est,
+            available=None if not counts else {k for k, n in counts.items() if n},
+            length_window_s=window,
         )
     _changes(rep, old, new)
     if not new_excl and new == old:

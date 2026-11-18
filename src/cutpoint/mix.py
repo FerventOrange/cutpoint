@@ -38,7 +38,7 @@ import functools
 import itertools
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -94,7 +94,14 @@ REACTION_MAX_S = 8.0
 LIFT_MIN_S = 20.0
 LIFT_ON = 0.5
 QA_MIN_GROUPS = 4  # content acceptance: categories (lift counts as scenery)
-QA_LENGTH_S = (180.0, 300.0)
+QA_LENGTH_S = (180.0, 300.0)  # the window of the default 240 s target (see length_window)
+QA_LENGTH_FRAC = (0.75, 1.25)  # the length window around the target
+
+
+def length_window(target_s: float) -> tuple[float, float]:
+    """The length window of the content QA for ``target_s``: 0.75-1.25 x the target
+    (180-300 s for the default 240 s)."""
+    return QA_LENGTH_FRAC[0] * target_s, QA_LENGTH_FRAC[1] * target_s
 
 
 @dataclass
@@ -180,6 +187,12 @@ def effective_quotas(quotas: dict[str, float], available: set[str]) -> dict[str,
     return q
 
 
+def effective_share(r: MixRules, n_categories: int) -> float:
+    """``max_share``, raised to ``1 / n_categories`` when fewer categories have
+    candidates (50% with two, 100% with one), so the length stays reachable."""
+    return max(r.max_share, 1 / n_categories) if n_categories else r.max_share
+
+
 def normalise(cands: list[Cand]) -> None:
     """``norm``: percentile rank of ``score`` within each category (0-1)."""
     for cat in {c.category for c in cands}:
@@ -243,6 +256,7 @@ def select_mix(
     r = rules or MixRules()
     budget = r.budget_frac * target_s
     q = effective_quotas(quotas or DEFAULT_QUOTAS, {c.category for c in cands})
+    share = effective_share(r, len({c.category for c in cands}))
     ranked = sorted(cands, key=lambda c: (-c.norm, -c.score))
     chosen: list[Cand] = list(fixed or [])
 
@@ -251,21 +265,21 @@ def select_mix(
 
     count = {k: sum(c.category == k for c in cands) for k in q}
     for cat in sorted((k for k in q if k != "flex"), key=lambda k: count[k]):  # scarce first
-        cap = min(q[cat], r.max_share) * budget
+        cap = min(q[cat], share) * budget
         for c in (c for c in ranked if c.category == cat):
             have = secs(cat)
             if have >= cap:
                 break
-            fits = have + c.seconds <= min(cap * 1.15, r.max_share * budget) or have == 0
+            fits = have + c.seconds <= min(cap * 1.15, share * budget) or have == 0
             if fits and secs() + c.seconds <= budget and allowed(c, chosen, r):
                 chosen.append(c)
     for c in ranked:  # flex: best of the rest, no category past max_share
         if c in chosen or secs() + c.seconds > budget:
             continue
-        if secs(c.category) + c.seconds <= r.max_share * budget and allowed(c, chosen, r):
+        if secs(c.category) + c.seconds <= share * budget and allowed(c, chosen, r):
             chosen.append(c)
     if n_runs:
-        _cover_runs(chosen, ranked, n_runs, budget, r, fixed or [])
+        _cover_runs(chosen, ranked, n_runs, budget, r, fixed or [], share)
     return chosen
 
 
@@ -276,13 +290,14 @@ def _cover_runs(
     budget: float,
     r: MixRules,
     fixed: list[Cand],
+    share: float,
 ) -> None:
     """Swap clips of over-represented runs for the best clip of an uncovered run
     until ``run_cover`` of the runs contribute (in place).
 
     A clip only gives way to one of its own category, or when its category keeps
     another clip; crashes never give way to other categories. No category goes
-    past ``max_share``.
+    past ``share`` (``max_share`` raised for few categories).
     """
     need = math.ceil(r.run_cover * n_runs)
     while len({c.run for c in chosen if c.run is not None}) < need:
@@ -308,7 +323,7 @@ def _cover_runs(
                 rest = [o for o in chosen if o is not old]
                 total = sum(o.seconds for o in rest) + new.seconds
                 cat_s = sum(o.seconds for o in rest if o.category == new.category) + new.seconds
-                if total <= budget and cat_s <= r.max_share * budget and allowed(new, rest, r):
+                if total <= budget and cat_s <= share * budget and allowed(new, rest, r):
                     swap = (old, new)
                     break
             if swap:
@@ -734,6 +749,8 @@ def run_mix(
         runs_covered=report["runs_covered"],
         runs=len(runs),
         rules=r,
+        available={c.category for c in cands},
+        length_window_s=length_window(target_s),
     )
     cache.save_json(out.with_name("mix_report.json"), report)
     logger.info(
@@ -760,19 +777,33 @@ def content_qa(
     runs: int = 0,
     rules: MixRules | None = None,
     durations: dict[str, float] | None = None,
+    available: Collection[str] | None = None,
+    length_window_s: tuple[float, float] = QA_LENGTH_S,
 ) -> dict[str, Any]:
     """Edit-level content acceptance of play-ordered segments.
 
     Checks: at least :data:`QA_MIN_GROUPS` categories (lift and scenery count as
-    one), no category past ``max_share`` of the length, no near-duplicate pairs,
+    one), no category past ``max_share`` of the length (with fewer than 3 categories
+    that have candidates, what selection guarantees at the shortest accepted length:
+    ``1 / n`` of the budget over the lowest length, 60% with two, 100% with one),
+    no near-duplicate pairs,
     ``run_cover`` of the telemetry runs covered (skipped without runs), a lift /
-    scenery opener and a length within :data:`QA_LENGTH_S`. ``durations`` (by segment id,
-    e.g. the rendered clips with lead-in and tails) replace ``end - start``.
+    scenery opener and a length within ``length_window_s`` (:func:`length_window` of
+    the target). ``durations`` (by segment id, e.g. the rendered clips with lead-in and
+    tails) replace ``end - start``.
+
+    ``available`` names the categories that had candidates (None: all of them). The
+    checks only require those: the category count at most the number of groups they
+    make, no run cover without ``run`` candidates, no opener rule without ``lift`` or
+    ``scenery`` candidates.
 
     Returns:
-        ``{"pass": bool, "checks": {name: {"value": ..., "ok": bool}}}``.
+        ``{"pass": bool, "length_window_s": [lo, hi], "checks": {name: {"value": ...,
+        "ok": bool}}}``.
     """
     r = rules or MixRules()
+    have = set(CATEGORIES if available is None else available)
+    need_groups = min(QA_MIN_GROUPS, len({"scenery" if c == "lift" else c for c in have}))
     secs: dict[str, float] = {}
     for s in segs:
         cat = s.get("category") or "none"
@@ -781,21 +812,30 @@ def content_qa(
     total = sum(secs.values())
     groups = {"scenery" if c == "lift" else c for c in secs} - {"none"}
     share = max(secs.values(), default=0.0) / total if total else 0.0
-    cover = runs_covered / runs if runs else None
+    cover = runs_covered / runs if runs and "run" in have else None
     opener = segs[0].get("category") if segs else None
-    lo, hi = QA_LENGTH_S
+    views = bool(have & {"lift", "scenery"})
+    lo, hi = length_window_s
+    cap = effective_share(r, len(have))
+    if cap > r.max_share:  # selection holds each category to 1/n of the budget; at the
+        # shortest accepted length that is this share of the edit
+        cap = min(1.0, cap * r.budget_frac / QA_LENGTH_FRAC[0])
     checks = {
-        "categories": {"value": len(groups), "ok": len(groups) >= QA_MIN_GROUPS},
-        "max_share": {"value": round(share, 3), "ok": share <= r.max_share},
+        "categories": {"value": len(groups), "ok": len(groups) >= need_groups},
+        "max_share": {"value": round(share, 3), "ok": share <= cap},
         "near_dups": {"value": near_dups, "ok": near_dups == 0},
         "runs_covered": {
             "value": None if cover is None else round(cover, 3),
             "ok": cover is None or cover >= r.run_cover,
         },
-        "opener": {"value": opener, "ok": opener in ("lift", "scenery")},
+        "opener": {"value": opener, "ok": not views or opener in ("lift", "scenery")},
         "length_s": {"value": round(total, 1), "ok": lo <= total <= hi},
     }
-    return {"pass": all(c["ok"] for c in checks.values()), "checks": checks}
+    return {
+        "pass": all(c["ok"] for c in checks.values()),
+        "length_window_s": [lo, hi],
+        "checks": checks,
+    }
 
 
 def mix_report(
