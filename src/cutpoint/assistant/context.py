@@ -148,7 +148,7 @@ CUE_WORDS = {
 RECIPES = (
     ("beauty shots", ("beauty", "scenic_vista"), ("stopped", "transit"), ()),
     (
-        "casual riding",
+        "steady action",
         ("speed", "carve", "fast_open"),
         (),
         ("airtime", "jump_air", "crash", "wipeout", "crash_fall"),

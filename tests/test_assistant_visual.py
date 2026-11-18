@@ -273,7 +273,7 @@ def test_the_rules_and_tool_say_to_use_the_visual_fields_before_asking() -> None
     ):
         assert word in rules, word
     assert "beauty shots = high beauty or scenic_vista with stopped" in rules
-    assert "casual riding = high speed or carve or fast_open." in rules  # no airtime or crash
+    assert "steady action = high speed or carve or fast_open." in rules  # no airtime or crash
     assert "before asking the user for moment ids" in rules
     msgs = context.build_messages(table(), [], "hi", context.budget(8192))
     assert msgs[0]["content"] == rules
@@ -286,7 +286,7 @@ def test_the_rules_name_only_the_cues_the_project_has() -> None:
     funny = [{**CANDS[0], "signals": {"laughter": 0.8, "events": {"laughter": 0.3}}}]
     rules = context.rules(context.MomentTable(funny, []))
     assert "Cues: laughter (said)." in rules and "heard (" in rules
-    for word in ("beauty", "transit", "airtime", "bloopers", "casual", "seen (", "kind ("):
+    for word in ("beauty", "transit", "airtime", "bloopers", "steady action", "seen (", "kind ("):
         assert word not in rules, word
     bare = context.rules(context.MomentTable([{**CANDS[0], "signals": {}}], []))
     assert "What analysis saw" not in bare
