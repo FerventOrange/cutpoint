@@ -97,7 +97,6 @@ from cutpoint.styles import get_style
 from cutpoint.ui.analysis import (
     REFINE_WARNINGS,
     ProjectStyle,
-    _analysis_inputs,
     _auto_picks,
     _note_warnings,
     _style_crash,

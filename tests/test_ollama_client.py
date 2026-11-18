@@ -227,3 +227,60 @@ def test_public_strips_a_password_with_a_slash_or_at() -> None:
         assert "pa" not in shown.replace("path", "") and "ss" not in shown
         assert shown == "http://host:1 is not reachable"
     assert public("http://host:1/v1") == "http://host:1/v1"
+
+
+# --------------------------------------------------------------------------- A298
+
+
+@pytest.mark.parametrize(
+    ("given", "sent"),
+    [
+        (300, (backends.CONNECT_TIMEOUT_S, 300)),
+        (30.0, (backends.CONNECT_TIMEOUT_S, 30.0)),
+        (5, (5, 5)),  # the connection never gets longer than the number given
+        ((1, 3), (1, 3)),  # a pair as given
+    ],
+)
+def test_a_read_timeout_gets_a_short_connect_timeout(monkeypatch, given, sent) -> None:
+    seen: list[Any] = []
+    monkeypatch.setattr(requests, "post", lambda _u, **kw: seen.append(kw["timeout"]) or _Body({}))
+    backends.ollama_post("http://127.0.0.1:1", "/api/chat", {}, timeout=given)
+    assert seen == [sent]
+
+
+def test_every_ollama_request_connects_within_the_connect_timeout(monkeypatch, quiet_guard) -> None:
+    """A black-holed Ollama fails within CONNECT_TIMEOUT_S on every path: the vision rating,
+    the events labelling and unload, the crash and profile steps (ask_json) and the AI Chat."""
+    seen: list[tuple[str, Any]] = []
+
+    def black_hole(url: str, **kw: Any) -> Any:
+        seen.append((url.rsplit("/", 1)[-1], kw["timeout"]))
+        raise requests.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(requests, "post", black_hole)
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.used = True
+    assert rater.ask_json("p", schema=None) is None
+    assert rater.describe("p", [b"jpeg"], {"type": "object"}) is None
+    assert rater.describe("p", [b"jpeg"], {"type": "object"}, timeout=3) is None
+    assert rater.timed_out is True  # a stalled server: no retry of the window, as before
+    assert rater.rate(Path("a.mp4"), 0, 4, "action") is None
+    assert rater.load(60) is False
+    rater.unload()
+    monkeypatch.setattr(
+        requests, "get", lambda *_a, **_k: _Body({"models": [{"name": "m"}]})
+    )  # events: what is loaded
+    common.unload_ollama("http://127.0.0.1:1")
+    with pytest.raises(ProviderError, match="not reachable"):
+        OllamaProvider("http://127.0.0.1:1", "m", 0).capabilities()
+    connect = backends.CONNECT_TIMEOUT_S
+    assert seen[:6] == [
+        ("chat", (connect, 600)),
+        ("chat", (connect, 600)),
+        ("chat", (3, 3)),
+        ("chat", (connect, 300)),
+        ("generate", (connect, 60)),
+        ("generate", (connect, 10)),
+    ]
+    assert seen[6] == ("generate", (connect, 30))
+    assert seen[-1] == ("show", (5.0, 5.0))

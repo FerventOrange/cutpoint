@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import HOP, SLED, add_profile, set_config
-from cutpoint import activity, jsonout, paths, stylefiles, vision
+from cutpoint import activity, backends, jsonout, paths, stylefiles, vision
 from cutpoint.errors import LowMemoryError
 from overlap import Overlap
 
@@ -326,7 +326,8 @@ def test_profile_ask_sends_the_short_read_timeout_to_ollama(home, monkeypatch):
             return {"message": {"content": '{"name": "x"}'}}
 
     def post(url, json, timeout, **_k):
-        timeouts.append(timeout)
+        timeouts.append(timeout[1])  # the read; the connect is backends.CONNECT_TIMEOUT_S
+        assert timeout[0] == backends.CONNECT_TIMEOUT_S
         return _Resp()
 
     monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)

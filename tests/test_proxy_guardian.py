@@ -207,6 +207,42 @@ def test_a_failing_daemon_s_redacted_output_tail_is_kept_for_the_error(
 
 
 @pytest.mark.slow
+def test_a_daemon_that_writes_crlf_leaves_clean_lines(
+    tmp_path: Path, guardian_env: tuple[dict[str, str], Path]
+) -> None:
+    """A child that ends its lines with CRLF (as on Windows) leaves no \\r and no blank lines
+    between the tail's lines, in the saved file or in the error."""
+    root = tmp_path / "proxy"
+    _seed_runtime(root)
+    script = (
+        "import sys\n"
+        "for i in range(3):\n"
+        "    sys.stdout.buffer.write(b'synthetic line %d\\r\\n' % i)\n"
+        "sys.stdout.buffer.flush()\n"
+        "sys.exit(3)\n"
+    )
+    process, _ = _launch(root, tmp_path, guardian_env, [sys.executable, "-c", script])
+    assert process.wait(timeout=12) == 3
+    want = [f"synthetic line {i}" for i in range(3)]
+    saved = (root / guardian.OUTPUT_FILE).read_bytes()
+    assert b"\r" not in saved and saved.decode("utf-8").split("\n") == want
+    tail = guardian.output_tail(root)
+    assert "\r" not in tail and tail.split("\n")[2:] == want
+
+
+def test_crlf_and_a_stray_cr_never_make_blank_tail_lines(tmp_path: Path) -> None:
+    tail = guardian._Tail()
+    tail.drain(io.BytesIO(b"first\r\nsecond\r\r\nthird\r\n"))
+    assert tail.text() == "first\nsecond\nthird"
+    # a file saved before line ends were cleaned (Windows: \r\r\n)
+    saved = tmp_path / guardian.OUTPUT_FILE
+    saved.write_bytes(b"first\r\r\nsecond\r\r\n")
+    if os.name != "nt":
+        saved.chmod(0o600)
+    assert guardian.output_tail(tmp_path).split("\n")[2:] == ["first", "second"]
+
+
+@pytest.mark.slow
 def test_a_chatty_daemon_starts_without_blocking_and_leaves_no_output_file(
     tmp_path: Path, guardian_env: tuple[dict[str, str], Path]
 ) -> None:

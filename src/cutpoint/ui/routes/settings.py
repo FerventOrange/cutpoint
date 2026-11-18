@@ -180,6 +180,14 @@ def put_settings(request: Request, body: dict[str, Any]):
         out["assistant_note"] = None
         try:
             provider = ai_providers.make()
+            # as the model list and AI Chat: a start in flight is waited for and a saved
+            # login starts the proxy (none without one), so a Save right after a restart is
+            # not "not running", with or without the consent
+            if ai_providers.is_subscription(provider) and (
+                why := proxy_error(request.app, logged_in_only=True)
+            ):
+                out["assistant_check"] = why
+                return out
             if consent_view(provider)["needed"]:
                 # nothing goes to a host not agreed to yet, a key least of all (#504);
                 # a missing key is known without asking

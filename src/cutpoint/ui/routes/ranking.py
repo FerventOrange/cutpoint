@@ -12,7 +12,7 @@ from fastapi import APIRouter, Request
 from cutpoint import jsonout
 from cutpoint.errors import FolderBusyError
 from cutpoint.styles import AUTO
-from cutpoint.ui.analysis import _analysis_inputs, set_style
+from cutpoint.ui.analysis import ProjectStyle, set_style
 from cutpoint.ui.common import BUSY_TEXT, META_FILE, bad
 from cutpoint.ui.files import _own, _ui_folder, read_meta
 from cutpoint.ui.projects import RERANKING, project_dir
@@ -129,7 +129,7 @@ def apply_ranking(request: Request, pid: str, body: dict[str, Any]):
             # left Auto (here or in an earlier re-rank on the command line): the detection is
             # kept as the "Detected earlier" copy, as the header does
             reranked = isinstance((before.get("settings") or {}).get("reranked"), dict)
-            auto = _analysis_inputs(meta, before)[1] == AUTO or reranked
+            auto = ProjectStyle.of(meta, before).chosen == AUTO or reranked
             kept = before.get("detection") if auto else None
             set_style(p, style.name, kept if isinstance(kept, dict) else None)
             made.clear()  # the ui folder holds meta.json now
@@ -172,7 +172,7 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
             _, after, undone = swapped
             # the style the ranking swapped in runs on (auto for an auto analysis), as the
             # header shows it and the next analysis passes it; a detection kept when not Auto
-            style = _analysis_inputs({}, after)[1]
+            style = ProjectStyle.of({}, after).chosen
             if isinstance(style, str) and style:
                 det = after.get("detection") if style != AUTO else None
                 set_style(p, style, det if isinstance(det, dict) else None)

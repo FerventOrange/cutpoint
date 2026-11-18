@@ -706,6 +706,61 @@ def test_the_models_of_a_subscription_start_the_proxy_only_with_a_saved_login(
     assert launcher.starts == 1
 
 
+def test_saving_a_subscription_starts_the_proxy_before_its_check(
+    ui_client: TestClient, monkeypatch, home: Path
+) -> None:
+    """F1 (A299): a Save right after a restart (a saved login, the proxy not yet running or
+    still starting) starts or waits for it as the model list does, so it is not reported
+    "not running"; a real logout still says to log in."""
+    set_config(home, assistant={"provider": "openai", "consent": [CODEX_CONSENT]})
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
+    logged_in = {"codex": True}
+
+    def status(name: str) -> dict:
+        if not launcher.running():
+            return {"logged_in": False, "error": cliproxy.NOT_RUNNING}
+        return {"logged_in": logged_in[name], "error": None}
+
+    monkeypatch.setattr(cliproxy, "status", status)
+    monkeypatch.setattr(cliproxy, "cached_status", status)
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": "codex"}})
+    assert res.status_code == 200, res.text
+    assert res.json()["assistant_check"] is None
+    assert launcher.calls == [True] and launcher.starts == 1
+
+    logged_in["codex"] = False  # logged out in a terminal; the proxy runs
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": "codex"}})
+    assert "cutpoint login codex" in res.json()["assistant_check"]
+    assert cliproxy.NOT_RUNNING not in res.json()["assistant_check"]
+
+
+def test_saving_a_subscription_without_consent_starts_the_proxy_only_with_a_saved_login(
+    ui_client: TestClient, monkeypatch, home: Path
+) -> None:
+    """Without the consent, the login is checked (missing_key) after the same proxy step:
+    a saved login starts it, so the answer is the consent note, not "not running"; without a
+    saved login nothing starts and the answer is as before."""
+    set_config(home, assistant={"provider": "openai"})  # no consent for codex
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=True)
+
+    def status(_name: str) -> dict:
+        if not launcher.running():
+            return {"logged_in": False, "error": cliproxy.NOT_RUNNING}
+        return {"logged_in": True, "error": None}
+
+    monkeypatch.setattr(cliproxy, "status", status)
+    monkeypatch.setattr(cliproxy, "cached_status", status)
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": "codex"}})
+    out = res.json()
+    assert out["assistant_check"] is None and "Nothing was sent" in out["assistant_note"]
+    assert launcher.calls == [True] and launcher.starts == 1
+
+    launcher = ui_client.app.state.proxies = FakeLauncher(saved=False)
+    res = ui_client.put("/api/settings", json={"assistant": {"provider": "codex"}})
+    assert res.json()["assistant_check"] == cliproxy.NOT_RUNNING
+    assert launcher.calls == [True] and launcher.starts == 0  # no saved login: no start
+
+
 def test_the_models_of_a_subscription_say_why_the_proxy_did_not_start(
     ui_client: TestClient, home: Path
 ) -> None:

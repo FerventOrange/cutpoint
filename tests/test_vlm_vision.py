@@ -12,7 +12,7 @@ import pytest
 import requests
 
 from conftest import set_config
-from cutpoint import cache, jsonout, vision
+from cutpoint import backends, cache, jsonout, vision
 from cutpoint.assistant import providers
 from cutpoint.events import pipeline
 from cutpoint.events import vlm_windows as vw
@@ -123,7 +123,8 @@ def test_describe_refuses_a_redirect(ollama, monkeypatch, caplog) -> None:
     monkeypatch.setattr(vision.requests, "post", moved)
     with caplog.at_level(logging.WARNING):
         assert vision.VisionRater().describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
-    assert [(kw["timeout"], kw["allow_redirects"]) for kw in sent] == [(600, False)]  # not followed
+    connect = backends.CONNECT_TIMEOUT_S
+    assert [(kw["timeout"], kw["allow_redirects"]) for kw in sent] == [((connect, 600), False)]
     assert any("redirect" in r.getMessage() for r in caplog.records)
 
 

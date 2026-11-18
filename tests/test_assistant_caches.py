@@ -21,6 +21,8 @@ from cutpoint.assistant import cliproxy, context, providers, store
 from cutpoint.assistant.private_files import Checked
 from cutpoint.events import visual as V
 
+_REAL_MANAGEMENT_REQUEST = cliproxy._management_request  # before a fixture fakes it
+
 # -- A758: private file checks -------------------------------------------------------------
 
 
@@ -267,6 +269,44 @@ def test_no_answer_or_no_cutpoint_proxy_is_asked_each_time(
     monkeypatch.setattr(cliproxy, "_is_daemon_owned", lambda: False)  # it stopped elsewhere
     cliproxy.cached_status("codex")
     assert proxy.asked == 4
+
+
+# -- A299: a subscription's capabilities prove the proxy is up and logged in -------------------
+
+
+def test_a_subscription_is_usable_when_the_proxy_runs_and_is_logged_in(proxy: Proxy) -> None:
+    sub = providers.SubscriptionProvider("codex")
+    assert providers.check(sub) is None
+    assert sub.capabilities() == providers.Capabilities(tool_calls=True, json_schema=False)
+    assert proxy.asked == 1
+
+
+def test_a_subscription_is_unusable_when_logged_out(proxy: Proxy) -> None:
+    proxy.files = []
+    why = providers.check(providers.SubscriptionProvider("codex"))
+    assert why is not None and "cutpoint login codex" in why
+
+
+def test_a_subscription_is_unusable_when_the_proxy_is_down(
+    proxy: Proxy, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing is asked of a proxy that does not run, and nothing starts one."""
+    monkeypatch.setattr(cliproxy, "_is_daemon_owned", lambda: False)
+    monkeypatch.setattr(cliproxy, "_management_request", _REAL_MANAGEMENT_REQUEST)
+    started: list[Any] = []
+    monkeypatch.setattr(cliproxy, "start", lambda *a, **k: started.append(a))
+    assert providers.check(providers.SubscriptionProvider("codex")) == cliproxy.NOT_RUNNING
+    assert proxy.asked == 0 and started == []
+
+
+def test_a_subscriptions_capabilities_are_kept_once_proved(proxy: Proxy) -> None:
+    sub = providers.SubscriptionProvider("codex")
+    first = sub.capabilities()
+    proxy.now += cliproxy.STATUS_TTL_S  # the status cache expired: the provider's caps did not
+    assert sub.capabilities() is first and proxy.asked == 1
+    proxy.files = []  # a refusal is never kept: a new provider asks again
+    with pytest.raises(providers.ProviderError, match="log"):
+        providers.SubscriptionProvider("codex").capabilities()
 
 
 # -- A762: chat.json and history.json ----------------------------------------------------------

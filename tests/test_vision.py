@@ -22,7 +22,7 @@ import requests
 
 import cutpoint.analyze
 from conftest import HOP, SLED, needs_ffmpeg
-from cutpoint import activity, cache, cli, errors, vision
+from cutpoint import activity, backends, cache, cli, errors, vision
 from cutpoint.styles import get_style
 from vision_helpers import Resp
 
@@ -535,8 +535,9 @@ def rater(monkeypatch) -> type[_FakeRater]:
 
 def _argv(video: Path, *flags: str, style: str = "commentary") -> list[str]:
     """``--skip`` leaves out the HUD/OCR discovery a gaming style would run (minutes with the
-    events extras); none of these tests is about those steps."""
-    skip = ["--skip", "reactions", "keyframes", "crashes"]
+    events extras) and the dialogue reader, which would ask a real Ollama on this machine (the
+    fake rater stands for a reachable one); none of these tests is about those steps."""
+    skip = ["--skip", "reactions", "keyframes", "crashes", "dialogue"]
     return ["analyze", str(video), "--style", style, "--out", "v", "--no-scenes", *flags, *skip]
 
 
@@ -1110,7 +1111,8 @@ def test_describe_waits_600_s_by_default_and_for_the_given_timeout(monkeypatch):
     waited: list[float] = []
 
     def post(url, json, timeout, **_k):
-        waited.append(timeout)
+        waited.append(timeout[1])  # the read; the connect is backends.CONNECT_TIMEOUT_S
+        assert timeout[0] == backends.CONNECT_TIMEOUT_S
         raise requests.Timeout("too slow")
 
     monkeypatch.setattr(vision.requests, "post", post)
