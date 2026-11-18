@@ -1018,6 +1018,12 @@ def _prepare_launch(home_dir: Path, resolved_port: int) -> tuple[list[str], Path
             raise ProxyError(f"configured CUTPOINT_CLIPROXY_BINARY does not exist: {bin_file}")
         if not os.access(bin_file, os.X_OK):
             raise ProxyError(f"configured CUTPOINT_CLIPROXY_BINARY is not executable: {bin_file}")
+        # a developer override: no hash check, so say once per start what runs instead
+        logger.warning(
+            "CUTPOINT_CLIPROXY_BINARY is set: running %s instead of the pinned, hash-checked "
+            "CLIProxyAPI build",
+            bin_file,
+        )
     else:
         bin_file = _install_binary(paths.tools_dir() / "cliproxy")
 

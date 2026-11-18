@@ -791,7 +791,7 @@ The AI Chat tab talks to the model set in the [`assistant`](configuration.md#ass
 URL is typed:
 
 - **None (local Ollama)**, the default: the configured Ollama (`OLLAMA_HOST` or `ollama_url`).
-  Choose a pulled model, or Other model… for any id; Default uses the first pulled of `qwen3.5:9b`, the vision model and `qwen3-vl:8b`, else `qwen3.5:9b`.
+  Choose a pulled model, or Other model… for any id; Default uses the first pulled of `qwen3.5:9b` and the vision model, else `qwen3.5:9b`.
 - **Anthropic API**: `https://api.anthropic.com`, with an API key; `claude-sonnet-5-5` (default)
   or `claude-opus-5-5`. Not the Claude Code subscription below.
 - **OpenAI API**: `https://api.openai.com/v1`, with an API key; choose an OpenAI model. Cutpoint
@@ -2542,7 +2542,8 @@ proxy started this way is never stopped by the UI.
 
 On first run, `cutpoint proxy` lazily downloads the checksum-verified ~24 MB binary (pinned version
 8.0.47) to `<CUTPOINT_HOME>/tools/cliproxy/` and starts it on port 18317 (`CUTPOINT_CLIPROXY_PORT` or
-`--port` overrides the port; `CUTPOINT_CLIPROXY_BINARY` overrides the executable path).
+`--port` overrides the port; `CUTPOINT_CLIPROXY_BINARY` overrides the executable path, without
+the checksum, and each start with it logs a WARNING naming it).
 Subscription credentials use Cutpoint's keyring integration with a native OS backend:
 Secret Service/KWallet, macOS Keychain or Windows Credential Manager. File-based keyrings
 are rejected. A chained backend selects one native store and never falls through to another

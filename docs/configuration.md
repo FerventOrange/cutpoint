@@ -56,7 +56,7 @@ All optional.
 | `CUTPOINT_INSTA360_SDK` | Full path to the SDK's `MediaSDKTest` executable (overrides `pano.sdk_exe`) |
 | `OLLAMA_HOST` | Ollama URL; overrides `ollama_url` (a bare `host:port` gets `http://`) |
 | `CUTPOINT_CLIPROXY_PORT` | Loopback port of the [`cutpoint proxy`](commands.md#proxy) daemon (default 18317, or the port saved at the last start) |
-| `CUTPOINT_CLIPROXY_BINARY` | CLIProxyAPI executable for `cutpoint proxy` to run instead of the pinned build it downloads |
+| `CUTPOINT_CLIPROXY_BINARY` | CLIProxyAPI executable for `cutpoint proxy` to run instead of the pinned build it downloads; not hash-checked, so each start logs a WARNING naming it |
 | `CUTPOINT_PROGRESS` | `1` adds `PROGRESS {...}` lines per step on stderr (see [progress output](commands.md#progress-output)) |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `CUTPOINT_ASSISTANT_API_KEY` | API keys of the hosted models in `cutpoint ui`, each sent only to its own host (see [assistant](#assistant)) |
 
@@ -306,7 +306,7 @@ separate entries with their own credentials and model lists:
 
 | Preset | `provider` | Base URL | Model |
 |---|---|---|---|
-| None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: the first pulled of `qwen3.5:9b`, the vision model and `qwen3-vl:8b`, else `qwen3.5:9b` |
+| None (local Ollama) | `ollama` | `ollama_url` (`OLLAMA_HOST`) | any pulled model; empty: the first pulled of `qwen3.5:9b` and the vision model, else `qwen3.5:9b` |
 | Anthropic API | `anthropic` | `https://api.anthropic.com` | empty: `claude-sonnet-5-5`; `claude-opus-5-5` offered; an API key |
 | OpenAI API | `openai` | `https://api.openai.com/v1` | needed: an OpenAI model name; `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-luna` offered; an API key |
 | Grok (xAI) | `xai` | `https://api.x.ai/v1` | needed: an xAI model name; `grok-4.7`, `grok-4.6`, `grok-4.5`, `grok-4.3` and `grok-build-0.1` offered |
@@ -325,8 +325,8 @@ asks again; see [AI Chat](commands.md#ai-chat)), and Other model… takes any ot
   `api.openai.com` uses the Responses API (`/v1/responses`) and asks OpenAI not to store the
   chat (`store: false`); any other `url` uses `/v1/chat/completions`.
 - `model`: the model name. Empty (default): for Ollama the first that is pulled of
-  `qwen3.5:9b`, the vision model (`CUTPOINT_VISION_MODEL`) and `qwen3-vl:8b`, else
-  `qwen3.5:9b`; for Anthropic
+  `qwen3.5:9b` and the vision model (`CUTPOINT_VISION_MODEL`), else `qwen3.5:9b` (not
+  pulled: the chat names the `ollama pull` command); for Anthropic
   `claude-sonnet-5-5` (`claude-opus-5-5` is stronger, slower and costs more); for an
   OpenAI-compatible server its only model (`/v1/models`); OpenAI and xAI need a name.
 - `url`: the base URL. Empty (default): `ollama_url`, `https://api.openai.com/v1`,

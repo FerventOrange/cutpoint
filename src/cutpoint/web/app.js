@@ -6532,7 +6532,7 @@ const VISION_HINTS = {
 };
 
 const AI_MODEL_HINTS = {
-  ollama: 'A model Ollama has pulled. Default: the first of qwen3.5:9b, the vision model and qwen3-vl:8b it has, else qwen3.5:9b.',
+  ollama: 'A model Ollama has pulled. Default: the first of qwen3.5:9b and the vision model it has, else qwen3.5:9b.',
   anthropic: 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger but slower and costs more.',
   'claude-code': 'Default: claude-sonnet-5-5. claude-opus-5-5 is stronger but slower and costs more.',
   openai: 'Needed: an OpenAI model your key can use (e.g. gpt-4o).',
