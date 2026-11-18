@@ -41,6 +41,7 @@ from cutpoint.ui.common import (
     spawn,
 )
 from cutpoint.ui.files import _inside, _own, _ui_folder
+from cutpoint.ui.lanes import Lane
 
 # Proxies: a keyframe every PROXY_GOP frames and at most PROXY_FPS_MAX fps keep seeks quick (the
 # encoder default GOP made them take up to ~0.4 s) and the encode light.
@@ -215,8 +216,9 @@ class Media:
     """Probe cache and on-demand H.264/AAC proxies for sources a browser cannot play.
 
     Two lanes, one worker each: whole-source proxies (``pool``, first in, first out) and window
-    proxies of the focused moment (``windows_queue``, the latest focus request only), so a
-    moment plays within seconds while its source's whole proxy still builds.
+    proxies of the focused moment (``window_lane``: a focus request supersedes the queued
+    windows; a ``queue`` request waits behind them, at most PROXY_WINDOWS_QUEUED), so a moment plays
+    within seconds while its source's whole proxy still builds.
     """
 
     def __init__(self) -> None:
@@ -241,10 +243,14 @@ class Media:
         # (project, key) -> {(lo, hi) centiseconds: short reason} of window encodes that failed,
         # oldest first; listed so the page stops waiting, cleared when one is asked for again
         self.window_failures: dict[tuple[Path, str], dict[tuple[int, int], str]] = {}
-        self.windows_queue: deque[ProxyWindow] = deque()
-        self.window_running: ProxyWindow | None = None
-        self.window_wake = threading.Condition(self.lock)
-        self.window_lane: threading.Thread | None = None  # started with the first window
+        # the window proxies' one worker, beside the whole-source lane; its thread outlives
+        # any window that raises (#1085). ``run`` looks ``_build_window`` up per window.
+        self.window_lane: Lane[ProxyWindow] = Lane(
+            self.lock,
+            lambda win: self._build_window(win),
+            name="cutpoint-proxy-window",
+            failed=lambda _win: logger.exception("window proxy lane: a window failed"),
+        )
         self.proxies_pruned: set[Path] = set()  # projects whose proxy leftovers went this run
         self.closing = False
         self.gpu_failed = False  # a proxy failed with the GPU encoder and worked with libx264
@@ -455,14 +461,14 @@ class Media:
             for s in gone:
                 ready.pop(s, None)
             if not queue:
-                self.windows_queue.clear()  # superseded: the user moved on
-            run = self.window_running
+                self.window_lane.queue.clear()  # superseded: the user moved on
+            run = self.window_lane.running
             mine = run is not None and (run.project, run.key) == (project, key)
             waits = queue and (
-                len(self.windows_queue) >= PROXY_WINDOWS_QUEUED
+                len(self.window_lane.queue) >= PROXY_WINDOWS_QUEUED
                 or any(
                     (w.project, w.key) == (project, key) and _covers((w.lo, w.hi), want, dur_cs)
-                    for w in self.windows_queue
+                    for w in self.window_lane.queue
                 )
             )
             if mine and not run.cancelled and _covers((run.lo, run.hi), want, dur_cs):
@@ -470,16 +476,11 @@ class Media:
             elif waits:
                 pass  # a queued one covers it, or the queue is full
             elif len(covered) == len(gone):
-                self.windows_queue.append(win)
+                self.window_lane.queue.append(win)
                 failed = self.window_failures.get((project, key), {})
                 for sp in [sp for sp in failed if sp[0] < win.hi and win.lo < sp[1]]:
                     del failed[sp]  # asked for again: no longer a failure to show
-                if self.window_lane is None:
-                    self.window_lane = threading.Thread(
-                        target=self._window_lane, name="cutpoint-proxy-window", daemon=True
-                    )
-                    self.window_lane.start()
-                self.window_wake.notify()
+                self.window_lane.wake()
             if (
                 not queue
                 and run is not None
@@ -491,23 +492,6 @@ class Media:
             threading.Thread(
                 target=procs.kill_tree, args=(kill, procs.SOFT_STOP_S), daemon=True
             ).start()
-
-    def _window_lane(self) -> None:
-        """The window proxies' one worker, beside the whole-source lane."""
-        while True:
-            with self.lock:
-                while not self.windows_queue and not self.closing:
-                    self.window_wake.wait()
-                if self.closing:
-                    return
-                win = self.window_running = self.windows_queue.popleft()
-            try:
-                self._build_window(win)
-            except Exception:  # the lane's one thread must outlive any window (#1085)
-                logger.exception("window proxy lane: a window failed")
-            finally:
-                with self.lock:
-                    self.window_running = None
 
     def _build_window(self, win: ProxyWindow) -> None:
         p, name = win.project, f"{UI_DIR}/proxy/{win.name}"
@@ -610,9 +594,9 @@ class Media:
             if done:
                 self.retired.setdefault((project, key), {}).update(done)
             self.window_failures.pop((project, key), None)
-            for win in [w for w in self.windows_queue if (w.project, w.key) == (project, key)]:
-                self.windows_queue.remove(win)
-            run = self.window_running
+            for win in [w for w in self.window_lane.queue if (w.project, w.key) == (project, key)]:
+                self.window_lane.queue.remove(win)
+            run = self.window_lane.running
             if run is not None and (run.project, run.key) == (project, key):
                 run.cancelled = True
                 kill, run.proc = run.proc, None
@@ -653,7 +637,7 @@ class Media:
         source's content key if known (see :meth:`_lookup`)."""
         with self.lock:
             busy = [
-                w for w in (self.window_running, *self.windows_queue)
+                w for w in (self.window_lane.running, *self.window_lane.queue)
                 if w is not None and w.project == project and not w.cancelled
             ]  # fmt: skip
             any_ready = any(p == project and r for (p, _), r in self.windows.items())
@@ -662,7 +646,7 @@ class Media:
         key = self._proxy_key(key or self.key(remap_source(path)))
         with self.lock:
             ready = sorted(self.windows.get((project, key), {}))
-            run = self.window_running
+            run = self.window_lane.running
         pending = [(w.lo, w.hi, "encoding" if w is run else "queued") for w in busy if w.key == key]
         return ready, pending
 
@@ -724,7 +708,7 @@ class Media:
             }
             busy |= {
                 f"{w.name}.part.mp4"
-                for w in (self.window_running, *self.windows_queue)
+                for w in (self.window_lane.running, *self.window_lane.queue)
                 if w is not None and w.project == project
             }
             drop += [f for f in folder.glob("*.part.mp4") if f.name not in busy]
@@ -1126,7 +1110,7 @@ class Media:
                 q == project and st == "preparing" for (q, _), st in self.proxies.items()
             ) or any(
                 w is not None and w.project == project
-                for w in (self.window_running, *self.windows_queue)
+                for w in (self.window_lane.running, *self.window_lane.queue)
             )
 
     def forget(self, project: Path) -> None:
@@ -1150,8 +1134,7 @@ class Media:
         with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this
             self.closing = True
             running = list(self.procs)
-            self.windows_queue.clear()
-            self.window_wake.notify_all()  # the window lane ends
+            self.window_lane.close()  # the window lane ends
         self.pool.shutdown(wait=False, cancel_futures=True)
         self.envelope_pool.shutdown(wait=False, cancel_futures=True)
         for proc in running:

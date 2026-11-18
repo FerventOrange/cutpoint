@@ -21,6 +21,7 @@ from cutpoint import cache, config, procs, ui
 from cutpoint.assistant import providers
 from cutpoint.assistant import watch as ai_watch
 from cutpoint.errors import FFmpegError
+from cutpoint.ui.pano_previews import PanoPreview
 from test_assistant_routes import HostedFake, use
 
 pytestmark = pytest.mark.usefixtures("no_keys")  # no real key variable or keyring
@@ -131,15 +132,45 @@ def test_the_window_lane_outlives_a_window_that_raises(
         second.set()
 
     monkeypatch.setattr(ui.Media, "_build_window", build)
-    media.window_lane = threading.Thread(target=media._window_lane, daemon=True)
-    media.window_lane.start()
+    lane = media.window_lane
     with media.lock:
-        media.windows_queue.append(ui.ProxyWindow(p, src, "k" * 16, 0, 500, 1, ""))
-        media.windows_queue.append(ui.ProxyWindow(p, src, "k" * 16, 500, 1000, 1, ""))
-        media.window_wake.notify()
+        lane.queue.append(ui.ProxyWindow(p, src, "k" * 16, 0, 500, 1, ""))
+        lane.queue.append(ui.ProxyWindow(p, src, "k" * 16, 500, 1000, 1, ""))
+        lane.wake()
     assert second.wait(WAIT)  # the lane's thread died at the first one before
     assert built == [0, 500]
-    assert media.window_lane.is_alive()
+    assert lane.thread is not None
+    assert lane.thread.is_alive()
+
+
+def test_the_preview_lane_outlives_a_render_that_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    rendered: list[str] = []
+    second = threading.Event()
+
+    def render(_self: ui.PanoPreviews, job: Any) -> None:
+        rendered.append(job.cid)
+        if job.cid == "h001":
+            raise RuntimeError("unexpected")
+        second.set()
+
+    monkeypatch.setattr(ui.PanoPreviews, "_render", render)
+    previews = ui.PanoPreviews()
+    info = {"ident": "i", "clip": None, "source": "s.insv", "start": 0.0, "end": 1.0}
+    lane = previews.lane
+    try:
+        with caplog.at_level(logging.ERROR), previews.lock:
+            lane.queue.append(PanoPreview(tmp_path, "h001", info))
+            lane.queue.append(PanoPreview(tmp_path, "h002", info))
+            lane.wake()
+        assert second.wait(WAIT)  # the lane's thread died at the first one before
+        assert rendered == ["h001", "h002"]
+        assert lane.thread is not None
+        assert lane.thread.is_alive()
+        assert "director preview lane: h001 failed" in caplog.text
+    finally:
+        previews.shutdown()
 
 
 def test_an_ffmpeg_error_while_picking_the_gpu_encoder_falls_back_to_libx264(

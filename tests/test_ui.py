@@ -5430,7 +5430,7 @@ def wait_until(cond: Callable[[], object], timeout: float = 10, what: str = "") 
 
 def lane_idle(media: ui.Media) -> bool:
     with media.lock:
-        return not media.windows_queue and media.window_running is None
+        return not media.window_lane.queue and media.window_lane.running is None
 
 
 @pytest.fixture
@@ -5627,14 +5627,14 @@ def test_shutdown_stops_the_window_encode_and_its_lane_and_starts_no_more(
     focus(media, p, src, 125, 135)  # queued
     media.shutdown()
     assert window_ffmpeg.killed == [running]
-    assert media.window_lane is not None
-    media.window_lane.join(10)
-    assert not media.window_lane.is_alive()
+    assert media.window_lane.thread is not None
+    media.window_lane.thread.join(10)
+    assert not media.window_lane.thread.is_alive()
     focus(media, p, src, 400, 410)
     win = ui.ProxyWindow(p, src, "k" * 16, 0, 500, 1, "")
     assert media._encode(["ffmpeg", "-ss", "0"], win)[0] != 0
     assert len(window_ffmpeg.procs) == 1
-    assert not media.windows_queue
+    assert not media.window_lane.queue
     assert not list(p.rglob("*.part.mp4"))
 
 
@@ -5731,8 +5731,8 @@ def test_a_cancelled_running_encode_does_not_count_as_covering_the_focus(
     focus(media, p, src, 100, 110)
     first = window_ffmpeg.next_proc(0)
     with media.lock:
-        assert media.window_running is not None
-        media.window_running.cancelled = True  # e.g. its source's whole proxy landed
+        assert media.window_lane.running is not None
+        media.window_lane.running.cancelled = True  # e.g. its source's whole proxy landed
     focus(media, p, src, 102, 108)  # inside the running window's range
     first.finish(0)
     second = window_ffmpeg.next_proc(1)
@@ -5783,7 +5783,7 @@ def test_prepare_without_a_window_keeps_the_whole_source_behaviour(
     assert (res.status_code, res.json()) == (200, {"status": "preparing"})
     assert len(whole_builds) == 1
     assert not window_ffmpeg.procs
-    assert client.app.state.media.window_lane is None
+    assert client.app.state.media.window_lane.thread is None
 
 
 @pytest.mark.parametrize(
@@ -6057,7 +6057,7 @@ def test_the_listing_of_a_source_the_browser_plays_has_no_proxy_and_no_progress(
 
 def queued_starts(media: ui.Media) -> list[float]:
     with media.lock:
-        return [w.lo / 100 for w in media.windows_queue]
+        return [w.lo / 100 for w in media.window_lane.queue]
 
 
 def test_queued_windows_wait_in_order_behind_the_running_one_and_kill_nothing(
