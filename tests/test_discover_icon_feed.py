@@ -3,6 +3,7 @@ is a feed even with one row at a time and few names (synthetic OCR frames, inven
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +11,13 @@ import pytest
 
 from cutpoint.events import discover
 from cutpoint.events.discover import DiscoverParams, cluster_regions
+from ocr_helpers import box, text_frame
 
 NAMES = ["Alder", "Boxer7", "Kip_V2", "Nova", "Quill", "Orrin"]
 VERBS, TARGETS = ["Capture", "Defend", "Hold"], ["Alpha", "Bravo", "Charlie", "Delta"]
 
 
-def _box(text: str, x: int, y: int, w: int, h: int = 28) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
+_box = partial(box, h=28)  # this file's boxes are 28 px high
 
 
 def _frames(gap: int, line: str = "names") -> list[dict[str, Any]]:
@@ -39,10 +40,7 @@ def _frames(gap: int, line: str = "names") -> list[dict[str, Any]]:
                     boxes += [_box(a, 1550, 285, 110), _box(v, 1660 + gap, 285, 110)]
                 else:  # one plain text: a notice, not an icon line
                     boxes.append(_box(f"{a} has left the game", 1550, 285, 280))
-            out.append(
-                {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "source": "rec.mp4", "burst": b}
-                | {"k": k, "frame": f"b{b:03d}_{k}.jpg", "boxes": boxes}
-            )
+            out.append(text_frame("rec.mp4", b, k, boxes))
     return out
 
 

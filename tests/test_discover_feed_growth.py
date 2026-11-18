@@ -8,14 +8,12 @@ from typing import Any
 import pytest
 
 from cutpoint.events.discover import FEED_GROW_MAX, DiscoverParams, cluster_regions
+from ocr_helpers import FEED_NAMES, text_frame
+from ocr_helpers import box as _box
 
-NAMES = ["Ash", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
+NAMES = [*FEED_NAMES]
 NAMES += ["Yarrow", "Zeb", "Pell", "Ulric", "Dace", "Fenn"]
 PITCH = 30  # feed row pitch (reference px)
-
-
-def _box(text: str, x: int, y: int, w: int = 160, h: int = 20) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
 
 
 def _row(r: int, b: int, k: int) -> dict[str, Any]:
@@ -33,11 +31,7 @@ def _frames(rows: int, rare: int, rare_bursts: set[int], top: str | None = None)
             boxes = [_row(r, b, k) for r in range(rows) if r >= rare or b in rare_bursts]
             if top:
                 boxes.append(_box(top, 1500, 40 - PITCH))
-            out.append(
-                {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "t": b * 60 + k * 1.5}
-                | {"source": "rec.mp4", "burst": b, "k": k, "frame": f"b{b:03d}_{k}.jpg"}
-                | {"boxes": boxes}
-            )
+            out.append(text_frame("rec.mp4", b, k, boxes) | {"t": b * 60 + k * 1.5})
     return out
 
 

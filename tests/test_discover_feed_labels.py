@@ -20,24 +20,14 @@ from cutpoint.events.discover import (
     proposals_to_regions,
 )
 from cutpoint.events.regions import Region
+from ocr_helpers import box as _box
+from ocr_helpers import text_frame
 
 NAMES = ["Alder", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
 
 
-def _box(text: str, x: int, y: int, w: int, h: int) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
-
-
 def _frame(b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "id": f"rec.mp4@{b * 60 + k * 1.5:.1f}",
-        "source": "rec.mp4",
-        "t": b * 60 + k * 1.5,
-        "burst": b,
-        "k": k,
-        "frame": f"b{b:03d}_{k}.jpg",
-        "boxes": boxes,
-    }
+    return text_frame("rec.mp4", b, k, boxes) | {"t": b * 60 + k * 1.5}
 
 
 def _two_style_frame(b: int, k: int, chat_h: int = 36) -> dict[str, Any]:

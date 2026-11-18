@@ -4,6 +4,7 @@ and read as ``score`` events (invented boxes, values and names only)."""
 from __future__ import annotations
 
 import json
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -40,6 +41,7 @@ from cutpoint.events.killfeed import (
 )
 from cutpoint.events.regions import Region, preset_from_dict
 from hud_fixtures import verbfeed, write_preset
+from ocr_helpers import box, text_frame
 
 REF = (100.0, 0.0, 1.0, 1.0)  # a crop at x 100 of a 1920x1080 frame
 
@@ -466,8 +468,7 @@ def test_region_key_and_preset_round_trip() -> None:
 # --------------------------------------------------------------------------- discovery
 
 
-def _b(text: str, x: int, y: int, w: int = 30, h: int = 36) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
+_b = partial(box, w=30, h=36)  # this file's counter boxes: 30 x 36 px
 
 
 def _frame(b: int, k: int, slots: int = 1) -> dict[str, Any]:
@@ -484,10 +485,7 @@ def _frame(b: int, k: int, slots: int = 1) -> dict[str, Any]:
     ]
     if slots > 1:
         boxes += [_b(str(b // 13), 1000 + 200 * s, 30) for s in range(slots - 1)]
-    return {"id": f"rec.mp4@{b * 60 + k * 1.5:.1f}", "source": "rec.mp4", "burst": b, "k": k} | {
-        "frame": f"b{b:03d}_{k}.jpg",
-        "boxes": boxes,
-    }
+    return text_frame("rec.mp4", b, k, boxes)
 
 
 def _frames(slots: int = 1) -> list[dict[str, Any]]:

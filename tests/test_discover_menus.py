@@ -6,12 +6,10 @@ from typing import Any
 
 from cutpoint.events import discover
 from cutpoint.events.discover import DiscoverParams, cluster_regions, gameplay_frames
+from ocr_helpers import FEED_NAMES, text_frame
+from ocr_helpers import box as _box
 
-NAMES = ["Ash", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
-
-
-def _box(text: str, x: int, y: int, w: int = 160, h: int = 20) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
+NAMES = FEED_NAMES
 
 
 def _busy_hud() -> list[dict[str, Any]]:
@@ -39,11 +37,7 @@ def _scoreboard() -> list[dict[str, Any]]:
 
 
 def _frame(source: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"id": f"{source}@{b * 60 + k * 1.5:.1f}", "source": source, "burst": b, "k": k} | {
-        "src_key": source,
-        "frame": f"b{b:03d}_{k}.jpg",
-        "boxes": boxes,
-    }
+    return text_frame(source, b, k, boxes) | {"src_key": source}
 
 
 def test_busy_hud_stays_and_scoreboard_goes() -> None:

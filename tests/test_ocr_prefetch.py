@@ -5,7 +5,6 @@ order, progress forwarded, errors re-raised, the off switches, and ``decode_raw(
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 import os
 import subprocess
@@ -25,6 +24,7 @@ from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
 from cutpoint.styles import get_style
 from events_fakes import stub_run_events
+from ocr_helpers import progress_lines
 
 
 class _Stop(Exception):
@@ -299,11 +299,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
 
 
 def _lines(capsys) -> list[dict]:
-    return [
-        {k: v for k, v in json.loads(x.removeprefix("PROGRESS ")).items() if k != "elapsed_s"}
-        for x in capsys.readouterr().err.splitlines()
-        if x.startswith("PROGRESS ")
-    ]
+    return progress_lines(capsys, drop=("elapsed_s",))
 
 
 def test_run_events_gives_the_same_events_and_progress_with_the_prefetch(

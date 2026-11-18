@@ -105,3 +105,33 @@ def ocr_cache_files(folder: Path) -> dict[str, Any]:
             )
         out[p.relative_to(folder).as_posix()] = data
     return out
+
+
+# ---- OCR record builders of the discovery tests (plain dicts, no image) ----
+FEED_NAMES = ["Ash", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
+
+
+def box(text: str, x: int, y: int, w: int = 160, h: int = 20) -> dict[str, Any]:
+    """One OCR box record with its top left at ``(x, y)``."""
+    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
+
+
+def text_frame(source: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
+    """One OCR frame record: burst ``b``, frame ``k`` of ``source`` (60 s bursts, 1.5 s apart)."""
+    return {
+        "id": f"{source}@{b * 60 + k * 1.5:.1f}",
+        "source": source,
+        "burst": b,
+        "k": k,
+        "frame": f"b{b:03d}_{k}.jpg",
+        "boxes": boxes,
+    }
+
+
+def progress_lines(capsys: Any, drop: tuple[str, ...] = ()) -> list[dict]:
+    """The ``PROGRESS`` lines printed to stderr so far (``drop``: keys left out)."""
+    return [
+        {k: v for k, v in json.loads(x.removeprefix("PROGRESS ")).items() if k not in drop}
+        for x in capsys.readouterr().err.splitlines()
+        if x.startswith("PROGRESS ")
+    ]

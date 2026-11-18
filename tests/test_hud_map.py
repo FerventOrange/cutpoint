@@ -18,13 +18,10 @@ import pytest
 from cutpoint.events import discover, feed_labels, hud_map
 from cutpoint.events.feed_labels import StopLabelling, VisionCalls
 from cutpoint.events.regions import Region
+from ocr_helpers import box as _box
 
 NAMES = ["Alder", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
 FEED = (1500, 100, 380, 140)  # a kill feed's rectangle in reference px
-
-
-def _box(text: str, x: int, y: int, w: int, h: int) -> dict[str, Any]:
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
 
 
 def _frames(
