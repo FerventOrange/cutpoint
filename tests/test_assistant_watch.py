@@ -26,6 +26,7 @@ from cutpoint.assistant.providers import (
     Reply,
     XAIProvider,
 )
+from overlap import Overlap
 from test_assistant import FakeProvider, _chunks, _Resp, call, durations
 from test_assistant_byo import (
     KEY,
@@ -778,22 +779,13 @@ def test_a_guess_viewed_by_a_model_that_then_refuses_images_is_not_confirmed(
 def test_a_sheets_frames_are_grabbed_at_once_in_time_order(proj_dir: Path, src: Path) -> None:
     """#946: the frames of one sheet are grabbed GRAB_WORKERS at a time; the sheet is the
     one the sequential grabs built, and a failed grab still raises."""
-    import threading  # noqa: PLC0415
-    import time  # noqa: PLC0415
-
     from cutpoint.errors import FFmpegError  # noqa: PLC0415
 
-    lock = threading.Lock()
-    live = {"now": 0, "max": 0}
+    live = Overlap()
     fail: list[float] = []
 
     def grab(_src: Path, t: float) -> bytes:
-        with lock:
-            live["now"] += 1
-            live["max"] = max(live["max"], live["now"])
-        time.sleep(0.05)
-        with lock:
-            live["now"] -= 1
+        live.hit()
         if t in fail:
             raise FFmpegError("boom")
         return jpeg(640, 360 + 2 * int(t))  # a size per time: the order shows in the sheet
@@ -802,16 +794,18 @@ def test_a_sheets_frames_are_grabbed_at_once_in_time_order(proj_dir: Path, src: 
     for workers in (1, watch.GRAB_WORKERS):
         watch.GRAB_WORKERS, was = workers, watch.GRAB_WORKERS
         try:
-            live.update(now=0, max=0)
+            live.reset(expect=workers > 1)
             sheets[workers] = (
                 viewer(proj_dir, FakeProvider([]), src, grab).sheet(
                     f"w{workers}", "/v/a.mp4", 10.0, 20.0
                 )[0],
-                live["max"],
+                live.max,
+                live.why(),
             )
         finally:
             watch.GRAB_WORKERS = was
-    assert sheets[1][1] == 1 and sheets[watch.GRAB_WORKERS][1] > 1
+    assert sheets[1][1] == 1, sheets[1][2]
+    assert sheets[watch.GRAB_WORKERS][1] > 1, sheets[watch.GRAB_WORKERS][2]
     assert sheets[1][0] == sheets[watch.GRAB_WORKERS][0]
     fail.append(watch.frame_times(10.0, 20.0)[2])
     with pytest.raises(FFmpegError):

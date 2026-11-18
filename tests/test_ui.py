@@ -69,12 +69,16 @@ from cutpoint.pano import director as pano_director
 from cutpoint.pano import project as pano_project
 from cutpoint.pano import render as pano_render
 from cutpoint.pano import stitch as pano_stitch
+from cutpoint.ui import media as media_module
 from cutpoint.ui.routes import assistant as assistant_routes
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
 from proxy_helpers import FakeLauncher, not_running
 
 PORT = 8765
+# The longest wait for a real process to start, print, be cancelled or die: generous, as two
+# interpreter starts can be slow under a loaded suite; a passing run never waits it out.
+PROC_WAIT_S = 60.0
 
 
 def job_args(args: list[str]) -> list[str]:
@@ -2426,32 +2430,35 @@ def test_analyze_follows_settings_saved_just_before(
 def test_one_job_at_a_time_and_cancel_kills_the_process_group(tmp_path: Path) -> None:
     script = (
         "import subprocess, sys, time\n"
-        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        # longer than PROC_WAIT_S: a child left alive cannot pass the death check by exiting
+        "c = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(600)'])\n"
         "print('child', c.pid, flush=True)\n"
-        "time.sleep(60)\n"
+        "time.sleep(600)\n"
     )
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", [sys.executable, "-c", script])
-    deadline = time.time() + 60  # two interpreter starts can be slow under a loaded suite
-    while not job.logs and job.status == "running" and time.time() < deadline:
-        time.sleep(0.05)
-    assert job.logs, (job.status, job.error)
-    child = int(job.logs[0].split()[1])
-    with pytest.raises(HTTPException) as busy:
-        jobs.start("p", "clips", [sys.executable, "-c", "pass"])
-    assert busy.value.status_code == 409
-    cancelled = jobs.cancel(job.id)
-    deadline = (
-        time.time() + 10
-    )  # cancel returns at once; the killer thread and the watcher finish in the background
-    while cancelled.status != "cancelled" and time.time() < deadline:
-        time.sleep(0.05)
-    assert cancelled.status == "cancelled"
-    assert job.proc is not None and job.proc.poll() is not None
-    if sys.platform.startswith("linux"):  # a reaped-or-zombie child counts as dead
-        time.sleep(0.2)
-        stat = Path(f"/proc/{child}/stat")
-        assert not stat.exists() or stat.read_text().rsplit(")", 1)[1].split()[0] == "Z"
+    child = 0
+    try:
+        # two interpreter starts can be slow under a loaded suite
+        wait_until(lambda: job.logs or job.status != "running", PROC_WAIT_S, "the child's pid line")
+        assert job.logs, (job.status, job.error)
+        child = int(job.logs[0].split()[1])
+        with pytest.raises(HTTPException) as busy:
+            jobs.start("p", "clips", [sys.executable, "-c", "pass"])
+        assert busy.value.status_code == 409
+        cancelled = jobs.cancel(job.id)
+        # cancel returns at once; the killer thread and the watcher finish in the background
+        wait_until(lambda: cancelled.status == "cancelled", PROC_WAIT_S, "the job to be cancelled")
+        assert job.proc is not None and job.proc.poll() is not None
+        if sys.platform.startswith("linux"):  # a reaped-or-zombie child counts as dead
+            wait_until(lambda: _linux_dead(child), PROC_WAIT_S, f"the child {child} to die")
+    finally:  # what a failed cancel left running
+        if child and sys.platform.startswith("linux") and not _linux_dead(child):
+            os.kill(child, signal.SIGKILL)
+        elif child and os.name == "nt" and _pid_alive(child):
+            subprocess.run(["taskkill", "/PID", str(child), "/T", "/F"], capture_output=True)
+        if job.proc is not None and job.proc.poll() is None:
+            procs.kill_tree(job.proc, 0.0)
     failing = jobs.start(
         "p", "analyze", [sys.executable, "-c", "print('12:00:00 ERROR boom')\nraise SystemExit(1)"]
     )
@@ -2610,6 +2617,15 @@ def test_jobs_shutdown_does_not_term_a_cancelling_job_twice(
     assert job.cancelled
 
 
+def _linux_dead(pid: int) -> bool:
+    """``pid`` is gone, or a zombie (dead, not yet reaped)."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return True
+    return stat.rsplit(")", 1)[1].split()[0] == "Z"
+
+
 def _pid_alive(pid: int) -> bool:
     import ctypes  # noqa: PLC0415 - Windows only
 
@@ -2631,39 +2647,38 @@ def test_windows_cancel_ends_a_grandchild_that_ignores_ctrl_break() -> None:
         "import signal, time\n"
         "signal.signal(signal.SIGBREAK, signal.SIG_IGN)\n"
         "print('ready', flush=True)\n"
-        "time.sleep(60)\n"
+        # longer than PROC_WAIT_S: a child left alive cannot pass the death check by exiting
+        "time.sleep(600)\n"
     )
     leader = (
         "import subprocess, sys, time\n"
         f"c = subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
         "print('child', c.pid, flush=True)\n"
-        "time.sleep(60)\n"
+        "time.sleep(600)\n"
     )
     jobs = ui.Jobs()
     job = jobs.start("p", "analyze", [sys.executable, "-c", leader])
     child = 0
     try:
-        deadline = time.time() + 60  # two interpreter starts can be slow under a loaded suite
-        while (
-            job.status == "running"
-            and time.time() < deadline
-            and not any(line == "ready" for line in list(job.logs))
-        ):
-            time.sleep(0.05)
+        # two interpreter starts can be slow under a loaded suite
+        wait_until(
+            lambda: job.status != "running" or "ready" in list(job.logs),
+            PROC_WAIT_S,
+            "the grandchild's ready line",
+        )
         logs = list(job.logs)
         assert "ready" in logs, (job.status, job.error, logs)
         child = int(next(line for line in logs if line.startswith("child")).split()[1])
         cancelled = jobs.cancel(job.id)
         # the leader dies on the event at once (only the grandchild ignores it), so the job
-        # object kill follows promptly; JOB_STOP_S bounds the wait, +20 s for the watcher to see EOF
-        deadline = time.time() + procs.JOB_STOP_S + 20
-        while cancelled.status != "cancelled" and time.time() < deadline:
-            time.sleep(0.05)
-        assert cancelled.status == "cancelled"
-        deadline = time.time() + 5
-        while _pid_alive(child) and time.time() < deadline:
-            time.sleep(0.05)
-        assert not _pid_alive(child)
+        # object kill follows promptly; JOB_STOP_S bounds the wait, plus time for the watcher
+        # to see EOF
+        wait_until(
+            lambda: cancelled.status == "cancelled",
+            procs.JOB_STOP_S + PROC_WAIT_S,
+            "the job to be cancelled",
+        )
+        wait_until(lambda: not _pid_alive(child), PROC_WAIT_S, f"the grandchild {child} to die")
     finally:
         if child and _pid_alive(child):
             subprocess.run(["taskkill", "/PID", str(child), "/T", "/F"], capture_output=True)
@@ -3228,21 +3243,26 @@ def test_sighup_right_after_a_request_stops_the_ui_and_frees_its_port(tmp_path: 
         banner: list[str] = []  # read in a thread: a child stuck before its banner fails the test
         reader = threading.Thread(target=lambda: banner.append(stdout.readline()), daemon=True)
         reader.start()
-        reader.join(timeout=30)
+        reader.join(timeout=PROC_WAIT_S)
         assert banner and banner[0].startswith("Cutpoint UI: http://127.0.0.1:"), banner
-        # The banner comes just before the handler is installed; an answer comes after it.
-        deadline = time.monotonic() + 30
-        while True:
+
+        def answers() -> bool:
             try:
                 urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1).close()
-                break
             except urllib.error.HTTPError:
-                break  # any answer will do
+                pass  # any answer will do
             except OSError:
-                assert time.monotonic() < deadline, "the server never answered"
-                time.sleep(0.05)
+                return False
+            return True
+
+        # The banner comes just before the handler is installed; an answer comes after it.
+        wait_until(answers, PROC_WAIT_S, "the server to answer")
         proc.send_signal(signal.SIGHUP)  # no idle wait: uvicorn may still be in the request
-        assert proc.wait(timeout=30) == 1, (tmp_path / "ui.err").read_text()
+        try:
+            code = proc.wait(timeout=PROC_WAIT_S)
+        except subprocess.TimeoutExpired:
+            pytest.fail(f"cutpoint ui still runs {PROC_WAIT_S:.0f} s after SIGHUP")
+        assert code == 1, (tmp_path / "ui.err").read_text()
     finally:
         if proc.poll() is None:
             proc.kill()
@@ -5342,10 +5362,13 @@ class FakeWindowFfmpeg:
         return self.procs[n]
 
 
-def wait_until(cond: Callable[[], object], timeout: float = 10) -> None:
+def wait_until(cond: Callable[[], object], timeout: float = 10, what: str = "") -> None:
+    """Poll ``cond`` until it holds; fails after ``timeout`` s, saying ``what`` it waited for."""
     deadline = time.monotonic() + timeout
     while not cond():
-        assert time.monotonic() < deadline, "timed out"
+        assert time.monotonic() < deadline, f"timed out after {timeout:.0f} s" + (
+            f": {what}" if what else ""
+        )
         time.sleep(0.01)
 
 
@@ -9221,11 +9244,11 @@ def test_an_envelope_decode_over_the_time_limit_is_killed_and_reported(
         # the page gets the generic 500; the reason is in the server log
         assert any("took longer than" in r.getMessage() for r in caplog.records)
         assert len(started) == 1
-        deadline = time.monotonic() + 30
-        while (media.procs or started[0].poll() is None) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not media.procs
-        assert started[0].poll() is not None  # no process left behind
+        wait_until(
+            lambda: not media.procs and started[0].poll() is not None,
+            PROC_WAIT_S,
+            "the timed-out decode's process to end",
+        )  # no process left behind
         assert not folder.exists() or not list(folder.iterdir())
     finally:
         for proc in started:
@@ -9256,16 +9279,13 @@ def test_shutdown_stops_an_envelope_decode_in_flight(
     url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
     try:
         assert client.get(url).status_code == 202
-        deadline = time.monotonic() + 30
-        while not (started and media.procs) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert started
+        wait_until(lambda: started and media.procs, PROC_WAIT_S, "the decode to start")
         media.shutdown()
-        deadline = time.monotonic() + 30
-        while (media.procs or started[0].poll() is None) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not media.procs
-        assert started[0].poll() is not None  # the decode's ffmpeg went with the server
+        wait_until(
+            lambda: not media.procs and started[0].poll() is not None,
+            PROC_WAIT_S,
+            "the decode's process to end with the server",
+        )
     finally:
         for proc in started:
             if proc.poll() is None:
@@ -9321,7 +9341,19 @@ def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
         release.wait(30)
         return real_folder(project, name)
 
-    patch_ui(monkeypatch, "ENVELOPE_STALE_S", 0.3)
+    class Clock:
+        """The media module's ``time``: ``monotonic()`` jumps when the test says so."""
+
+        skip = 0.0
+
+        def monotonic(self) -> float:
+            return time.monotonic() + self.skip
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(time, name)
+
+    clock = Clock()
+    monkeypatch.setattr(media_module, "time", clock)
     patch_ui(monkeypatch, "_ui_folder", stuck)
     patch_ui(
         monkeypatch, "spawn", lambda args, **kw: (spawned.append(args), real_spawn(args, **kw))[1]
@@ -9332,13 +9364,10 @@ def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
         assert media.envelope(project, str(first)) == {"pending": True}
         assert started.wait(30)  # the first holds the worker
         assert media.envelope(project, str(second)) == {"pending": True}  # queued behind it
-        time.sleep(0.6)  # the page moved on: nobody asks for the second again
+        clock.skip = ui.ENVELOPE_STALE_S + 1  # the page moved on: nobody asks for the second
     finally:
         release.set()
-    deadline = time.monotonic() + 60
-    while media.envelopes_running and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert not media.envelopes_running
+    wait_until(lambda: not media.envelopes_running, 60, "the envelope worker to finish")
     assert len(spawned) == 1  # only the first was decoded
     assert len(list(folder.glob("*.json"))) == 1
     assert not media.envelope_asked

@@ -153,9 +153,10 @@ def test_a_host_path_after_other_text_is_still_redacted(text: str) -> None:
 
 def test_many_apostrophes_do_not_make_the_cleaning_slow() -> None:
     text = "'C:\\a'b" * 20000
-    start = time.perf_counter()
+    # this thread's CPU time: other processes on a loaded machine do not count, backtracking does
+    start = time.thread_time()
     errtext.no_paths(text)
-    assert time.perf_counter() - start < 2
+    assert time.thread_time() - start < 2
 
 
 def test_a_single_quoted_path_with_very_long_parts_still_loses_its_folders() -> None:

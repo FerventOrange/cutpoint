@@ -1465,11 +1465,31 @@ def test_run_raises_a_cleanup_failure_after_a_successful_run(
         cliproxy.run()
 
 
-class _StartingGuardian:
-    """A supervisor that stays alive, or exits with ``rc`` after ``polls`` polls."""
+class _Clock:
+    """``cliproxy.time`` in a test: ``monotonic()`` moves only when a fake wait blocks."""
 
-    def __init__(self, *, rc: int | None = None, polls: int = 0, wait: float = 0.0) -> None:
-        self.rc, self.polls, self.delay = rc, polls, wait
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.start = self.now = 1000.0
+        monkeypatch.setattr(cliproxy, "time", self)
+
+    def monotonic(self) -> float:
+        return self.now
+
+    @property
+    def elapsed(self) -> float:
+        return self.now - self.start
+
+
+class _StartingGuardian:
+    """A supervisor that stays alive, or exits with ``rc`` after ``polls`` polls. A wait
+    returns at once; with a ``clock`` it moves it on by its whole timeout, as a real wait on a
+    guardian that does not exit."""
+
+    def __init__(
+        self, *, rc: int | None = None, polls: int = 0, clock: _Clock | None = None
+    ) -> None:
+        self.rc, self.polls, self.clock = rc, polls, clock
+        self.waits = 0
 
     def poll(self) -> int | None:
         if self.rc is not None and self.polls <= 0:
@@ -1478,7 +1498,9 @@ class _StartingGuardian:
         return None
 
     def wait(self, timeout: float | None = None) -> int:
-        time.sleep(min(self.delay, timeout or 0))
+        self.waits += 1
+        if self.clock is not None:
+            self.clock.now += timeout or 0
         raise subprocess.TimeoutExpired("guardian", timeout or 0)
 
 
@@ -1508,11 +1530,14 @@ def test_startup_keeps_waiting_while_a_slow_supervisor_is_alive(
 def test_startup_fails_fast_when_the_supervisor_exits(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
     monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", _not_ready(calls))
-    started = time.monotonic()
+    clock = _Clock(monkeypatch)
+    guardian = _StartingGuardian(rc=3, polls=2, clock=clock)
     with pytest.raises(cliproxy.ProxyError, match="non-zero code 3 before the proxy was ready"):
-        cliproxy._wait_until_ready(_StartingGuardian(rc=3, polls=2))
+        cliproxy._wait_until_ready(guardian)
     assert len(calls) == 2
-    assert time.monotonic() - started < 5
+    # one retry wait per refused probe, then the exit is seen: long before the deadline
+    assert guardian.waits == 2 and clock.elapsed == pytest.approx(2 * cliproxy._STARTUP_RETRY)
+    assert clock.elapsed < cliproxy._STARTUP_TIMEOUT
 
 
 def test_startup_returns_when_the_supervisor_exits_cleanly(
@@ -1525,12 +1550,14 @@ def test_startup_returns_when_the_supervisor_exits_cleanly(
 def test_startup_gives_up_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[int] = []
     monkeypatch.setattr(cliproxy, "_ensure_credential_prefixes", _not_ready(calls))
-    monkeypatch.setattr(cliproxy, "_STARTUP_TIMEOUT", 0.3)
-    started = time.monotonic()
+    clock = _Clock(monkeypatch)
+    guardian = _StartingGuardian(clock=clock)
     with pytest.raises(cliproxy.ProxyConnectionError, match="did not become ready within"):
-        cliproxy._wait_until_ready(_StartingGuardian(wait=0.05))
-    assert 0.3 <= time.monotonic() - started < 5
-    assert len(calls) >= 2
+        cliproxy._wait_until_ready(guardian)
+    # it kept probing until the deadline, and gave up at the first probe past it
+    limit, step = cliproxy._STARTUP_TIMEOUT, cliproxy._STARTUP_RETRY
+    assert limit <= clock.elapsed < limit + step
+    assert len(calls) == guardian.waits + 1 >= 2
 
 
 def test_startup_deadline_is_about_two_minutes() -> None:

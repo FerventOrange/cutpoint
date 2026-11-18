@@ -16,6 +16,7 @@ import pytest
 from conftest import HOP, SLED, add_profile, set_config
 from cutpoint import activity, jsonout, paths, stylefiles, vision
 from cutpoint.errors import LowMemoryError
+from overlap import Overlap
 
 
 @pytest.fixture
@@ -1152,22 +1153,13 @@ def test_profile_verbs_on_the_command_line(home, tmp_path, capsys, monkeypatch) 
 def test_describe_grabs_the_frames_of_a_round_at_once_in_the_same_order(monkeypatch, fake_clip):
     """#946: the picks of a round are grabbed GRAB_WORKERS at a time; the frames, their order
     and the blank-skip are those of the one-at-a-time loop."""
-    import threading  # noqa: PLC0415
-    import time  # noqa: PLC0415
-
     emb = np.concatenate([fake_clip(f"caption:{k}") for k in "abcdefghijkl"])
     refs = [(Path("v.mp4"), float(t)) for t in range(len(emb))]
     monkeypatch.setattr(activity, "remap_source", lambda p: p)
-    lock = threading.Lock()
-    live = {"now": 0, "max": 0}
+    live = Overlap()
 
     def grab(p, t, w):
-        with lock:
-            live["now"] += 1
-            live["max"] = max(live["max"], live["now"])
-        time.sleep(0.05)
-        with lock:
-            live["now"] -= 1
+        live.hit()
         kind = "black" if t in (1.0, 5.0) else "scene"
         return _jpeg(kind) + int(t).to_bytes(2, "big")  # a trailing marker: JPEG ignores it
 
@@ -1175,11 +1167,12 @@ def test_describe_grabs_the_frames_of_a_round_at_once_in_the_same_order(monkeypa
     runs = {}
     for workers in (1, activity.GRAB_WORKERS):
         monkeypatch.setattr(activity, "GRAB_WORKERS", workers)
-        live.update(now=0, max=0)
+        live.reset(expect=workers > 1)
         shown, ask = _shown()
         activity.describe(emb, refs, ask)
-        runs[workers] = (list(shown), live["max"])
-    assert runs[1][1] == 1 and runs[activity.GRAB_WORKERS][1] > 1
+        runs[workers] = (list(shown), live.max, live.why())
+    assert runs[1][1] == 1, runs[1][2]
+    assert runs[activity.GRAB_WORKERS][1] > 1, runs[activity.GRAB_WORKERS][2]
     assert runs[1][0] == runs[activity.GRAB_WORKERS][0] and len(runs[1][0]) == 4
 
 

@@ -17,6 +17,7 @@ import pytest
 
 from cutpoint.events import discover, killfeed
 from cutpoint.events.regions import Region
+from overlap import Overlap
 
 
 def _fake_rapidocr(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
@@ -101,13 +102,19 @@ def test_the_ocr_layer_keeps_rapidocrs_rec_batch(monkeypatch: pytest.MonkeyPatch
 class _Lanes:
     """Fake RapidOCR engines that track how many run at once: detection finds one box
     per bright row band, recognition reads a strip as the text of its mean pixel value.
+    ``overlap`` counts the calls in flight; ``overlap.reset(expect=True)`` before a two-lane
+    run makes its first call wait for the second, so ``peak`` shows that they ran at once.
     Each call takes ``delay(img, use_det)`` seconds; by default the darkest strip is the
     slowest, so later inputs finish first."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
         self.busy: set[int] = set()
-        self.peak = 0
+        self.overlap = Overlap()
+
+    @property
+    def peak(self) -> int:
+        return self.overlap.max
 
     @staticmethod
     def delay(img: np.ndarray, use_det: bool) -> float:
@@ -124,8 +131,8 @@ class _Lanes:
                 with lanes.lock:
                     assert id(self) not in lanes.busy  # one thread per engine at a time
                     lanes.busy.add(id(self))
-                    lanes.peak = max(lanes.peak, len(lanes.busy))
-                time.sleep(lanes.delay(img, use_det))
+                with lanes.overlap.call():
+                    time.sleep(lanes.delay(img, use_det))
                 with lanes.lock:
                     lanes.busy.discard(id(self))
                 if not use_det:
@@ -149,11 +156,15 @@ def test_rows_recognised_at_once_in_order(monkeypatch: pytest.MonkeyPatch) -> No
         img[i * 25 : i * 25 + 20] = 10 * (i + 1)
     rows = [(i * 25 + 2, 14, i * 25 + 18, 50) for i in range(4)]
 
-    out = [killfeed.OcrEngine(lanes=n).read_rows(img, rows, 0.5, pad=2) for n in (1, 2)]
+    out, peaks = [], []
+    for n in (1, 2):
+        lanes.overlap.reset(expect=n == 2)
+        out.append(killfeed.OcrEngine(lanes=n).read_rows(img, rows, 0.5, pad=2))
+        peaks.append((lanes.peak, lanes.overlap.why()))
 
     assert out[0] == out[1]
     assert [text for _, text, _ in out[1]] == ["v10", "v20", "v30", "v40"]
-    assert lanes.peak == 2
+    assert [p for p, _ in peaks] == [1, 2], peaks
 
 
 def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
@@ -173,7 +184,10 @@ def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
 
     states = []
 
+    peaks = []
+
     def records(n: int) -> list[dict[str, Any]]:
+        lanes.overlap.reset(expect=n == 2)
         engine = killfeed.OcrEngine(lanes=n)
         size = (1920, 1080)
         reader = killfeed.OcrReader(
@@ -181,6 +195,7 @@ def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
         )
         recs = [reader.read(i, i / 3, f)[0].regions for i, f in enumerate(frames)]
         states.append(reader.state()[0])
+        peaks.append((lanes.peak, lanes.overlap.why()))
         return recs
 
     one, two = records(1), records(2)
@@ -191,7 +206,7 @@ def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
     assert [r["a"]["g"] for r in two] == ["det", "read", "keep"]
     assert [r["b"]["g"] for r in two] == ["det", "det", "read"]
     assert two[2]["b"]["items"]
-    assert lanes.peak == 2
+    assert [p for p, _ in peaks] == [1, 2], peaks
 
 
 @pytest.mark.slow
