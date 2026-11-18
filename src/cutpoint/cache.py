@@ -20,7 +20,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import paths
+from cutpoint import paths, state
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,8 @@ def source_dir(src: Path, offset: float = 0.0, *, create: bool = True) -> Path:
     """Cache folder for one source, keyed by absolute path + size + mtime.
 
     The path in the key is canonicalised through ``source_remap`` (see
-    :mod:`cutpoint.config`), so a remapped copy keys like its original.
+    :mod:`cutpoint.config`), so a remapped copy keys like its original. An existing
+    folder is marked used (:func:`mark_used`).
 
     Args:
         src: Source video.
@@ -45,6 +46,20 @@ def source_dir(src: Path, offset: float = 0.0, *, create: bool = True) -> Path:
             folder, so the cached audio/transcript of a part starts at 0.
         create: Make the folder when it is missing; False only names it (a check that
             must leave no folder behind, such as ``cutpoint rerank``'s readiness).
+    """
+    folder = source_folder(src, offset)
+    if create:
+        folder.mkdir(parents=True, exist_ok=True)
+    mark_used(folder)
+    return folder
+
+
+def source_folder(src: Path, offset: float = 0.0) -> Path:
+    """The cache folder :func:`source_dir` gives ``src``, only named: neither created nor
+    marked used (``cutpoint cache --prune`` maps projects to their folders with it).
+
+    Raises:
+        OSError: If ``src`` (or its ``source_remap`` copy) cannot be read.
     """
     from cutpoint.config import canonical_source, remap_source  # noqa: PLC0415
 
@@ -58,10 +73,30 @@ def source_dir(src: Path, offset: float = 0.0, *, create: bool = True) -> Path:
         key += f"|offset={offset:.3f}"
         tag = f"@{offset:.0f}"
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    folder = cache_root() / f"{src.stem[:40]}{tag}-{digest}"
-    if create:
-        folder.mkdir(parents=True, exist_ok=True)
-    return folder
+    return cache_root() / f"{src.stem[:40]}{tag}-{digest}"
+
+
+# ``cutpoint cache --prune`` reads when a source's cache folder was last used from its
+# modification time: source_dir sets it to now, once per process per this many seconds.
+USED_INTERVAL_S = 3600.0
+# path -> time.monotonic() of the last mark_used in this process
+_USED: dict[str, float] = state.register_container(__name__, "_USED", {})
+
+
+def mark_used(folder: Path) -> None:
+    """Set the modification time of the cache folder ``folder`` to now (it is in use, for
+    ``cutpoint cache --prune``), at most once per :data:`USED_INTERVAL_S` in this process.
+    A missing folder or one that cannot be changed (a read-only cache) is left as it is."""
+    key = str(folder)
+    now = time.monotonic()
+    last = _USED.get(key)
+    if last is not None and now - last < USED_INTERVAL_S:
+        return
+    try:
+        os.utime(folder)
+    except OSError:
+        return
+    _USED[key] = now
 
 
 class HeldOutputs:

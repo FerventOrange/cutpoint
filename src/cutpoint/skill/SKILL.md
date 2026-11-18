@@ -87,13 +87,15 @@ is missing: tell the user, and with their OK run the command the ERROR line name
 - Ask the user before `cutpoint setup` (about 2.5 GB of downloads, 3.5 GB with an NVIDIA GPU),
   `cutpoint stage` (copies footage to local disk), and before `cutpoint clips --force` or
   `cutpoint edit --force` over a non-empty folder.
+- Ask the user before `cutpoint cache --prune` (rebuilding the caches costs minutes to hours of
+  analysis); `cutpoint cache --prune DAYS --dry-run` needs no OK.
 - Transcription, `cutpoint analyze`, `cutpoint events` and export can take minutes to hours:
   run them in the background or with a long timeout.
 - Results are files: read the JSON in the project folder instead of parsing logs. Logs and
   errors go to stderr as `HH:MM:SS LEVEL message`; exit code `0` is success.
 - `--json` prints the result as one JSON object on stdout (logs stay on stderr): `ok`, `command`,
   `schema`, `project`, `outputs` (absolute paths and key facts), `warnings` (`code`, `message`,
-  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `analyze`, `detect`, `clips`,
+  `files`) and `error` (`code`, `message`, or `null`). It works on `paths`, `cache`, `analyze`, `detect`, `clips`,
   `assemble`, `edit`, `extend`, `capabilities`, `mix`, `stage`, `setup`, `events`, `crashes`,
   `profile`, `resume`, `rerank` and every `360` subcommand. Tell the user about the warnings
   `timeline_remuxed` (a joined `.ts` or `.mpg` recording whose timestamps jump is read through a

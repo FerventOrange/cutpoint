@@ -1186,15 +1186,69 @@ def _cmd_paths(a: argparse.Namespace) -> None:
         ("profiles", paths.profiles_dir()),
         ("projects", cfg.projects_dir),
     ]
+    from cutpoint import cacheprune  # noqa: PLC0415
+
+    size = cacheprune.cache_size()
     if jsonout.active():
         for key, path in rows:
             jsonout.output(key, path)
         jsonout.output("missing", [key for key, path in rows if not path.exists()])
+        jsonout.output("cache_bytes", size)
         return
     width = max(len(k) for k, _ in rows)
     for key, path in rows:
         state = "" if path.exists() else "  (missing)"
+        if key == "cache" and size is not None:
+            state = f"  ({cacheprune.human_size(size)})"
         print(f"{key:<{width}}  {path}{state}")
+
+
+def _cmd_cache(a: argparse.Namespace) -> None:
+    from cutpoint import cacheprune  # noqa: PLC0415
+
+    report = cacheprune.prune(a.prune, include_projects=a.all, dry_run=a.dry_run)
+    verb = "Would remove" if a.dry_run else "Removed"
+    for r in report.removed:
+        size = cacheprune.human_size(r.bytes)
+        logger.info("%s %s (%s, last used %s)", verb, r.path, size, r.used_at()[:10])
+    kept = report.kept
+    projects = (
+        f", {kept[cacheprune.PROJECT]} of projects (--all removes them)"
+        if kept[cacheprune.PROJECT]
+        else ""
+    )
+    logger.info(
+        "%s %d cache folder%s not used for %d day%s (%s); kept %d used since%s, %d in use",
+        verb,
+        len(report.removed),
+        "" if len(report.removed) == 1 else "s",
+        a.prune,
+        "" if a.prune == 1 else "s",
+        cacheprune.human_size(report.freed),
+        kept[cacheprune.RECENT],
+        projects,
+        kept[cacheprune.IN_USE],
+    )
+    jsonout.output("cache", report.cache)
+    jsonout.output("days", report.days)
+    jsonout.output("all", report.include_projects)
+    jsonout.output("dry_run", report.dry_run)
+    jsonout.output(
+        "removed",
+        [
+            {
+                "path": r.path,
+                "bytes": r.bytes,
+                "last_used": r.used_at(),
+            }
+            for r in report.removed
+        ],
+    )
+    jsonout.output("count", len(report.removed))
+    jsonout.output("freed_bytes", report.freed)
+    jsonout.output("kept", report.kept)
+    jsonout.output("failed", report.failed)
+    jsonout.output("cache_bytes", report.size)
 
 
 def _cmd_capabilities(a: argparse.Namespace) -> None:
@@ -2490,6 +2544,29 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     )
     _add_json_argument(pa)
     pa.set_defaults(func=_cmd_paths)
+
+    ca = sub.add_parser(
+        "cache",
+        help="remove the source cache folders not used for DAYS days, least recently used "
+        "first (folders of projects in the projects folder stay unless --all)",
+    )
+    ca.add_argument(
+        "--prune",
+        metavar="DAYS",
+        type=positive_int,
+        required=True,
+        help="remove the source cache folders not used for this many days (1 or more)",
+    )
+    ca.add_argument(
+        "--all",
+        action="store_true",
+        help="also remove the folders of projects in the projects folder (never one in use)",
+    )
+    ca.add_argument(
+        "--dry-run", action="store_true", help="only list what would be removed; remove nothing"
+    )
+    _add_json_argument(ca)
+    ca.set_defaults(func=_cmd_cache)
 
     cp = sub.add_parser(
         "capabilities",
