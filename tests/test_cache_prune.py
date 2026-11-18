@@ -25,7 +25,8 @@ def _age(path: Path, days: float) -> None:
     """Make ``path`` and everything in it look last changed ``days`` ago."""
     t = time.time() - days * DAY
     for p in sorted(path.rglob("*"), reverse=True):
-        os.utime(p, (t, t), follow_symlinks=False)
+        # Windows has no lutime; its only symlink test is skipped there.
+        os.utime(p, (t, t), follow_symlinks=os.utime not in os.supports_follow_symlinks)
     os.utime(path, (t, t))
 
 
