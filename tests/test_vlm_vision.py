@@ -426,6 +426,9 @@ def extra_ok(home, monkeypatch):
 def test_preflight_needs_no_model_files_for_the_vlm_layer(extra_ok) -> None:
     pipeline.preflight(("vlm",))
     pipeline.preflight(("ocr", "vlm"))
+    # The same empty home stops a layer that has model files, and names only its files.
+    with pytest.raises(FileNotFoundError, match=r"cutpoint setup --only panns$"):
+        pipeline.preflight(("audio", "vlm"))
 
 
 def _run_vlm(

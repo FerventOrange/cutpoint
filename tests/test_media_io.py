@@ -12,7 +12,6 @@ import io
 import shutil
 import subprocess
 import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -475,17 +474,26 @@ def test_decode_raw_timer_after_process_exit_is_ignored(popen):
             super().__init__(b"")
             self._left = 2
             self.stdout = SimpleNamespace(read=self._read, close=lambda: None)
+            self.polled = threading.Event()
+            self.fired = False
+
+        def poll(self) -> int:
+            self.polled.set()
+            return super().poll()
 
         def _read(self, n: int) -> bytes:
             if self._left:
                 self._left -= 1
                 return bytes(n)
-            time.sleep(0.3)  # the timer (0.05 s) fires here; the process has exited
+            # The timer (0.05 s) fires before EOF is read; the process has exited. Nothing else
+            # polls before EOF, so a poll is the timer asking.
+            self.fired = self.polled.wait(10)
             return b""
 
     proc = _SlowEof()  # poll() returns 0: exited
     popen.procs = [proc]
     out = list(fu.decode_raw("x.mp4", size=(2, 2), hwaccel=None, timeout=0.05))
+    assert proc.fired  # the timer did fire before EOF
     assert len(out) == 2
     assert not proc.killed
 

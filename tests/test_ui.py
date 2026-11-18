@@ -2908,9 +2908,33 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
     first_in, release_first, second_in, release_second = (threading.Event() for _ in range(4))
     calls: list[int] = []
     active = [0, 0]  # now, most at once
+    arrived = threading.Event()  # a later request waits for the build, or builds alongside
+
+    class Contended:
+        """The still's build lock; tells when a request has to wait for it."""
+
+        def __init__(self) -> None:
+            self.lock = threading.Lock()
+
+        def __enter__(self) -> None:
+            if not self.lock.acquire(blocking=False):
+                arrived.set()
+                self.lock.acquire()
+
+        def __exit__(self, *_exc: object) -> None:
+            self.lock.release()
+
+    class Locks(dict):
+        def get(self, name, default=None):
+            return super().get(name, (spy, 0))
+
+    spy = Contended()
+    media.frame_locks = Locks()
 
     def grab(*_a: object, **_k: object) -> list[bytes]:
         calls.append(1)
+        if len(calls) > 1:
+            arrived.set()
         active[0] += 1
         active[1] = max(active)
         try:
@@ -2939,12 +2963,13 @@ def test_frame_builds_one_still_at_a_time_even_after_a_failed_build(
     assert first_in.wait(5)
     b = threading.Thread(target=request)  # waits for the first builder's lock
     b.start()
-    time.sleep(0.2)
+    assert arrived.wait(5)
     release_first.set()  # the first build fails; the waiting request builds next
     assert second_in.wait(5)
+    arrived.clear()
     c = threading.Thread(target=request)  # arrives mid-build: must wait, not build alongside
     c.start()
-    time.sleep(0.2)
+    assert arrived.wait(5)
     release_second.set()
     for t in (a, b, c):
         t.join(5)

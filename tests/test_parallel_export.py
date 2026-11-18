@@ -48,6 +48,30 @@ def until(condition, what: str = "condition") -> None:
         time.sleep(0.01)
 
 
+class GpuWaits(threading.Condition):
+    """A scope's GPU slot condition that counts the waits of threads blocked for a slot."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.count = 0
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.count += 1  # the condition's lock is held here
+        return super().wait(timeout)
+
+
+@pytest.fixture
+def gpu_waits(monkeypatch) -> None:
+    """Every ChildScope made from here on counts the waits for a GPU slot (``_gpu.count``)."""
+    init = ChildScope.__init__
+
+    def counted(self) -> None:
+        init(self)
+        self._gpu = GpuWaits()
+
+    monkeypatch.setattr(ChildScope, "__init__", counted)
+
+
 def plan(i: int, pano: bool = False) -> ClipPlan:
     src = Path("src.mp4")
     tail = TailResult(10.0 + i, 0.0, "none")
@@ -901,12 +925,14 @@ class FakeEncodes:
         return [kind for n, kind, _ in self.attempts if n == name]
 
 
-def test_session_limit_in_the_pool_drops_to_one_gpu_encode_and_retries_on_the_gpu(nvenc, caplog):
+def test_session_limit_in_the_pool_drops_to_one_gpu_encode_and_retries_on_the_gpu(
+    nvenc, caplog, gpu_waits
+):
     caplog.set_level("INFO")
     fake = FakeEncodes({"a": 1}, hold="b")
     with clips._ExportPool([fake.job(n) for n in ("a", "b", "c", "d")], 2) as pool:
         until(lambda: pool.scope._gpu_limit == 1, "the GPU limit")
-        time.sleep(0.2)  # the retry of a must wait for b
+        until(lambda: pool.scope._gpu.count, "the retry of a to wait for b")
         assert fake.tries("a") == ["nvenc"]
         fake.release.set()
         assert [pool.result(i) for i in range(4)] == ["nvenc"] * 4
@@ -950,7 +976,9 @@ def mark_gpu_off(codec: str, mark: str) -> None:
 
 
 @pytest.mark.parametrize("mark", ["failed", "suspect"])
-def test_a_clip_waiting_for_a_gpu_slot_goes_to_the_cpu_once_the_gpu_failed(nvenc, caplog, mark):
+def test_a_clip_waiting_for_a_gpu_slot_goes_to_the_cpu_once_the_gpu_failed(
+    nvenc, caplog, mark, gpu_waits
+):
     """The codec failed for the run while the clip waited under the limit: no NVENC attempt and
     no WARNING, as for the clips after the failure in a sequential run."""
     scope = ChildScope()
@@ -963,7 +991,7 @@ def test_a_clip_waiting_for_a_gpu_slot_goes_to_the_cpu_once_the_gpu_failed(nvenc
         return enc.kind
 
     t, outcome = in_worker(scope, lambda: ffmpeg_utils.encode_with_fallback(encode, "c"))
-    time.sleep(0.1)
+    until(lambda: scope._gpu.count, "the clip to wait for the slot")
     assert attempts == []  # waiting for the slot
     mark_gpu_off(nvenc.codec, mark)
     scope.release_gpu()
@@ -1020,7 +1048,7 @@ def test_other_gpu_failures_in_the_pool_are_not_retried_on_the_gpu(nvenc):
 
 
 def test_a_clip_waiting_for_the_slot_of_a_failed_gpu_encode_goes_to_the_cpu(
-    nvenc, caplog, monkeypatch
+    nvenc, caplog, monkeypatch, gpu_waits
 ):
     """The clip holding the only slot fails (not a session error): its suspect mark is made
     before the slot is freed, so the waiting clip makes no GPU attempt and logs no WARNING."""
@@ -1051,7 +1079,7 @@ def test_a_clip_waiting_for_the_slot_of_a_failed_gpu_encode_goes_to_the_cpu(
     ta, out_a = in_worker(scope, job("a"))
     until(lambda: attempts["a"], "a to hold the slot")
     tb, out_b = in_worker(scope, job("b"))
-    time.sleep(0.1)
+    until(lambda: scope._gpu.count, "b to wait for the slot")
     assert attempts["b"] == []  # waiting for the slot
     fail.set()
     ta.join(WAIT_S)
@@ -1063,7 +1091,7 @@ def test_a_clip_waiting_for_the_slot_of_a_failed_gpu_encode_goes_to_the_cpu(
     assert {nvenc.codec} == ffmpeg_utils._GPU_ENCODE_FAILED
 
 
-def test_a_thread_waiting_for_a_gpu_slot_stops_on_cancel():
+def test_a_thread_waiting_for_a_gpu_slot_stops_on_cancel(gpu_waits):
     scope = ChildScope()
     scope.limit_gpu()
     assert scope.acquire_gpu() is True
@@ -1077,7 +1105,7 @@ def test_a_thread_waiting_for_a_gpu_slot_stops_on_cancel():
 
     t = threading.Thread(target=waiter)
     t.start()
-    time.sleep(0.1)
+    until(lambda: scope._gpu.count, "the thread to wait for the slot")
     assert t.is_alive()
     scope.cancel()
     t.join(WAIT_S)

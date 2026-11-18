@@ -12,6 +12,7 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -145,8 +146,9 @@ def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path, monkeypatch) -> 
     assert all(0.0 < v < 1.0 for v in vals[:-1])
     gaps = np.diff([t for _, t in seen[:-1]])
     assert (gaps >= R.PROGRESS_MIN_S - 0.01).all()
-    time.sleep(0.3)
-    assert len(seen) == n  # nothing after the return
+    # nothing after the return: the reader thread, the only other caller, is joined
+    assert not [t for t in threading.enumerate() if t.name == "pano-render-progress"]
+    assert len(seen) == n
     progress_file = Path(calls[0][calls[0].index("-progress") + 1])
     # the file was made in the private dir, so the glob below really checks cleanup
     assert progress_file.parent == scratch

@@ -1607,16 +1607,23 @@ def test_a_piece_that_raises_is_no_reply_and_the_others_go_on():
 
 def test_abandoning_the_pieces_does_not_wait_for_a_request_in_flight():
     gate = threading.Event()
+    in_flight = threading.Event()
+    answered = threading.Event()
 
     def fn(x: int) -> int:
         if x == 1:
-            gate.wait(30)  # a hosted model that takes its time
+            in_flight.set()
+            gate.wait(5)  # a hosted model that takes its time
+            answered.set()
         return x
 
     gen = dialogue.ask_many([0, 1], fn, 2)
     try:
         assert next(gen) == 0
+        assert in_flight.wait(10)
         gen.close()  # returns at once; the thread stays a daemon
+        # A close that waited for the request would only return once it was answered.
+        assert not answered.is_set()
     finally:
         gate.set()
 
