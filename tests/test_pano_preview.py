@@ -99,22 +99,62 @@ def test_a_corrupt_orientation_cache_is_computed_anew(imu_clip) -> None:
 
 
 # --------------------------------------------------------------------------- progress
+class _Clock:
+    """``render.time`` in a progress test: ``monotonic()`` moves only when the fake ffmpeg
+    steps it, and counts its calls (one per ``out_time_us`` line the reader hands to a live
+    callback), so the fake can wait until a line is handled before it writes the next."""
+
+    def __init__(self) -> None:
+        self.now, self.calls, self.stuck = 1000.0, 0, ""
+        self.cond = threading.Condition()
+
+    def monotonic(self) -> float:
+        with self.cond:
+            self.calls += 1
+            self.cond.notify_all()
+            return self.now
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+    def handled(self, n: int, timeout: float = 30) -> None:
+        with self.cond:
+            if not self.cond.wait_for(lambda: self.calls >= n, timeout):
+                self.stuck = f"the progress reader handled {self.calls} of {n} lines in {timeout} s"
+                raise AssertionError(self.stuck)
+
+
 @pytest.fixture
 def fake_ffmpeg(monkeypatch):
-    """``render.run`` writing ``-progress`` lines (``ticks`` updates over ``spacing`` s each)."""
+    """``render.run`` writing ``-progress`` lines (``ticks`` updates). With ``opts["clock"]``
+    (a :class:`_Clock`, installed as ``render.time``) each update steps the clock by
+    ``spacing`` s, followed by a half-step update at the same time; each line is handled by
+    the reader before the next is written. Without it the lines are written at once."""
     calls: list[list[str]] = []
-    opts = {"ticks": 8, "spacing": 0.12}
+    opts = {"ticks": 8, "spacing": 0.12, "clock": None}
 
     def run(args, cwd=None):
         calls.append(args)
         if "-progress" in args:
             dur = float(args[args.index("-t", args.index("-map")) + 1])
+            clock, ticks, lines = opts["clock"], opts["ticks"], 0
             with Path(args[args.index("-progress") + 1]).open("a", encoding="utf-8") as fh:
-                for i in range(1, opts["ticks"] + 1):
-                    fh.write(f"out_time_us={int(dur * 1e6 * i / opts['ticks'])}\n")
+
+                def write(step: float) -> None:
+                    nonlocal lines
+                    fh.write(f"out_time_us={int(dur * 1e6 * step / ticks)}\n")
                     fh.write("progress=continue\n")
                     fh.flush()
-                    time.sleep(opts["spacing"])
+                    if clock is not None:
+                        lines += 1
+                        clock.handled(lines)
+
+                for i in range(1, ticks + 1):
+                    if clock is not None:
+                        clock.now += opts["spacing"]
+                    write(i)
+                    if clock is not None and i < ticks:
+                        write(i + 0.5)  # no time passed since the last call: held back
                 fh.write("progress=end\n")
         Path(args[-1]).write_bytes(b"x")
         return ""
@@ -133,19 +173,25 @@ def _render(clip, tmp_path, progress):
 
 
 def test_progress_rises_to_one_and_stops(fake_ffmpeg, tmp_path, monkeypatch) -> None:
-    calls, _ = fake_ffmpeg
+    calls, opts = fake_ffmpeg
+    clock = opts["clock"] = _Clock()
+    monkeypatch.setattr(R, "time", clock)
+    monkeypatch.setattr(R, "PROGRESS_POLL_S", 0.01)  # the reader's poll: only for speed
     scratch = tmp_path / "scratch"  # a private temp dir: a parallel run must not leak into the glob
     scratch.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     clip = helpers.x3clip(lrv="x.lrv", fps=30.0, frames=300, duration=10.0)
     seen: list[tuple[float, float]] = []
-    _render(clip, tmp_path, lambda f: seen.append((f, time.monotonic())))
+    _render(clip, tmp_path, lambda f: seen.append((f, clock.now)))
+    assert not clock.stuck, clock.stuck
     n = len(seen)
     vals = [v for v, _ in seen]
-    assert n >= 3 and vals == sorted(vals) and vals[-1] == 1.0 and vals.count(1.0) == 1
-    assert all(0.0 < v < 1.0 for v in vals[:-1])
+    ticks = opts["ticks"]
+    # each update once, capped below 1.0 until done(); the half-steps came too soon after one
+    want = [i / ticks for i in range(1, ticks)] + [0.999, 1.0]
+    assert vals == pytest.approx(want), vals
     gaps = np.diff([t for _, t in seen[:-1]])
-    assert (gaps >= R.PROGRESS_MIN_S - 0.01).all()
+    assert (gaps >= R.PROGRESS_MIN_S).all(), gaps
     # nothing after the return: the reader thread, the only other caller, is joined
     assert not [t for t in threading.enumerate() if t.name == "pano-render-progress"]
     assert len(seen) == n
