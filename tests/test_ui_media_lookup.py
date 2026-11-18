@@ -324,6 +324,52 @@ def test_window_content_keys_are_per_project(
     assert seen[other] == {str(other_source): ui.Media.key(other_source)}
 
 
+def test_the_project_stats_each_source_once_with_windows_and_failures(
+    client: TestClient, tmp_path: Path, stat_keys: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1085 A745: the status, windows, failed windows and duration of a source share one key."""
+    folder = tmp_path / "footage"
+    folder.mkdir()
+    sources = [folder / "a.mkv", folder / "b.mkv"]  # need a proxy: windows play
+    for i, f in enumerate(sources):
+        f.write_bytes(DATA + bytes([i]))
+    res = client.post("/api/projects", json={"name": "Trip", "source": str(folder)})
+    assert res.status_code == 200, res.text
+    pid = res.json()["id"]
+    media: ui.Media = client.app.state.media
+    p = ui.project_dir(pid)
+    for f in sources:
+        key = ui.Media.key(f)
+        media.info(f, key)
+        pkey = media._proxy_key(key)
+        media.windows[(p, pkey)] = {(0, 100): p / "ui" / "proxy" / f"{pkey}.w0-100.mp4"}
+        media.window_failures[(p, pkey)] = {(200, 300): "boom"}
+    stat_keys.clear()
+    listed = client.get(f"/api/projects/{pid}").json()["sources"]
+    assert sorted(Path(x) for x in stat_keys) == sorted(sources)  # once each
+    assert [(s["status"], s["proxy"], s["duration"]) for s in listed] == [
+        ("needs-proxy", True, 10.0)
+    ] * 2
+    assert [[w["lo"] for w in s["windows"]] for s in listed] == [[0.0]] * 2
+    assert [s["failed"] for s in listed] == [[{"lo": 2.0, "hi": 3.0, "reason": "boom"}]] * 2
+    # an unreadable source (its stat fails): checked once, listed as failed without windows
+    counted, unreadable = ui.Media.key, []
+
+    def key(f: Path) -> str | None:
+        if f.name != "b.mkv":
+            return counted(f)
+        unreadable.append(f)
+        return None
+
+    monkeypatch.setattr(ui.Media, "key", staticmethod(key))
+    stat_keys.clear()
+    listed = client.get(f"/api/projects/{pid}").json()["sources"]
+    assert [Path(x) for x in stat_keys] == [sources[0]] and unreadable == [sources[1]]
+    gone = next(s for s in listed if s["name"] == "b.mkv")
+    assert (gone["status"], gone["proxy"], gone["progress"]) == ("failed", False, None)
+    assert (gone["windows"], gone["pending"], gone["failed"]) == ([], [], [])
+
+
 # ---------------------------------------------------------------- slow-start hints
 
 
