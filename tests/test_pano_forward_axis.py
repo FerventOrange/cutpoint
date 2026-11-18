@@ -21,7 +21,7 @@ from cutpoint.pano import render
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
 from pano_fakes import FAKE_TORCH, Models, Sampler, frames
-from pano_helpers import fuse_rotations
+from pano_helpers import fuse_rotations, write_orient, write_views
 
 FPS, DT, DUR = 30.0, 0.001, 12.0
 
@@ -142,20 +142,6 @@ def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
 
 
 # --------------------------------------------------------------------------- caches
-def _write_orient(src: Path, up: list[float]) -> None:
-    path = G._orient_path(src)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, up=np.tile(np.asarray(up, np.float32), (10, 1)))
-
-
-def _write_views(src: Path, meta: dict) -> None:
-    path = VW.cache_path(src)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    z = np.zeros(0)
-    np.savez(path, t=z, emb=z, det=z, box_emb=z, box_idx=z)
-    cache.save_json(path.with_suffix(".json"), meta)
-
-
 @pytest.mark.parametrize(
     ("up", "meta", "valid"),
     [
@@ -171,16 +157,16 @@ def test_views_cache_follows_the_forward_axis(home, tmp_path, up, meta, valid) -
     src = tmp_path / "clip.lrv"
     src.write_bytes(b"x")
     if up is not None:
-        _write_orient(src, up)
-    _write_views(src, {"source": str(src)} | meta)
+        write_orient(src, up)
+    write_views(src, {"source": str(src)} | meta)
     assert (VW.load_views(src) is not None) is valid
 
 
 def test_a_stale_views_cache_is_logged_once(home, tmp_path, caplog) -> None:
     src = tmp_path / "stale.lrv"
     src.write_bytes(b"x")
-    _write_orient(src, [0.0, -1.0, 0.0])
-    _write_views(src, {"source": str(src)})
+    write_orient(src, [0.0, -1.0, 0.0])
+    write_views(src, {"source": str(src)})
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
         assert VW.load_views(src) is None and VW.load_views(src) is None
     assert sum("cutpoint 360 analyze" in r.message for r in caplog.records) == 1

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 
+from cutpoint import activity, cache
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
@@ -89,3 +93,37 @@ def fuse_rotations(t: np.ndarray, rm: np.ndarray, fps: float, frames: int) -> G.
     w = np.vstack([np.zeros(3), w])
     a_v = np.einsum("kji,j->ki", rm, [0.0, -G.G, 0.0])
     return G.fuse(t, a_v @ G.M_IMU_TO_V, np.degrees(w) @ G.M_IMU_TO_V, fps, frames)
+
+
+def write_orient(src: Path, up: list[float]) -> None:
+    """Cache a ten-sample IMU orientation of ``src`` with the given ``up`` vector."""
+    path = G._orient_path(src)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(path, up=np.tile(np.asarray(up, np.float32), (10, 1)))
+
+
+def write_views(src: Path, meta: dict, det: np.ndarray | None = None) -> None:
+    """Cache an empty view layer of ``src`` with sidecar ``meta`` (and ``det`` rows if given)."""
+    path = VW.cache_path(src)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    z = np.zeros(0)
+    d = np.zeros((0, len(VW.DET_COLS)), np.float32) if det is None else det
+    np.savez(path, t=z, emb=z, det=d, box_emb=z, box_idx=z)
+    cache.save_json(path.with_suffix(".json"), meta)
+
+
+def profile_prompts(raw: dict) -> activity.Prompts:
+    """The prompts of the library profile ``raw`` (an invented profile dict)."""
+    return activity.prompts(activity.full(activity.validate(raw)))
+
+
+def write_activity(proj: Path, name: str, raw: dict) -> None:
+    """Write ``proj``'s ``activity.json`` for the library profile ``name`` (profile dict ``raw``)."""
+    rec = {
+        "version": activity.PROFILE_VERSION,
+        "name": name,
+        "source": "library",
+        "profile": activity.full(activity.validate(raw)),
+    }
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")

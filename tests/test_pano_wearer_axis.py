@@ -20,6 +20,7 @@ from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
 from pano_fakes import FAKE_TORCH, Models, Sampler, frames
+from pano_helpers import write_orient, write_views
 
 HELMET_UP = [0.0, 0.0, -1.0]  # sky lens up
 UPRIGHT_UP = [0.0, -1.0, 0.0]  # lenses horizontal, camera -y up (the cruise footage)
@@ -40,21 +41,6 @@ def _orient(up: list[float], n: int = 600, fps: float = 30.0) -> G.Orientation:
         heading_smooth=np.zeros(n),
         meta={"fps": fps},
     )
-
-
-def _write_orient(src: Path, up: list[float]) -> None:
-    path = G._orient_path(src)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(path, up=np.tile(np.asarray(up, np.float32), (10, 1)))
-
-
-def _write_views(src: Path, meta: dict, det: np.ndarray | None = None) -> None:
-    path = VW.cache_path(src)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    z = np.zeros(0)
-    d = np.zeros((0, len(VW.DET_COLS)), np.float32) if det is None else det
-    np.savez(path, t=z, emb=z, det=d, box_emb=z, box_idx=z)
-    cache.save_json(path.with_suffix(".json"), meta)
 
 
 def _boxes(v: list[float], n: int = 20) -> np.ndarray:
@@ -105,9 +91,9 @@ def test_cached_wearer_direction(home, tmp_path) -> None:
     src = tmp_path / "a.lrv"
     src.write_bytes(b"x")
     assert G.cached_wearer_direction(src) is None
-    _write_orient(src, UPRIGHT_UP)
+    write_orient(src, UPRIGHT_UP)
     assert np.allclose(G.cached_wearer_direction(src), _orient(UPRIGHT_UP).wearer)
-    _write_orient(src, HELMET_UP)
+    write_orient(src, HELMET_UP)
     assert G.cached_wearer_direction(src) is G.WEARER_V
 
 
@@ -121,7 +107,7 @@ def test_wearer_axis_of_an_upright_clip_comes_from_its_track(home, tmp_path) -> 
     """Close people beside the pole (the cruise neighbours) do not move the wearer."""
     src = tmp_path / "up.lrv"
     src.write_bytes(b"x")
-    _write_orient(src, UPRIGHT_UP)
+    write_orient(src, UPRIGHT_UP)
     VW._AXES.clear()
     axis = VW.wearer_axis(_pv(src, UPRIGHT_META, _boxes([0.52, 0.75, -0.41])))
     assert np.allclose(axis, _orient(UPRIGHT_UP).wearer)
@@ -130,7 +116,7 @@ def test_wearer_axis_of_an_upright_clip_comes_from_its_track(home, tmp_path) -> 
 def test_wearer_axis_of_a_helmet_clip_is_unchanged(home, tmp_path) -> None:
     src = tmp_path / "helmet.lrv"
     src.write_bytes(b"x")
-    _write_orient(src, HELMET_UP)
+    write_orient(src, HELMET_UP)
     VW._AXES.clear()
     v = [0.3, 0.7, 0.65]
     assert np.allclose(VW.wearer_axis(_pv(src, {}, _boxes(v))), np.asarray(v) / np.linalg.norm(v))
@@ -152,8 +138,8 @@ def test_wearer_cone_is_narrower_only_on_an_upright_clip_with_a_track(home, tmp_
     up, helmet, notrack = (tmp_path / f"{n}.lrv" for n in ("up", "helmet", "notrack"))
     for src in (up, helmet, notrack):
         src.write_bytes(b"x")
-    _write_orient(up, UPRIGHT_UP)
-    _write_orient(helmet, HELMET_UP)
+    write_orient(up, UPRIGHT_UP)
+    write_orient(helmet, HELMET_UP)
     no_det = np.zeros((0, len(VW.DET_COLS)), np.float32)
     assert VW.wearer_cone(_pv(up, UPRIGHT_META, no_det)) == G.UPRIGHT_WEARER_CONE_DEG
     assert VW.wearer_cone(_pv(up, UPRIGHT_META, no_det), 40.0) == G.UPRIGHT_WEARER_CONE_DEG
@@ -170,7 +156,7 @@ def test_upright_neighbours_are_people_not_the_wearer(home, tmp_path) -> None:
 
     src = tmp_path / "raft.lrv"
     src.write_bytes(b"x")
-    _write_orient(src, UPRIGHT_UP)
+    write_orient(src, UPRIGHT_UP)
     a = math.radians(40.0)
     det = np.concatenate([_boxes([math.sin(a), math.cos(a), 0.0], 1), _boxes([0.0, 1.0, -0.1], 1)])
     det[:, 6] = 40.0  # under the 70 deg height rule
@@ -198,16 +184,16 @@ def test_upright_neighbours_are_people_not_the_wearer(home, tmp_path) -> None:
 def test_views_cache_follows_the_upright_wearer(home, tmp_path, up, meta, valid) -> None:
     src = tmp_path / "clip.lrv"
     src.write_bytes(b"x")
-    _write_orient(src, up)
-    _write_views(src, {"source": str(src)} | meta)
+    write_orient(src, up)
+    write_views(src, {"source": str(src)} | meta)
     assert (VW.load_views(src) is not None) is valid
 
 
 def test_a_stale_upright_selfie_is_logged_once(home, tmp_path, caplog) -> None:
     src = tmp_path / "stale_selfie.lrv"
     src.write_bytes(b"x")
-    _write_orient(src, UPRIGHT_UP)
-    _write_views(src, {"source": str(src), "wearer_v": list(G.WEARER_V)} | UPRIGHT_META)
+    write_orient(src, UPRIGHT_UP)
+    write_views(src, {"source": str(src), "wearer_v": list(G.WEARER_V)} | UPRIGHT_META)
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
         assert VW.load_views(src) is None and VW.load_views(src) is None
     assert sum("another wearer direction" in r.message for r in caplog.records) == 1
@@ -235,7 +221,7 @@ def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) ->
     o = _orient(UPRIGHT_UP)
     monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
-    _write_orient(pano.lrv, UPRIGHT_UP)  # what G.orientation caches in a real run
+    write_orient(pano.lrv, UPRIGHT_UP)  # what G.orientation caches in a real run
     seen = []
     real = VW.compute_views
 
