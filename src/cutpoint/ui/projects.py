@@ -496,15 +496,13 @@ def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> f
     paths of ``360 analyze``, so a 360 project's time is ``total_s`` in
     ``pano_timings.json`` (every analyze run since #564; a ``--views-only`` run, which leaves
     ``highlights.json`` alone, keeps the earlier analysis keys and time and adds
-    ``views_only_s``), or for an older file without it the scan and analyze totals; None
-    when they are missing."""
+    ``views_only_s``); None when they are missing, as in an older file."""
     if meta.get("kind") == "360":
         pano = _load(p, "pano_timings.json")
         pano = pano if isinstance(pano, dict) else {}
         if _secs(pano.get("analyze_s")) is not None and (whole := _secs(pano.get("total_s"))):
             return whole
-        scan, total = _secs(pano.get("scan_s")), _secs(pano.get("analyze_total_s"))
-        return None if scan is None or total is None else round(scan + total, 2)
+        return None
     timings = (hl or {}).get("timings")
     return _secs(timings.get("total_s")) if isinstance(timings, dict) else None
 

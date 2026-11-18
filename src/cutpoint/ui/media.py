@@ -240,8 +240,6 @@ class Media:
         self.window_wake = threading.Condition(self.lock)
         self.window_lane: threading.Thread | None = None  # started with the first window
         self.proxies_pruned: set[Path] = set()  # projects whose proxy leftovers went this run
-        # (project, content key) of colour-filtered sources whose unfiltered proxies went
-        self.tone_maps_pruned: set[tuple[Path, str]] = set()
         self.closing = False
         self.gpu_failed = False  # a proxy failed with the GPU encoder and worked with libx264
         # still file name -> (its builder lock, requests using it); dropped when the last one leaves
@@ -372,8 +370,6 @@ class Media:
         real = remap_source(path)
         content, res = self._lookup(real)
         key = self._proxy_key(content)
-        if content is not None and key != content:
-            self._drop_earlier_tone_map(project, content)
         if res is not None and key is not None and not res[0] and not self.closing:
             proxy = _own(project, f"{UI_DIR}/proxy/{key}.mp4")  # never built through a link
             _own(project, f"{UI_DIR}/proxy/{key}.part.mp4")  # nor its temporary
@@ -569,22 +565,6 @@ class Media:
             except OSError as err:  # e.g. still being sent on Windows; pruned next run
                 logger.debug("could not delete %s: %s", f.name, err)
 
-    def _drop_earlier_tone_map(self, project: Path, content: str) -> None:
-        """Once per run: delete the proxies of a source with a colour filter (HDR, BT.2020,
-        full-range BT.601) named by its content key alone (built before it had one), unless
-        written or used in the last PROXY_PRUNE_GRACE_S."""
-        folder = project / UI_DIR / "proxy"
-        cutoff = time.time_ns() - int(PROXY_PRUNE_GRACE_S * 1e9)
-        with self.lock:
-            if (project, content) in self.tone_maps_pruned:
-                return
-            self.tone_maps_pruned.add((project, content))
-            self.windows.pop((project, content), None)  # adopted before the source was probed
-            if not folder.is_dir() or not _inside(project, f"{UI_DIR}/proxy"):
-                return  # never delete in a folder a link takes outside the project
-            stale = [f for f in folder.glob(f"{content}*.mp4") if PROXY_FILE.fullmatch(f.name)]
-        self._delete([f for f in stale if _idle(f, cutoff)])
-
     def _drop_windows(self, project: Path, key: str) -> None:
         """The whole proxy of ``key`` landed: stop that source's window encodes and retire its
         windows (still served, no longer listed; the next run's :meth:`prune_proxies` deletes
@@ -663,8 +643,8 @@ class Media:
         A proxy no known key names may be of a source with a colour filter (HDR, BT.2020,
         full-range BT.601) not probed yet (its proxy key holds the filter): sources are then
         probed, in order, until every such proxy is matched, so this may run ffprobe. Proxies
-        such a source's content key names (built before it had a filter) go in :meth:`prepare`
-        instead, so no other source is probed for them."""
+        and windows such a source's bare content key names (built before it had a filter) go
+        once a proxy or window of its current filter exists, on a later run."""
         folder = project / UI_DIR / "proxy"
         if project in self.proxies_pruned:
             return
@@ -1117,7 +1097,6 @@ class Media:
             self.proxies_pruned.discard(project)
             self.frames_pruned.discard(project)
             self.envelopes_pruned.discard(project)
-            self.tone_maps_pruned -= {t for t in self.tone_maps_pruned if t[0] == project}
 
     def shutdown(self) -> None:
         with self.lock:  # as in ``_encode``: no proxy ffmpeg starts after this

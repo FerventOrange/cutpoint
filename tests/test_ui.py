@@ -277,45 +277,6 @@ def test_create_project_accepts_an_action_cam_style_for_several_inputs(
     assert meta["style"] == "action-cam" and len(meta["inputs"]) == 2
 
 
-def test_suggest_style_probes_streams_of_every_input(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#633: action-cam when at least one input (a folder: its videos) has telemetry."""
-    gopro, plain = tmp_path / "gopro.mp4", tmp_path / "plain.mp4"
-    folder = tmp_path / "folder"
-    folder.mkdir()
-    (folder / "x.mp4").write_bytes(b"x")
-    for f in (gopro, plain):
-        f.write_bytes(b"x")
-    probed: list[Path] = []
-
-    timeouts: list[float] = []
-
-    def has_telemetry(f: Path, timeout: float = 60) -> bool:
-        probed.append(f)
-        timeouts.append(timeout)
-        return f == gopro
-
-    monkeypatch.setattr("cutpoint.analyze.has_telemetry", has_telemetry)
-
-    def ask(*sources: Path) -> dict:
-        res = client.post(
-            "/api/projects/suggest-style", json={"sources": [str(x) for x in sources]}
-        )
-        assert res.status_code == 200, res.text
-        return res.json()
-
-    assert ask(plain) == {"style": None}
-    assert ask(plain, gopro) == {"style": "action-cam"}
-    assert ask(folder) == {"style": None} and folder / "x.mp4" in probed
-    assert ask(tmp_path / "missing.mp4") == {"style": None}
-    assert set(timeouts) == {ui.TELEMETRY_PROBE_TIMEOUT}
-    probed.clear()
-    assert ask(gopro, plain) == {"style": "action-cam"} and probed == [gopro]  # stops at the hit
-    res = client.post("/api/projects/suggest-style", json={"sources": ["relative.mp4"]})
-    assert res.status_code == 400
-
-
 def test_create_project_refuses_ski_as_an_unknown_style(client: TestClient, tmp_path: Path) -> None:
     folder = tmp_path / "footage"
     folder.mkdir()
@@ -6292,7 +6253,7 @@ def test_prune_proxies_keeps_hdr_windows_of_the_current_tone_map_before_any_prob
     assert probed == ["a.mp4"]  # matched: b.mp4 is not probed
 
 
-def test_prepare_deletes_hdr_proxies_of_an_earlier_tone_map_that_prune_could_not_tell(
+def test_hdr_proxies_of_an_earlier_tone_map_go_once_the_current_proxy_is_built(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(encode, "ffmpeg_filters", lambda: frozenset({"zscale", "tonemap"}))
@@ -6301,20 +6262,23 @@ def test_prepare_deletes_hdr_proxies_of_an_earlier_tone_map_that_prune_could_not
     patch_ui(monkeypatch, "probe", lambda path: probed.append(Path(path).name) or hlg)
     media, folder, paths, a, b = prune_setup(tmp_path)
     monkeypatch.setattr(media.pool, "submit", lambda *_args: None)  # no build
-    # named by the content key: no current proxy beside them
-    stale = [folder / f"{a}.w0-500.mp4", folder / f"{a}.mp4"]
-    recent = folder / f"{a}.w1000-1500.mp4"  # another run may be serving it
-    for f in [*stale, recent]:
-        f.write_bytes(b"x")
-    age(*stale)
+    stale = folder / f"{a}.mp4"  # named by the content key: no current proxy beside it
+    stale.write_bytes(b"x")
+    age(stale)
     (folder / f"{b}.mp4").write_bytes(b"x")  # another source's
     p = folder.parents[1]
     media.prune_proxies(p, paths)
-    assert probed == []  # nothing to tell them from without probing
+    assert probed == []  # nothing to tell it from without probing
     assert media.prepare(p, paths[0]) == "preparing"
     assert probed == ["a.mp4"]
-    assert sorted(f.name for f in folder.iterdir()) == sorted([recent.name, f"{b}.mp4"])
-    assert (p, a) not in media.windows  # adopted by prune_proxies, now gone
+    assert stale.is_file()  # left for now, never served: the proxy key holds the filter
+    hdr = media._proxy_key(a)
+    assert hdr and hdr != a
+    (folder / f"{hdr}.mp4").write_bytes(b"x")  # the build landed
+    age(folder / f"{hdr}.mp4")
+    later = ui.Media()  # the next run: nothing probed yet
+    later.prune_proxies(p, paths)
+    assert sorted(f.name for f in folder.iterdir()) == sorted([f"{hdr}.mp4", f"{b}.mp4"])
 
 
 def test_prune_proxies_probes_no_source_whose_proxy_it_knows(
@@ -6730,16 +6694,16 @@ def test_project_reports_the_video_length_and_time_of_the_last_analysis(
     cache.save_json(p / "pano_timings.json", pano)
     analysis = client.get(f"/api/projects/{pid}").json()["analysis"]
     assert analysis == {"video_s": 900.5, "took_s": 320.5}
-    # --no-events: total_s without the deprecated analyze_total_s
+    # --no-events: total_s without the removed analyze_total_s
     cache.save_json(p / "pano_timings.json", {"analyze_s": 90.0, "total_s": 95.0})
     assert client.get(f"/api/projects/{pid}").json()["analysis"]["took_s"] == 95.0
     # --views-only times the views alone and leaves highlights.json as it was: no time
     cache.save_json(p / "pano_timings.json", {"views": {"033": 4.0}, "total_s": 40.0})
     assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
-    # a pano_timings.json from before total_s: its scan + analyze totals
+    # a pano_timings.json from before total_s: no time, no crash
     del pano["total_s"]
     cache.save_json(p / "pano_timings.json", pano)
-    assert client.get(f"/api/projects/{pid}").json()["analysis"]["took_s"] == 312.5
+    assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
 
 
 @pytest.mark.parametrize(
@@ -8531,59 +8495,6 @@ def test_a_login_whose_poll_fails_reports_the_error_and_can_start_again(
 
     assert login_state(client, "codex") == {"state": "error", "error": error or str(err)}
     assert client.post("/api/assistant/login", json={"provider": "codex"}).status_code == 200
-
-
-def test_suggest_style_leaves_usable_360_footage_to_the_server(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    folder = tmp_path / "footage"
-    folder.mkdir()
-    for name in X3_CLIPS:
-        (folder / name).write_bytes(b"")
-    monkeypatch.setattr("cutpoint.analyze.has_telemetry", lambda f, timeout=60: True)
-    for source in (folder, folder / X3_00):
-        res = client.post("/api/projects/suggest-style", json={"source": str(source)})
-        assert res.json() == {"style": None}
-
-
-def test_suggest_style_probes_at_most_12_files_and_follows_recursive_and_exclude(
-    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    folder = tmp_path / "footage"
-    (folder / "deep").mkdir(parents=True)
-    for i in range(13):
-        (folder / f"v{i:02}.mp4").write_bytes(b"x")
-    (folder / "deep" / "tel.mp4").write_bytes(b"x")
-    (folder / "DVR1.mp4").write_bytes(b"x")
-    probed: list[Path] = []
-    monkeypatch.setattr(
-        "cutpoint.analyze.has_telemetry",
-        lambda f, timeout=60: probed.append(f) or f.name in {"tel.mp4", "DVR1.mp4"},
-    )
-
-    def ask(**extra: object) -> object:
-        probed.clear()
-        res = client.post("/api/projects/suggest-style", json={"source": str(folder), **extra})
-        assert res.status_code == 200, res.text
-        return res.json()["style"]
-
-    assert ask(exclude=["*DVR*"]) is None and len(probed) == 12  # the 13th and deep/ stay unprobed
-    assert ask(exclude=["*DVR*", "v*"]) is None and probed == []  # nothing left, deep/ unsearched
-    assert ask(exclude=["*DVR*", "v*"], recursive=True) == "action-cam"  # deep/tel.mp4
-    assert ask(exclude=["v0*", "v1*"]) == "action-cam"  # DVR1.mp4 is among the first 12
-
-
-def test_suggest_style_gives_no_answer_while_another_probe_runs(
-    client: TestClient, tmp_path: Path
-) -> None:
-    f = tmp_path / "a.mp4"
-    f.write_bytes(b"x")
-    assert ui._suggest_lock.acquire(blocking=False)
-    try:
-        res = client.post("/api/projects/suggest-style", json={"source": str(f)})
-    finally:
-        ui._suggest_lock.release()
-    assert res.status_code == 200 and res.json() == {"style": None, "busy": True}
 
 
 # --------------------------------------------------------------------------- resume (#109)
