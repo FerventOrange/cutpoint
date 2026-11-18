@@ -904,7 +904,7 @@ one 0-10 scale (`beauty`, `people`, `group`, `speed`, `carve`, `airtime`, `crash
 per moment in the list, all of them in `get_moment`). Its `find_moments` tool searches labels,
 transcripts, `seen` text, heard sounds and the names of cues of 5 or more (`air` finds `airtime`
 and `jump_air`). The instructions name only the cues the project has, and requests such as
-"beauty shots", "casual skiing" or "bloopers" work without moment ids only when it has the cues
+"beauty shots", "steady action" or "bloopers" work without moment ids only when it has the cues
 for them: action-cam footage with telemetry (`--style action-cam`), the `events` vision layer
 (window descriptions and tags) or visual-pool moments. Other styles have the vision rating
 label (with `--vision`), `loudness`, `laughter` and the laughter or screams heard, so the model
@@ -1280,7 +1280,7 @@ own pass, usually all `cached`.
 `transcript.txt` has one line per pause or sentence: `[Round1.mp4 00:12:31.4-00:12:38.9] text`.
 
 Visual candidates (`action-cam`, `action` and `sport` styles, and learned styles based on
-them). The scorer ranks scenery and steady riding low, so `analyze` also lists a few of them
+them). The scorer ranks scenery and steady motion low, so `analyze` also lists a few of them
 after the scored candidates, from the cached visual layer, action-cam grids and GPS speed
 (no extra decode): entries with `"pool": "visual"`, ids `v001`, `v002`, ... and a `kind`:
 `view` (a beauty peak of at least 0.5, 5-7 s, label "scenic view / beauty shot"), `crew`

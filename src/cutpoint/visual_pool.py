@@ -1,6 +1,6 @@
 """Visual candidates: beauty, cruising and group windows that become moments (#635).
 
-The scorer ranks scenery and steady riding low on purpose, so on a day of action footage
+The scorer ranks scenery and steady motion low on purpose, so on a day of action footage
 they never reach ``highlights.json``. This module adds a few of them after the scored
 candidates, for the styles ``action-cam``, ``action`` and ``sport`` (and learned presets
 based on them) only, from cached layers alone (no video decode):
