@@ -43,6 +43,7 @@ from cutpoint import cache, repeats, scorer, selfcheck, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
+from cutpoint.sources import settings_language
 from cutpoint.styles import STYLES, get_style, learned_styles, style_name
 from cutpoint.transcribe import flat_markers
 from cutpoint.utils import slugify, title_slug
@@ -849,7 +850,7 @@ def nominate(
     for e in ev.get("events", []):
         by_src.setdefault(e["source"], []).append(e)
     restore_widened(cands)  # from the same bounds as the first time, whatever the events now
-    language = (hl.get("settings") or {}).get("language")
+    language = settings_language(hl)
     heard: dict[str, list[dict[str, Any]]] = {}
 
     def segs(src: str) -> list[dict[str, Any]]:

@@ -29,7 +29,7 @@ function settings(over = {}) {
  * Boot, open the Models tab. ``logins`` and ``catalog`` ({provider: models | {state, message}}) are what the
  * server answers; ``calls`` lists the requests the tab made after opening, as "METHOD path?query".
  */
-async function modelsTab(t, { logins = [], catalog = {}, st = settings(), routes = {} } = {}) {
+async function modelsTab(t, { logins = [], catalog = {}, st = settings(), routes = {}, setup = null } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const state = { logins, st };
   const page = await boot({
@@ -43,6 +43,7 @@ async function modelsTab(t, { logins = [], catalog = {}, st = settings(), routes
       },
       ...routes,
     },
+    setup,
   });
   t.after(() => page.close());
   const d = page.document;
@@ -206,17 +207,18 @@ test('vision consent: a hosted provider needs permission before frames are sent,
 
 // ---- subscription login ----
 
-function loginSetup(t, { provider: name = 'codex', statuses = [{ state: 'done' }], confirms = [true], url = 'https://auth.example/login' } = {}) {
+function loginSetup(t, { provider: name = 'codex', statuses = [{ state: 'done' }], confirms = [true], url = 'https://auth.example/login', setup = null } = {}) {
   const opened = [];
   const state = { logins: [{ provider: name, title: name, logged_in: false }] };
   let polls = 0;
   return modelsTab(t, {
     logins: state.logins,
+    setup,
     routes: {
       'POST /api/assistant/login': { url },
       'GET /api/assistant/login/status': () => {
         const s = statuses[Math.min(polls++, statuses.length - 1)];
-        if (s.state === 'done') state.logins[0].logged_in = true;
+        if (s?.state === 'done') state.logins[0].logged_in = true;
         return s;
       },
     },
@@ -249,6 +251,76 @@ test('login: a failed sign-in reports the reason and stops polling', async (t) =
   t.mock.timers.tick(6000); await m.page.settle();
   assert.equal(m.polls(), 1);
   assert.match(m.$('#modelsSubsList').textContent, /Not connected/);
+});
+
+test('login: a second click on a provider that is already waiting starts no second poll (A285)', async (t) => {
+  const m = await loginSetup(t, { statuses: [{ state: 'pending' }] });
+  await m.click('#modelsSubsList button');
+  const btn = m.$('#modelsSubsList button');
+  assert.equal(btn.disabled, true);
+  btn.disabled = false; // a stale or re-enabled button must not start another loop
+  await m.click('#modelsSubsList button');
+  assert.equal(m.prompts.length, 1, 'no second confirmation');
+  assert.equal(m.page.requests.filter((r) => r.path === '/api/assistant/login').length, 1);
+  t.mock.timers.tick(1500); await m.page.settle();
+  assert.equal(m.polls(), 1, 'one poll per interval');
+  t.mock.timers.tick(1500); await m.page.settle();
+  assert.equal(m.polls(), 2);
+});
+
+test('login: a sign-in the server keeps pending stops polling at the deadline and says it timed out (A285)', async (t) => {
+  const statuses = [{ state: 'pending' }];
+  const m = await loginSetup(t, { statuses });
+  await m.click('#modelsSubsList button');
+  // the server's own limit is 300 s; the page gives up 10 s later
+  for (let i = 0; i < 199; i++) { t.mock.timers.tick(1500); await m.page.settle(); }
+  assert.equal(m.polls(), 199, 'still polling at 298.5 s');
+  assert.match(m.$('#modelsSubsList').textContent, /Waiting for browser/);
+  for (let i = 0; i < 8; i++) { t.mock.timers.tick(1500); await m.page.settle(); }
+  const at = m.polls();
+  assert.ok(at <= 206, `no poll after 310 s (${at})`);
+  assert.equal(m.$('#modelsSubsStatus').textContent, 'Login failed: login timed out');
+  assert.ok(!/Waiting/.test(m.$('#modelsSubsList').textContent));
+  assert.match(m.$('#modelsSubsList').textContent, /Not connected/);
+  for (let i = 0; i < 4; i++) { t.mock.timers.tick(1500); await m.page.settle(); }
+  assert.equal(m.polls(), at, 'the poll has ended');
+
+  // logging in again after the timeout works
+  statuses[0] = { state: 'done' };
+  await m.click('#modelsSubsList button');
+  assert.equal(m.prompts.length, 2, 'asked again');
+  assert.equal(m.page.requests.filter((r) => r.path === '/api/assistant/login').length, 2);
+  t.mock.timers.tick(1500); await m.page.settle();
+  assert.equal(m.$('#modelsSubsStatus').textContent, 'Logged in.');
+});
+
+test('login: a status reply that is not an object leaves the provider able to log in again', async (t) => {
+  const statuses = [null];
+  const errors = [];
+  // the click handler's promise rejects (s.state of null): catch it here, or node:test fails the test as unhandled
+  const setup = (w) => {
+    const add = w.EventTarget.prototype.addEventListener;
+    w.EventTarget.prototype.addEventListener = function (type, fn, ...rest) {
+      const wrapped = typeof fn === 'function' ? function (...a) { const r = fn.apply(this, a); r?.catch?.((e) => errors.push(e)); return r; } : fn;
+      return add.call(this, type, wrapped, ...rest);
+    };
+  };
+  const m = await loginSetup(t, { statuses, setup });
+  await m.click('#modelsSubsList button');
+  t.mock.timers.tick(1500); await m.page.settle();
+  assert.equal(m.polls(), 1);
+  assert.ok(!/Waiting/.test(m.$('#modelsSubsList').textContent), 'not stuck waiting');
+  assert.equal(m.$('#modelsSubsList button').disabled, false);
+  t.mock.timers.tick(6000); await m.page.settle();
+  assert.equal(m.polls(), 1, 'the poll ended');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /state/);
+
+  statuses[0] = { state: 'done' };
+  await m.click('#modelsSubsList button');
+  assert.equal(m.page.requests.filter((r) => r.path === '/api/assistant/login').length, 2);
+  t.mock.timers.tick(1500); await m.page.settle();
+  assert.equal(m.$('#modelsSubsStatus').textContent, 'Logged in.');
 });
 
 test('login: declining the confirmation asks the server nothing', async (t) => {

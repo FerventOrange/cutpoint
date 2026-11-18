@@ -22,7 +22,13 @@ import numpy as np
 from cutpoint import cache
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import MediaInfo, pcm_float, read_pcm_window, wav_duration
-from cutpoint.transcribe import filter_hallucinations, flat_words, split_markers, transcript_name
+from cutpoint.transcribe import (
+    filter_hallucinations,
+    flat_words,
+    shift_segments,
+    split_markers,
+    transcript_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +136,17 @@ def audio_window(src: Path, info: MediaInfo, t0: float, t1: float) -> tuple[np.n
     return pcm_float(raw), t0
 
 
+def settings_language(hl: Any) -> str | None:
+    """The transcription language the analysis forced (``settings.language`` of the
+    highlights ``hl``), or None: detected by Whisper, or no analysis."""
+    settings = hl.get("settings") if isinstance(hl, dict) else None
+    return settings.get("language") if isinstance(settings, dict) else None
+
+
 def project_language(project: Path) -> str | None:
     """Transcription language the analysis of ``project`` forced (highlights.json
     ``settings.language``), or None: detected by Whisper, or no analysis."""
-    hl = cache.load_json(project / "highlights.json")
-    settings = hl.get("settings") if isinstance(hl, dict) else None
-    return settings.get("language") if isinstance(settings, dict) else None
+    return settings_language(cache.load_json(project / "highlights.json"))
 
 
 def _transcript_file(
@@ -200,28 +211,7 @@ def source_segments(
             continue
         found = True
         segments, _ = filter_hallucinations(segments)
-        out.extend(
-            {
-                **seg,
-                "start": seg["start"] + p.offset,
-                "end": seg["end"] + p.offset,
-                "words": [
-                    {**w, "start": w["start"] + p.offset, "end": w["end"] + p.offset}
-                    for w in seg.get("words", [])
-                ],
-                **(
-                    {
-                        "markers": [
-                            {**m, "start": m["start"] + p.offset, "end": m["end"] + p.offset}
-                            for m in seg["markers"]
-                        ]
-                    }
-                    if seg.get("markers")
-                    else {}
-                ),
-            }
-            for seg in split_markers(segments)
-        )
+        out.extend(shift_segments(split_markers(segments), p.offset))
     return out if found else None
 
 

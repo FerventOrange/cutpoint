@@ -225,7 +225,7 @@ def test_edit_events_leaves_out_the_layers_of_skipped_steps(
     monkeypatch.setattr(events_pipeline, "preflight", lambda layers: checked.append(layers))
     monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: ran.append(args.layers))
     monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
-    monkeypatch.setattr(cutpoint.analyze, "has_telemetry", lambda src, timeout=60: True)
+    monkeypatch.setattr(edit, "has_telemetry", lambda src, timeout=60: True)
     assert cli.main(["edit", str(pipeline.video), "--events", *argv]) == 0
     assert checked == [layers]
     assert ran == [expected]
@@ -247,7 +247,7 @@ def test_edit_events_of_action_cam_without_telemetry_are_the_defaults(
     monkeypatch.setattr(events_pipeline, "preflight", lambda layers: checked.append(layers))
     monkeypatch.setattr(events_cli, "run_args", lambda args, **kw: None)
     monkeypatch.setattr(cutpoint.analyze, "report_highlights", lambda *a: None)
-    monkeypatch.setattr(cutpoint.analyze, "has_telemetry", lambda src, timeout=60: telemetry)
+    monkeypatch.setattr(edit, "has_telemetry", lambda src, timeout=60: telemetry)
     argv = ["edit", str(pipeline.video), "--style", "action-cam", "--events"]
     assert cli.main(argv) == 0
     assert checked == [layers]

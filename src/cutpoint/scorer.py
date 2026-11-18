@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from cutpoint import default_fit, features
+from cutpoint.sources import settings_language
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
@@ -258,7 +259,7 @@ def rescore_events(
     windows = ev.get("windows", [])
     types = resolve(project, ev)
     style = scoring.analysis_names(hl)
-    language = (hl.get("settings") or {}).get("language")
+    language = settings_language(hl)
     segments: dict[str, list[dict[str, Any]] | None] = {}
     spans = scoring.source_spans(hl)
     repeat: dict[str, dict[int, float]] = {}  # per source: the repeat-damped events' weights

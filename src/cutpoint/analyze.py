@@ -47,6 +47,7 @@ from cutpoint import (
     config,
     default_fit,
     features,
+    ffmpeg_utils,
     folders,
     jsonout,
     memguard,
@@ -84,7 +85,6 @@ from cutpoint.ffmpeg_utils import (
     RunCancelled,
     decoder_for,
     extract_audio,
-    ffprobe_json,
     first_frame_time,
     gpu_chain,
     momentary_loudness,
@@ -107,6 +107,7 @@ from cutpoint.styles import (
     style_hash,
     style_name,
 )
+from cutpoint.telemetry import has_telemetry
 from cutpoint.transcribe import (
     Segment,
     Transcriber,
@@ -117,6 +118,7 @@ from cutpoint.transcribe import (
     flat_words,
     is_fallback,
     record_transcript,
+    shift_segments,
     split_markers,
     transcript_name,
 )
@@ -974,7 +976,11 @@ def scene_cuts(
     if plan is not None and (cuts := _hybrid_cuts(src, cdir, duration, *plan, cancel)) is not None:
         cache.save_json(path, cuts)
         return cuts
-    proxy = cdir / "proxy.mp4"
+    fixed = cdir / "proxy.mp4"
+    ffmpeg_utils.sweep_tmp(fixed)  # leftovers of killed runs; other live runs keep theirs
+    with contextlib.suppress(OSError):
+        fixed.unlink(missing_ok=True)  # the fixed name of older versions
+    proxy = ffmpeg_utils.unique_tmp(fixed)  # another run may share cdir
     gpu = scene_decode_mode() != "cpu"
     lead = _lead_in(src, offset, duration, readable_from)
     args = _proxy_args(duration, offset, limit, _first_shift(src, offset, duration), lead)
@@ -1878,12 +1884,14 @@ def vision_skipped(c: dict[str, Any]) -> bool:
     )
 
 
-def _label(c: Candidate, style: Style) -> str:
-    if c.label_hint:
-        return slugify(c.label_hint, 30)
-    if c.signals.get("laughter", 0) > 0.5:
+def label_for(signals: Mapping[str, Any], style: Style, hint: str | None = None) -> str:
+    """The label of a moment: its keyword ``hint`` as a slug, else "laugh" or "loud-moment"
+    from its ``signals``, else "<style>-moment"."""
+    if hint:
+        return slugify(hint, 30)
+    if signals.get("laughter", 0) > 0.5:
         return "laugh"
-    if c.signals.get("loudness", 0) > 0.6:
+    if signals.get("loudness", 0) > 0.6:
         return "loud-moment"
     return f"{style.name}-moment"
 
@@ -2148,23 +2156,6 @@ def find_resume_point(src: Path, fail_t: float, duration: float) -> tuple[float,
     )
 
 
-def _shift_segments(segments: list[Segment], dt: float) -> list[Segment]:
-    if not dt:
-        return segments
-    out = []
-    for seg in segments:
-        words = [
-            {**w, "start": w["start"] + dt, "end": w["end"] + dt} for w in seg.get("words", [])
-        ]
-        shifted = {**seg, "start": seg["start"] + dt, "end": seg["end"] + dt, "words": words}
-        if seg.get("markers"):
-            shifted["markers"] = [
-                {**m, "start": m["start"] + dt, "end": m["end"] + dt} for m in seg["markers"]
-            ]
-        out.append(shifted)
-    return out
-
-
 def analyze_source(
     src: Path,
     style: Style,
@@ -2338,7 +2329,7 @@ def analyze_source(
         offset=offset,
         duration=span,
         candidates=[],
-        segments=_shift_segments(segments, offset),
+        segments=shift_segments(segments, offset),
         read_error=read_error,
         signals=ps,
         stages=stages,
@@ -3153,20 +3144,6 @@ class LayerPlan:
         return tuple(x for x in LAYER_STEP if any(x in v for v in self.layers.values()))
 
 
-def has_telemetry(src: Path) -> bool:
-    """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
-    trailer); only the container's stream list is read, within 60 seconds."""
-    from cutpoint.insta360 import imu_source  # noqa: PLC0415
-
-    try:
-        if imu_source(src) is not None:
-            return True
-        info = ffprobe_json(remap_source(src), entries="stream=codec_tag_string", timeout=60)
-    except (OSError, FFmpegError):
-        return False
-    return any(s.get("codec_tag_string") == "gpmd" for s in info.get("streams") or [])
-
-
 # The --json warning of action-cam sources without camera telemetry (#939).
 NO_TELEMETRY_WARNING = "action_cam_no_telemetry"
 
@@ -3246,6 +3223,7 @@ def plan_layers(
     cat: str | None = None,
     visual_index: bool = False,
     cuda: Callable[[], bool] | None = None,
+    quiet: bool = False,
 ) -> LayerPlan:
     """Which event layers the reactions, keyframes and crashes steps run.
 
@@ -3261,9 +3239,10 @@ def plan_layers(
     place where :func:`_light_index` says so; ``no_visual`` then tells the crashes step why it
     has no visual layer. Crashes:
     action-cam, action and general footage, or any source with telemetry. A step whose events extra
-    or model files are missing is left out with one INFO line naming the fix; nothing is
-    downloaded.
+    or model files are missing is left out with one INFO line naming the fix (DEBUG with ``quiet``);
+    nothing is downloaded.
     """
+    log = logger.debug if quiet else logger.info
     cat = cat or layer_category(style)
     plan = LayerPlan(game=cat == category.GAMEPLAY)
     action = cat in (category.ACTION_CAM, category.ACTION, category.GENERAL)
@@ -3292,7 +3271,7 @@ def plan_layers(
         from cutpoint.extras import LITE, install_hint  # noqa: PLC0415
 
         names = [LABELS[s].lower() for s in want]
-        logger.info(
+        log(
             "The %s %s %s (the events extra is not installed) and skipped; to add it: %s",
             " and ".join([", ".join(names[:-1]), names[-1]] if len(names) > 1 else names),
             "step is" if len(names) == 1 else "steps are",
@@ -3312,7 +3291,7 @@ def plan_layers(
             plan.skipped.pop("keyframes", None)  # a style without a keyframe layer of its own
             plan.no_visual = SKIP_NO_CUDA  # crashes.json still has no visual layer
         else:
-            logger.info(
+            log(
                 "No CUDA GPU: %s skipped (CLIP on the CPU would take about an hour per hour of "
                 "footage)",
                 "keyframes" if not rest else "the visual index",
@@ -3341,7 +3320,7 @@ def plan_layers(
         plan.skipped[step] = f"model files missing (cutpoint setup --only {need})"
         del want[step]
     if components:
-        logger.info(
+        log(
             "Model files are missing for some analysis steps (nothing is downloaded now); "
             "to add them: cutpoint setup --only %s",
             " ".join(sorted(components, key=COMPONENTS.index)),
@@ -3707,7 +3686,7 @@ def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str
             "keywords": c.keywords,
             "vision": None,  # set by _rate_vision
         },
-        "label": _label(c, style),
+        "label": label_for(c.signals, style, c.label_hint),
         **({"kind": c.kind} if c.kind else {}),
         **({"must_include": True} if c.must_include else {}),
         **(
@@ -3818,6 +3797,21 @@ class VisionOutcome:
     by_kind: dict[str, int] = field(default_factory=dict)
 
 
+def _ask_rater(
+    method: Callable[..., Any], c: dict[str, Any], style: Style, activity: Prompts | None
+) -> Any:
+    """``VisionRater.rate`` or ``cached`` (``method``) for the candidate ``c``."""
+    return method(
+        remap_source(Path(c["source"])),
+        c["start"],
+        c["end"],
+        style.base,
+        activity=activity,
+        transcript=c.get("transcript"),
+        laughter=heard_laughter(c),
+    )
+
+
 def _rate_vision(
     order: list[dict[str, Any]],
     rater: VisionRater,
@@ -3852,18 +3846,7 @@ def _rate_vision(
     out = VisionOutcome()
 
     def cached(c: dict[str, Any]) -> bool:
-        return (
-            rater.cached(
-                remap_source(Path(c["source"])),
-                c["start"],
-                c["end"],
-                style.base,
-                activity=activity,
-                transcript=c.get("transcript"),
-                laughter=heard_laughter(c),
-            )
-            is not None
-        )
+        return _ask_rater(rater.cached, c, style, activity) is not None
 
     if not rater.cache_only:  # a resumed run: the ratings made before are cached
         progress.continuing("vision", sum(cached(c) for c in order), len(order))
@@ -3881,15 +3864,7 @@ def _rate_vision(
                     out.skipped_by_cap += 1
                     continue
                 hits = rater.hits
-                res = rater.rate(
-                    remap_source(Path(c["source"])),
-                    c["start"],
-                    c["end"],
-                    style.base,
-                    activity=activity,
-                    transcript=c.get("transcript"),
-                    laughter=heard_laughter(c),
-                )
+                res = _ask_rater(rater.rate, c, style, activity)
                 if rater.hits == hits and not rater.cache_only:
                     calls += 1
                 if res is None:
@@ -5164,19 +5139,7 @@ def _vision_step(
                 rater.model = rater.via.model
         if not online:  # Ollama down: the ratings already cached, no requests (#413)
             rater.cache_only = True
-            n_cached = sum(
-                rater.cached(
-                    remap_source(Path(c["source"])),
-                    c["start"],
-                    c["end"],
-                    style.base,
-                    activity=wording,
-                    transcript=c.get("transcript"),
-                    laughter=heard_laughter(c),
-                )
-                is not None
-                for c in order
-            )
+            n_cached = sum(_ask_rater(rater.cached, c, style, wording) is not None for c in order)
         if online or n_cached:
             if not online and not vision_cache_only:
                 n_none = len(order) - n_cached
