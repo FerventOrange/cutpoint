@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
-import math
 import os
 import re
 import subprocess
@@ -26,7 +25,7 @@ from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import get_config, projects_dir, remap_source
 from cutpoint.events import scoring
 from cutpoint.pano import x3
-from cutpoint.segments import MAX_SEGMENTS, check_segments
+from cutpoint.segments import MAX_SEGMENTS, check_segments, span_id
 from cutpoint.ui.common import (
     BUSY_TEXT,
     EVENT_KINDS,
@@ -43,6 +42,7 @@ from cutpoint.ui.common import (
     UI_DIR,
     bad,
     cutpoint_cmd,
+    finite_number,
     job_env,
     logger,
 )
@@ -435,19 +435,6 @@ def bit_description(c: dict[str, Any], events: Any) -> str:
     return best or str(c.get("dialogue_description") or "")
 
 
-def moment_id(source: str, start: float, end: float) -> str:
-    """The page's id of the moment ``source`` ``start``-``end``: a hash of the source's real
-    path and the span, so saved trims, sequences and drafts stay attached to the interval
-    whatever the CLI ranks (``h001``) become after an analysis or a re-rank."""
-    return _span_id(os.path.realpath(source), start, end)
-
-
-def _span_id(real: str, start: float, end: float) -> str:
-    """:func:`moment_id` of the source whose real path is ``real``."""
-    key = f"{real}|{float(start)}|{float(end)}"
-    return hashlib.sha1(key.encode()).hexdigest()[:12]
-
-
 def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any] | None:
     """Keep saved trims attached to source intervals, not mutable CLI ranks; ``cli_id`` keeps the
     CLI id (h001) that the cards show and ``clips --ids`` takes. ``display_label`` is the label
@@ -477,7 +464,7 @@ def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any
                 or ai_context.shown_label(c.get("label"), c),
                 "long_bit": scoring.is_long_dialogue(c),
                 "bit_description": bit_description(c, events),
-                "id": _span_id(real(c["source"]), c["start"], c["end"]),
+                "id": span_id(real(c["source"]), c["start"], c["end"]),
             }
             for c in hl.get("candidates") or []
         ],
@@ -486,8 +473,8 @@ def moments_view(hl: dict[str, Any] | None, events: Any = None) -> dict[str, Any
 
 def _secs(v: Any) -> float | None:
     """``v`` as a positive, finite number of seconds, else None."""
-    ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
-    return float(v) if ok and v > 0 else None
+    v = finite_number(v)
+    return v if v is not None and v > 0 else None
 
 
 def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> float | None:
@@ -660,8 +647,9 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
             continue
         if e.get("kind") not in EVENT_KINDS or str(e.get("type", "")).startswith("coverage"):
             continue
-        start, end, conf = e.get("start"), e.get("end"), e.get("confidence")
-        if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (start, end)):
+        start, end = finite_number(e.get("start")), finite_number(e.get("end"))
+        conf = finite_number(e.get("confidence"))
+        if start is None or end is None:
             continue
         label = e.get("type") if e["kind"] == "telemetry" else e.get("label")
         if e["kind"] == "text" and isinstance(e.get("title"), str) and e["title"].strip():
@@ -674,9 +662,7 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
                 "kind": e["kind"],
                 "type": str(e.get("type", ""))[:40],
                 "label": str(label or e.get("type") or e["kind"])[:60],
-                "confidence": round(conf, 3)
-                if isinstance(conf, (int, float)) and math.isfinite(conf)
-                else None,
+                "confidence": None if conf is None else round(conf, 3),
             }
         )
     out += _crash_events(p, out)
@@ -706,16 +692,15 @@ def _crash_events(p: Path, have: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for c in (raw if isinstance(raw, list) else [])
         if isinstance(c, dict)
         and isinstance(c.get("source"), str)
-        and isinstance(c.get("confidence"), (int, float))
-        and math.isfinite(c["confidence"])
+        and finite_number(c.get("confidence")) is not None
     ]
     floor = crash_floor(c["confidence"] for c in entries)
     out = []
     for c in entries:
-        start, end, conf = c.get("t0"), c.get("t1"), c["confidence"]
+        start, end, conf = finite_number(c.get("t0")), finite_number(c.get("t1")), c["confidence"]
         if conf < floor:
             continue
-        if not all(isinstance(x, (int, float)) and math.isfinite(x) for x in (start, end)):
+        if start is None or end is None:
             continue
         end = max(start, end)
         if any(
@@ -742,7 +727,8 @@ TARGET_MAX_S = 36000  # the sequence's target length: up to 10 hours
 
 def _valid_target(v: Any) -> bool:
     """Whether ``v`` is a usable target length (a number above 0, at most TARGET_MAX_S)."""
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= TARGET_MAX_S
+    v = finite_number(v)
+    return v is not None and 0 < v <= TARGET_MAX_S
 
 
 def _target_of(review: Any) -> float | None:

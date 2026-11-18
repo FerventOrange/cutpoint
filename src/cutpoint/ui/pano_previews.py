@@ -19,7 +19,7 @@ from cutpoint import cache, folders
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import ChildScope, child_scope
 from cutpoint.pano import project as pano_project
-from cutpoint.ui.common import SOURCES_CACHE_MAX, SOURCES_CACHE_S, UI_DIR, logger
+from cutpoint.ui.common import SOURCES_CACHE_MAX, SOURCES_CACHE_S, UI_DIR, finite_number, logger
 from cutpoint.ui.files import _inside, _own, _ui_folder
 from cutpoint.ui.media import PROXY_PRUNE_GRACE_S, Media, _idle, _mark_used
 from cutpoint.utils import file_stamp
@@ -98,8 +98,7 @@ def _pano_reasons(
     from cutpoint.pano.candidates import SPIN_WINDOW_S  # noqa: PLC0415
 
     def num(key: str) -> float | None:
-        v = diag.get(key)
-        return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+        return finite_number(diag.get(key))
 
     def share(key: str) -> str:
         v = num(key)
@@ -562,6 +561,19 @@ class PanoPreviews:
             if (f.name != f"{m[1]}.mp4" or m[1] not in keep) and _idle(f, cutoff):
                 drop.append(f)
         Media._delete(drop)
+
+    def forget(self, project: Path) -> None:
+        """Drop what this run knows of the project folder ``project`` (it was deleted), so a
+        project made later under the same name starts clean: no failed outcome of the old one,
+        and its leftover previews are pruned again."""
+        with self.lock:
+            self.rev += 1
+            for table in (self.outcomes, self.done):
+                for k in [k for k in table if k[0] == project]:
+                    del table[k]
+            self.memo.pop(project, None)
+            self.ready_memo.pop(project, None)
+            self.pruned.discard(project)
 
     def shutdown(self) -> None:
         with self.lock:

@@ -489,5 +489,7 @@ def delete_project(request: Request, pid: str, body: dict[str, Any] | None = Non
         with jobs.lock:
             DELETING.discard(p)
     media.forget(p)
+    app.state.previews.forget(p)
+    app.state.planners.pop(p, None)
     turns.clear(str(p))
     return {"deleted": pid, "kept": len(plan.kept)}

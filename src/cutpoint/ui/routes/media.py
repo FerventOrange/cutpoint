@@ -14,7 +14,15 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 
 from cutpoint.errors import FFmpegError
-from cutpoint.ui.common import FRAME_MAX_W, FRAME_MIN_W, FRAME_WIDTH, UI_DIR, bad, logger
+from cutpoint.ui.common import (
+    FRAME_MAX_W,
+    FRAME_MIN_W,
+    FRAME_WIDTH,
+    UI_DIR,
+    bad,
+    finite_number,
+    logger,
+)
 from cutpoint.ui.files import _highlights, read_meta
 from cutpoint.ui.media import _mark_used
 from cutpoint.ui.projects import _rail_events, output_names, project_dir
@@ -170,9 +178,8 @@ def prepare_source(request: Request, pid: str, sid: str, body: dict[str, Any] | 
     if not isinstance(queue, bool):
         raise bad("queue must be true or false")
     if body and ("lo" in body or "hi" in body):
-        span = [body.get("lo"), body.get("hi")]
-        times = [float(x) for x in span if isinstance(x, (int, float)) and not isinstance(x, bool)]
-        if len(times) != 2 or not all(map(math.isfinite, times)) or not 0 <= times[0] <= times[1]:
+        times = [v for k in ("lo", "hi") if (v := finite_number(body.get(k))) is not None]
+        if len(times) != 2 or not 0 <= times[0] <= times[1]:
             raise bad("lo and hi must be times in seconds with 0 <= lo <= hi")
         window = (times[0], times[1])
     if queue and window is None:

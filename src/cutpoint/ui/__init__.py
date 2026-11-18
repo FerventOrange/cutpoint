@@ -91,7 +91,7 @@ from cutpoint import paths
 from cutpoint.config import projects_dir, remap_source, update_config
 from cutpoint.encode import BT709_TAGS
 from cutpoint.ffmpeg_utils import VideoEncoder, grab_images, probe, video_encoder
-from cutpoint.segments import MAX_SEGMENTS
+from cutpoint.segments import MAX_SEGMENTS, moment_id
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import get_style
 from cutpoint.ui.analysis import (
@@ -163,7 +163,6 @@ from cutpoint.ui.projects import (
     clip_joins,
     export_joins,
     fresh_name,
-    moment_id,
     moments_view,
     on_network,
     project_busy,

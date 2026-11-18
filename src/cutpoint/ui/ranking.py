@@ -19,12 +19,13 @@ from fastapi.responses import JSONResponse
 from cutpoint import cache, folders, jsonout, runstate
 from cutpoint.assistant import ranking as ai_ranking
 from cutpoint.pano import project as pano_project
+from cutpoint.segments import moment_id
 from cutpoint.styles import AUTO, Style, get_style
 from cutpoint.styles import style_name as fallback_style_name
 from cutpoint.ui.analysis import ui_styles
 from cutpoint.ui.common import BUSY_TEXT, bad, job_env, logger
 from cutpoint.ui.files import _inside, _own, read_meta
-from cutpoint.ui.projects import RERANKING, moment_id, project_busy, run_state
+from cutpoint.ui.projects import RERANKING, project_busy, run_state
 
 CUDA_PROBE_S = 120.0  # seconds the CUDA check's child process may take (it imports torch)
 

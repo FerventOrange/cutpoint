@@ -47,13 +47,18 @@ def keyed_provider(body: dict[str, Any]) -> str:
     return name
 
 
+def role_of(value: Any) -> str:
+    """A request's ``role``: ``assistant`` (also when not sent) or ``vision``; else 400."""
+    role = value or "assistant"
+    if role not in ("assistant", "vision"):
+        raise bad("role must be assistant or vision")
+    return role
+
+
 def key_section(body: dict[str, Any]) -> str:
     """The config section whose base URL names a key's host: ``role`` ``assistant`` (the
     default) or ``vision``."""
-    role = body.get("role") or "assistant"
-    if role not in ("assistant", "vision"):
-        raise bad("role must be assistant or vision")
-    return "vision_assistant" if role == "vision" else "assistant"
+    return "vision_assistant" if role_of(body.get("role")) == "vision" else "assistant"
 
 
 # -- subscription logins (Claude Code, Codex, Antigravity): managed via CLIProxyAPI ----
@@ -234,9 +239,7 @@ def give_consent(body: dict[str, Any]):
     """Record that the user agreed to send project data to the provider in use for ``role``
     (``assistant``, the default, or ``vision``), named by its ``key``, in that role's own
     ``consent`` list; 409 when the provider in use is another one by now, or is local."""
-    role = body.get("role") or "assistant"
-    if role not in ("assistant", "vision"):
-        raise bad("role must be assistant or vision")
+    role = role_of(body.get("role"))
     section_name = "vision_assistant" if role == "vision" else "assistant"
     provider = vision_provider() if role == "vision" else assistant_provider()
     want = ai_providers.consent_key(provider, role)
@@ -267,8 +270,7 @@ def assistant_models(
     """The models a provider offers, for Settings' Model field: ``{state, models, message}``
     (:func:`cutpoint.assistant.providers.model_list`). Accepts role=assistant|vision."""
     app = request.app
-    if role not in ("assistant", "vision"):
-        raise bad("role must be assistant or vision")
+    role = role_of(role)
     try:
         if role == "vision":
             if provider not in VISION_PROVIDERS and provider != "custom":
@@ -433,16 +435,16 @@ def login_status(request: Request, provider: str):
 
         proxy_state = info.get("proxy_state")
         started_at = info.get("started_at", 0)
-        if time.monotonic() - started_at > LOGIN_TIMEOUT_S:
+        timed_out = time.monotonic() - started_at > LOGIN_TIMEOUT_S
+        if timed_out:
             info["state"] = "error"
             info["error"] = "login timed out"
-            to_cancel = proxy_state
-            proxy_state = None
-        else:
-            to_cancel = None
-    if to_cancel:
-        with contextlib.suppress(Exception):
-            cliproxy.cancel_login(to_cancel)
+        elif not proxy_state:  # start_login has not had the proxy's answer yet: nothing to poll
+            return {"state": "pending", "error": ""}
+    if timed_out:
+        if proxy_state:
+            with contextlib.suppress(Exception):
+                cliproxy.cancel_login(proxy_state)
         return {"state": "error", "error": "login timed out"}
     try:
         poll_res = cliproxy.poll_login(proxy_state)

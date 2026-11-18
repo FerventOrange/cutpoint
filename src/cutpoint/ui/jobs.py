@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import re
 import secrets
 import subprocess
@@ -25,6 +24,7 @@ from cutpoint.ui.common import (
     PROGRESS_LINE,
     STEP_STATES,
     bad,
+    finite_number,
     logger,
     spawn,
 )
@@ -56,14 +56,14 @@ def parse_progress(line: str) -> dict[str, Any] | None:
         or state not in STEP_STATES
     ):
         return None
-    number = isinstance(pct, (int, float)) and not isinstance(pct, bool) and math.isfinite(pct)
+    pct = finite_number(pct)
     return {
         "step": step,
         "index": index,
         "total": total if isinstance(total, int) and not isinstance(total, bool) else None,
         "label": label if isinstance(label, str) and label else step,
         "state": state,
-        "pct": min(100.0, max(0.0, float(pct))) if number else None,
+        "pct": None if pct is None else min(100.0, max(0.0, pct)),
         "detail": detail if isinstance(detail, str) and detail else None,
     }
 
@@ -323,12 +323,7 @@ class Jobs:
             elif code != 0 and self._busy(job):
                 job.status = "failed"
             elif code != 0:
-                own = list(job.logs)[-(job.logged - mark) :] if job.logged > mark else []
-                last = next(
-                    (m.group(1) for ln in reversed(own) if (m := re.search(r"ERROR\s+(.*)", ln))),
-                    None,
-                )
-                job.error, job.status = last or f"exit code {code}", "failed"
+                job.error, job.status = self._error_text(job, mark) or f"exit code {code}", "failed"
             else:
                 try:
                     if on_success:
@@ -360,6 +355,22 @@ class Jobs:
                 except Exception:
                     logger.exception("job %s: the cleanup after it failed", job.id)
             job.done.set()
+
+    @staticmethod
+    def _error_text(job: Job, mark: int) -> str | None:
+        """Why the job's command failed: the first line of its ``--json`` envelope's
+        ``error.message`` (an ffmpeg failure's message goes on with its stderr), else the last
+        ERROR line it logged after line ``mark`` (a command that stopped before its envelope)."""
+        err = (job.result or {}).get("error")
+        message = err.get("message") if isinstance(err, dict) else None
+        if isinstance(message, str) and (
+            lines := [ln for ln in message.splitlines() if ln.strip()]
+        ):
+            return lines[0].strip()
+        own = list(job.logs)[-(job.logged - mark) :] if job.logged > mark else []
+        return next(
+            (m.group(1) for ln in reversed(own) if (m := re.search(r"ERROR\s+(.*)", ln))), None
+        )
 
     @staticmethod
     def _busy(job: Job) -> bool:
