@@ -2525,8 +2525,12 @@ which can take minutes to hours.
 - A folder in use always stays, also with `--all`: its project's run lock is held, a lock in the
   folder is held, it cannot be read in full, or it was used since the prune started. On Windows a
   folder with an open file stays too.
-- Only source cache folders are removed. The profile discovery cache, the 360 check cache, the
-  timeline index and any other file stay. Symlinks are never followed.
+- Only source cache folders are removed. The profile discovery cache (`activity`) and the 360
+  check cache (`pano_vl`) stay: their files are a few KB each and hold model answers that would
+  have to be asked again. Your activity profile library (`profiles` in the Cutpoint folder, see
+  [paths](#paths)) is never touched. Any other file stays too, and symlinks are never followed.
+- The timeline index (`timeline-index.json`) drops the entries of the timeline copies that were
+  in the removed folders. When another run is writing the index, it is left as it is.
 - `--dry-run` lists what would be removed and removes nothing.
 
 A folder that cannot be removed is a `WARNING` (`cache_remove_failed` with `--json`), and the run

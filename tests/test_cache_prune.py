@@ -380,6 +380,92 @@ def test_text_output_names_the_folders(caplog):
     assert "kept 1 used since" in caplog.text
 
 
+def test_library_profiles_survive_a_prune_with_all(tmp_path, monkeypatch, capsys, prune):
+    """``cutpoint profile create`` files are never pruned, also with the cache folder around
+    the profile library and the discovery cache of their footage long unused."""
+    from conftest import SLED  # noqa: PLC0415
+
+    monkeypatch.setenv("CUTPOINT_CACHE_DIR", str(paths.home()))  # the library inside the cache
+    doc_file = write(tmp_path / "sled.json", json.dumps(SLED))
+    for name in ("my-sled", "trail-0123456789abcdef"):  # one named like a source cache folder
+        assert cli.main(["profile", "create", name, "--from", str(doc_file), "--json"]) == 0
+    library = sorted(paths.profiles_dir().iterdir())
+    found = write(paths.cache_dir() / "activity" / "00000000000000aa.json", "{}")
+    _age(paths.profiles_dir(), 400)
+    _age(found.parent, 400)
+    folder = _folder("a-00000000000000aa", 400)
+
+    out = prune("1", "--all")["outputs"]
+    assert [r["path"] for r in out["removed"]] == [str(folder)]
+    assert sorted(paths.profiles_dir().iterdir()) == library and len(library) == 2
+    assert found.is_file()
+
+
+# --------------------------------------------------------------------------- timeline index
+def _timeline(folder: Path) -> dict:
+    """A timeline copy in the cache folder ``folder``; its index entry."""
+    write(folder / "timeline.mkv", b"\0" * 8)
+    return {"file": f"{folder.name}/timeline.mkv", "size": 64, "mtime_ns": 1, "copy_size": 8}
+
+
+def test_timeline_index_drops_the_copies_of_removed_folders(prune):
+    from cutpoint import stage  # noqa: PLC0415
+
+    old, recent = paths.cache_dir() / "a-00000000000000aa", paths.cache_dir() / "b-00000000000000bb"
+    index = {
+        "/v/old.ts": _timeline(old),
+        "/v/recent.ts": _timeline(recent),
+        "/v/gone.ts": {"file": "c-00000000000000cc/timeline.mkv"},  # not this prune's: stays
+        "/v/odd.ts": "not an entry",
+    }
+    (old / "timeline.mkv").unlink()  # gone already: only the dry-run guard keeps its entry
+    _age(old, 40)
+    path = write(paths.cache_dir() / stage.TIMELINE_INDEX, json.dumps(index))
+
+    assert prune("30", "--dry-run")["outputs"]["count"] == 1
+    assert json.loads(path.read_text()) == index  # a dry run writes nothing
+
+    assert prune("30")["outputs"]["count"] == 1
+    del index["/v/old.ts"]
+    assert json.loads(path.read_text()) == index
+    assert not list(paths.cache_dir().glob(".*cutpoint-*"))  # no lock stays
+
+
+def test_timeline_index_entry_of_a_copy_made_again_stays(monkeypatch, prune):
+    """A run that made the removed folder and its copy again meanwhile keeps its entry."""
+    from cutpoint import stage  # noqa: PLC0415
+
+    old = paths.cache_dir() / "a-00000000000000aa"
+    index = {"/v/old.ts": _timeline(old)}
+    _age(old, 40)
+    path = write(paths.cache_dir() / stage.TIMELINE_INDEX, json.dumps(index))
+    real = cacheprune._rmtree
+
+    def removed_then_made_again(trash):
+        errors = real(trash)
+        _timeline(old)
+        return errors
+
+    monkeypatch.setattr(cacheprune, "_rmtree", removed_then_made_again)
+    assert prune("30")["outputs"]["count"] == 1
+    assert json.loads(path.read_text()) == index
+
+
+def test_timeline_index_held_by_another_run_is_left_alone(monkeypatch, caplog, prune):
+    from cutpoint import stage  # noqa: PLC0415
+
+    old = paths.cache_dir() / "a-00000000000000aa"
+    index = {"/v/old.ts": _timeline(old)}
+    _age(old, 40)
+    path = write(paths.cache_dir() / stage.TIMELINE_INDEX, json.dumps(index))
+    monkeypatch.setattr(stage, "_LOCK_WAIT_S", 0.0)
+    with caplog.at_level("DEBUG", "cutpoint.cacheprune"), folders.swap_lock(path.with_suffix("")):
+        doc = prune("30")
+    assert doc["ok"] and doc["outputs"]["count"] == 1 and doc["warnings"] == []
+    assert json.loads(path.read_text()) == index
+    assert "timeline index not cleaned" in caplog.text
+
+
 # --------------------------------------------------------------------------- used marker
 def test_source_dir_marks_its_folder_used(tmp_path, monkeypatch):
     src = _source(tmp_path)
