@@ -130,6 +130,7 @@ def test_without_a_gpu_decoder_only_the_cpu_chain_runs(ffmpeg, chain):
     assert _vf(cpu) == CPU_CHAINS[chain]
 
 
+# Pinned (#1085): CI has no GPU, so only this scan stops a new chain failing on 10-bit sources
 def test_no_chain_downloads_a_scale_cuda_surface_without_a_format():
     """A ``scale_cuda`` followed by ``hwdownload`` names its output format (#870)."""
     hits = [

@@ -887,6 +887,7 @@ def test_underwater_grades_only_clips_that_look_underwater():
     assert color.estimate(stats, "auto").skip == color.SKIP_GOOD  # auto has no gate
 
 
+# Pinned (#1085): tuned on the #489 scuba and snow clips; a change moves which get the grade
 @pytest.mark.parametrize(
     ("rgb", "looks"),
     [
@@ -986,6 +987,7 @@ def test_a_grade_that_clips_too_much_is_vetoed():
     assert grade.predicted.clipped - grade.before.clipped > 0.05
 
 
+# Pinned (#1085): tuned limits that decide which real clips keep their grade; change = re-tune
 @pytest.mark.parametrize(
     ("after", "veto", "intended"),
     [
@@ -1073,6 +1075,7 @@ def test_a_red_highlight_the_levels_intend_is_counted_once():
     assert color._red_highlights(graded, color._intended_high(frames, grade)) == 1 / 400
 
 
+# Pinned (#1085): the gopro 0079 row is a real clip the cast veto must catch
 @pytest.mark.parametrize(
     ("before", "after", "veto"),
     [

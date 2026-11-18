@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -75,9 +74,6 @@ SOURCES_CACHE_S = 60.0  # rebuild a kept source list at least this often (what s
 # a fragmented MP4 with hundreds of Range requests
 MEDIA_LOOKUP_S = 2.0
 FRAGMENT_SCAN_BOXES = 16  # top-level MP4 boxes read to tell a fragmented file (#1014)
-_suggest_lock = threading.Lock()  # one style suggestion probes at a time; another gets no answer
-TELEMETRY_PROBE_TIMEOUT = 10  # seconds per ffprobe of that suggestion
-MAX_TELEMETRY_PROBES = 12  # files one style suggestion probes, so a big folder or a NAS stays quick
 MAX_INPUTS = 50  # files and folders one New project takes (analyze's positional inputs)
 MAX_EXCLUDES = 20  # analyze --exclude patterns one New project takes
 MAX_GLOB = 200  # characters of one --exclude pattern

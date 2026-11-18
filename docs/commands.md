@@ -243,8 +243,7 @@ path (the one the analysis cached when it is current), with badges for poor path
 ([Director preview](workflows/360.md#director-preview-and-camera-path-flags)). It does not expose
 the action-cam commands or the other `360` commands; for standard footage, Highlight style starts on "Auto (detect from footage)" (`--style auto`, the default; the project is
 analyzed with it) and also lists the
-`action-cam` style, which the dialog preselects instead when an input has GoPro or Insta360 telemetry (a
-stream-list probe of the first 12 files `analyze` would find) unless you chose another style.
+`action-cam` style, for footage with GoPro or Insta360 telemetry.
 
 The header reads "cutpoint / <project name>": the name opens the project menu, which lists the projects
 (the open one marked) and ends, after a divider, with "New project…". The browser tab shows the same title.

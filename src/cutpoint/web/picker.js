@@ -8,8 +8,6 @@ const SOURCE_HINT_TYPED = 'Type or paste the full paths of videos, or of folders
 // Added for an Insta360 file (a 360 folder cannot be told apart here); the server sets the style.
 const PANO_HINT = 'Insta360 360 footage uses the 360 style (action-cam unless pano.default_style in config.json says otherwise), not the one chosen below.';
 
-const BUSY_RETRY_MS = 1000; // before asking for a style suggestion again after a busy reply
-
 let picking = false; // the server allows one open dialog at a time
 
 /**
@@ -67,7 +65,6 @@ export function initNewProject(onCreated, canPick) {
         if (!path) return;
         if (!have.includes(path)) source.value = [...have, path].join('\n'); // a line more
         source.dispatchEvent(new Event('input')); // as if typed: the name follows
-        suggestStyle();
         source.focus();
       } catch (e) {
         setError(e.message);
@@ -83,46 +80,7 @@ export function initNewProject(onCreated, canPick) {
     $('#newSourceHint').textContent = paths.some((p) => /\.(insv|lrv)$/i.test(p)) ? `${hint} ${PANO_HINT}` : hint;
   });
   const showStyleHint = () => ($('#newStyleHint').hidden = style.value !== 'action-cam');
-  // Sources with GoPro or Insta360 telemetry preselect the style the server suggests, unless the
-  // user chose one; a reply for sources since changed is dropped. A style set here goes back to
-  // what it was when later sources have no telemetry.
-  let styleTouched = false;
-  let suggestion = 0;
-  let before = null; // the style before an automatic preselect, or null
-  const status = $('#newStyleStatus');
-  const ask = async (mine, retry) => {
-    const sources = sourceLines(source.value);
-    if (!sources.length || styleTouched) return;
-    try {
-      const body = { sources, recursive: recursive.checked, exclude: lines(exclude.value) };
-      const { style: suggested, busy } = await api('/api/projects/suggest-style', { method: 'POST', body });
-      if (mine !== suggestion || styleTouched) return;
-      if (busy) { // another probe runs: not "no telemetry", so no undo; ask once more
-        if (retry) setTimeout(() => mine === suggestion && ask(mine, false), BUSY_RETRY_MS);
-        return;
-      }
-      if (suggested && [...style.options].some((o) => o.value === suggested)) {
-        if (before === null) before = style.value;
-        style.value = suggested;
-        status.textContent = `Highlight style set to ${suggested}: the footage has camera telemetry.`;
-      } else if (before !== null) {
-        style.value = before;
-        before = null;
-        status.textContent = '';
-      }
-      showStyleHint();
-    } catch { /* a suggestion is optional: the style stays as it is */ }
-  };
-  const suggestStyle = () => ask(++suggestion, true);
-  source.addEventListener('change', suggestStyle);
-  recursive.addEventListener('change', suggestStyle);
-  exclude.addEventListener('change', suggestStyle);
-  style.addEventListener('change', () => {
-    styleTouched = true;
-    before = null;
-    status.textContent = '';
-    showStyleHint();
-  });
+  style.addEventListener('change', showStyleHint);
   $('#newCancel').addEventListener('click', () => dlg.close());
 
   $('#newForm').addEventListener('submit', async (ev) => {
@@ -151,15 +109,12 @@ export function initNewProject(onCreated, canPick) {
   });
 
   return function open(styles) {
-    nameTouched = styleTouched = false;
-    before = null;
-    status.textContent = '';
-    suggestion++;
+    nameTouched = false;
     source.value = name.value = exclude.value = '';
     recursive.checked = false;
     $('#newSourceHint').textContent = hint;
     setError('');
-    // Auto (detect from the footage) first and preselected; action-cam replaces it when the sources have telemetry
+    // Auto (detect from the footage) first and preselected
     style.replaceChildren(
       h('option', { value: 'auto', text: 'Auto (detect from footage)' }),
       ...styles.filter((s) => s !== 'auto').map((s) => h('option', { value: s, text: s })));

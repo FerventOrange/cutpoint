@@ -30,10 +30,9 @@ from cutpoint.ui.analysis import (
     preset_problem,
     preset_taken,
     refine_state,
-    suggest_style,
     ui_styles,
 )
-from cutpoint.ui.common import BUSY_TEXT, MAX_KEPT_NAMES, UI_DIR, _suggest_lock, bad, logger
+from cutpoint.ui.common import BUSY_TEXT, MAX_KEPT_NAMES, UI_DIR, bad, logger
 from cutpoint.ui.files import _highlights, _load, _own, _read_locked, _ui_folder, read_meta
 from cutpoint.ui.picker import folder_opener
 from cutpoint.ui.projects import (
@@ -99,20 +98,6 @@ def list_projects():
             }
         )
     return {"projects": found}
-
-
-@owned.post("/projects/suggest-style")
-def suggest_project_style(body: dict[str, Any]):
-    """The style the New project dialog preselects for these sources (null: no suggestion)."""
-    inputs = _body_inputs(body)
-    recursive, exclude = _flag(body, "recursive"), _exclude_globs(body)
-    if not _suggest_lock.acquire(blocking=False):  # a suggestion is optional: never queue
-        return {"style": None, "busy": True}  # not "no telemetry": the page asks again
-    try:
-        style = suggest_style(inputs, exclude, recursive)
-    finally:
-        _suggest_lock.release()
-    return {"style": style if style in ui_styles() else None}
 
 
 @owned.post("/projects")

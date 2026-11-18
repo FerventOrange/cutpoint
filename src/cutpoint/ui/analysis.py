@@ -42,13 +42,11 @@ from cutpoint.ui.common import (
     CLIP_ORDERS,
     CLIP_SIZE,
     CROP_BOX,
-    MAX_TELEMETRY_PROBES,
     MAX_TIMING_S,
     MAX_TOTAL_S,
     META_FILE,
     SAFE_NAME,
     STYLE_FOR,
-    TELEMETRY_PROBE_TIMEOUT,
     UI_DIR,
     bad,
     cutpoint_cmd,
@@ -66,7 +64,6 @@ from cutpoint.ui.files import (
     read_meta,
 )
 from cutpoint.ui.jobs import Job
-from cutpoint.ui.projects import _usable, find_picked, inspect_source
 from cutpoint.utils import slugify
 
 
@@ -152,31 +149,6 @@ def _gaming_style(name: object, hl: dict[str, Any] | None = None) -> bool:
     recorded base stands in for its deleted style (:func:`_style`)."""
     s = _style(name, hl)
     return s is not None and s.base == "gaming"
-
-
-def suggest_style(
-    inputs: list[str], exclude: list[str] = (), recursive: bool = False
-) -> str | None:
-    """``action-cam`` when an input carries camera telemetry, else None (#633).
-
-    Only the container's stream list is probed (``analyze.has_telemetry``: a GoPro GPMF track or an
-    Insta360 IMU trailer), never the telemetry itself, within ``TELEMETRY_PROBE_TIMEOUT`` s per file
-    and stopping at the first hit. The files are those ``analyze`` would find (``find_picked``:
-    ``recursive``, ``exclude`` and ``source_remap`` apply), the first ``MAX_TELEMETRY_PROBES`` of
-    them. Unreadable inputs count as none. Usable 360 footage gets no suggestion: the server picks
-    its 360 style (``pano.default_style``) whatever is chosen.
-    """
-    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
-
-    try:
-        for x in inputs:
-            src = Path(x)
-            if (src.is_file() or src.is_dir()) and _usable(inspect_source(src)[1]):
-                return None
-        files = find_picked(inputs, exclude, recursive)[:MAX_TELEMETRY_PROBES]
-    except OSError:
-        return None
-    return "action-cam" if any(has_telemetry(f, TELEMETRY_PROBE_TIMEOUT) for f in files) else None
 
 
 def _action_cam_style(name: str) -> bool:

@@ -336,6 +336,7 @@ def _digest(cands: list[analyze.Candidate], saved: dict) -> dict[str, object]:
     }
 
 
+# Pinned (#1085): a full install stays byte-identical across feature refactors (#556)
 def test_full_install_action_cam_output_is_pinned(tmp_path, monkeypatch):
     """Pinned on base 13d26aa, before #556: splitting ``social`` into registry parts changes
     nothing on a full install (features_available, cache key, scores, signals, npz). #738
