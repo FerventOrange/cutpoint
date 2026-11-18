@@ -153,3 +153,22 @@ def test_rescore_and_planning_agree(tmp_path):
     chosen, _ = select_moments(project)
     assert hl["suggested_top"] == len(chosen) == 3
     assert _ids(chosen) == ["h002", "h004", "h005"]
+
+
+def test_pick_best_count_total_and_clash_limits():
+    ranked = [
+        _c("a", 90, 0, 10),
+        _c("b", 80, 2, 8),  # inside a: clashes
+        _c("c", 70, 20, 50),
+        _c("d", 60, 60, 65),
+    ]
+    assert _ids(default_fit.pick_best(ranked, count=2)) == ["a", "c"]
+    assert _ids(default_fit.pick_best(ranked, total=20)) == ["a", "d"]  # c does not fit
+    assert _ids(default_fit.pick_best(ranked, clash=False, count=2)) == ["a", "b"]
+    assert _ids(default_fit.pick_best(ranked, max_len=10)) == ["a", "d"]
+
+
+def test_pick_best_keeps_must_include_past_the_limits():
+    ranked = [_c("a", 90, 0, 10), _c("m", 50, 5, 30, must_include=True)]
+    assert _ids(default_fit.pick_best(ranked, total=10)) == ["a", "m"]
+    assert _ids(default_fit.pick_best(ranked, count=1)) == ["a"]

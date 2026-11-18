@@ -588,6 +588,27 @@ def _word_markers(words: list[dict[str, Any]]) -> list[tuple[int, int, str]]:
     return found
 
 
+def shift_segments(segments: list[Segment], dt: float) -> list[Segment]:
+    """Copies of ``segments`` with their times, their words' and their markers' moved by ``dt``
+    seconds (the input is not changed)."""
+    out = []
+    for seg in segments:
+        shifted = {
+            **seg,
+            "start": seg["start"] + dt,
+            "end": seg["end"] + dt,
+            "words": [
+                {**w, "start": w["start"] + dt, "end": w["end"] + dt} for w in seg.get("words", [])
+            ],
+        }
+        if seg.get("markers"):
+            shifted["markers"] = [
+                {**m, "start": m["start"] + dt, "end": m["end"] + dt} for m in seg["markers"]
+            ]
+        out.append(shifted)
+    return out
+
+
 def split_markers(segments: list[Segment]) -> list[Segment]:
     """``segments`` without Whisper's non-speech markers (``[Music]``, ``(laughs)``, ``*sighs*``).
 

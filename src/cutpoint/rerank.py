@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cutpoint import analyze, cache, category, features, folders, progress, runstate, selfcheck
+from cutpoint import analyze, cache, features, folders, progress, runstate, selfcheck
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
@@ -50,16 +50,6 @@ GENERIC = "generic"  # the style kind of every style but action-cam
 UNDO = "rerank_undo"
 
 CHAT_ONLY_LAYER = "visual_light"  # planned by analyze without a CUDA GPU; ranks nothing
-
-# The event layers a footage category plans (:func:`cutpoint.analyze.plan_layers`) before the
-# install's own limits; when the project's events.json has them all, the plan is not needed.
-_CATEGORY_LAYERS = {
-    category.GAMEPLAY: frozenset({"audio", "ocr"}),
-    category.TALK: frozenset({"audio"}),
-    category.ACTION: frozenset({"audio", "voice", "crash", "visual"}),
-    category.GENERAL: frozenset({"audio", "voice", "crash", "visual"}),
-    category.ACTION_CAM: frozenset({"audio", "voice", "crash", "visual"}),
-}
 
 
 @dataclass(frozen=True)
@@ -324,11 +314,16 @@ def _missing_layers(
     ``ran`` (the layers of the project's events.json), in the order they run. ``cuda``: the
     plan's CUDA check (:func:`cutpoint.analyze.plan_layers`)."""
     cat = analyze.layer_category(style)
-    if _CATEGORY_LAYERS.get(cat, frozenset()) <= ran:
-        return []  # all there: no plan needed (it may load torch for its CUDA check)
     if not _events_extra():
         return []  # lite: analyze would run none of them either
-    plan = analyze.plan_layers(style, [], (), cat, cuda=cuda)  # no sources: no telemetry probe
+    # with a CUDA GPU assumed the plan needs no torch check; when the project has all of its
+    # layers (it asks for no more than the real plan), the real plan is not needed
+    best = analyze.plan_layers(
+        style, [], (), cat, cuda=lambda: True, quiet=True
+    )  # no sources: no probe
+    if all(x in ran or x == CHAT_ONLY_LAYER for x in best.all_layers()):
+        return []
+    plan = analyze.plan_layers(style, [], (), cat, cuda=cuda, quiet=True)
     # the light frame index is the AI Chat's alone: no ranking reads it (#989)
     return [x for x in plan.all_layers() if x not in ran and x != CHAT_ONLY_LAYER]
 

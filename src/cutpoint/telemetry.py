@@ -54,8 +54,10 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
-from cutpoint.config import source_path
+from cutpoint.config import remap_source, source_path
 from cutpoint.dsp import clean_mask, conv_same, mask_runs
+from cutpoint.errors import FFmpegError
+from cutpoint.ffmpeg_utils import ffprobe_json
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +556,31 @@ def _plateau(
         for e in events
     ]
     return paint_spans(n, spans)
+
+
+# --------------------------------------------------------------------------- telemetry probe
+def gpmd_stream_index(src: Path) -> int | None:
+    """The stream index of the GoPro GPMF track (``gpmd``) of ``src``, or None without one
+    (or when ffprobe cannot read the file); only the stream list is read, within 60 s."""
+    try:
+        info = ffprobe_json(src, entries="stream=index,codec_tag_string", timeout=60)
+    except (OSError, FFmpegError):
+        return None
+    streams = info.get("streams") or []
+    return next((s.get("index") for s in streams if s.get("codec_tag_string") == "gpmd"), None)
+
+
+def has_telemetry(src: Path) -> bool:
+    """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
+    trailer); only the container's stream list is read, within 60 seconds."""
+    from cutpoint.insta360 import imu_source  # noqa: PLC0415
+
+    try:
+        if imu_source(src) is not None:
+            return True
+    except (OSError, FFmpegError):
+        return False
+    return gpmd_stream_index(remap_source(src)) is not None
 
 
 # --------------------------------------------------------------------------- IMU (shared)

@@ -48,6 +48,7 @@ from cutpoint import cache
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS
+from cutpoint.telemetry import has_telemetry
 from cutpoint.utils import context_block, context_hash, footage_context
 
 logger = logging.getLogger(__name__)
@@ -216,7 +217,7 @@ class SourceProbe:
     Attributes:
         path: The source as given.
         duration: Seconds.
-        telemetry: Camera telemetry in the file (:func:`cutpoint.analyze.has_telemetry`).
+        telemetry: Camera telemetry in the file (:func:`cutpoint.telemetry.has_telemetry`).
         handler, encoder: The video stream's ``handler_name`` and ``encoder`` tags, or the
             container's encoder ("" when untagged).
         make, model: The camera's make and model tags ("" when untagged).
@@ -1064,7 +1065,6 @@ def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
     Raises:
         FFmpegError: If ffprobe cannot read the file.
     """
-    from cutpoint.analyze import has_telemetry  # noqa: PLC0415
     from cutpoint.ffmpeg_utils import ffprobe_json, probe  # noqa: PLC0415
 
     every = vision is not None and vision.every_source

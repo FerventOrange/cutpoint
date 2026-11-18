@@ -13,6 +13,7 @@ import pytest
 
 from conftest import StubTranscriber, write
 from cutpoint import cache, sources
+from cutpoint.analyze import label_for
 from cutpoint.events import pipeline, scoring
 from cutpoint.events.menu_spans import drop_menu_time, merge_menu_frames
 from cutpoint.styles import get_style
@@ -269,3 +270,11 @@ def test_a_trim_drops_the_keywords_said_in_the_cut_off_menu(
     drop_menu_time(hl, _ev([[8, 13]], src=str(video)))
     (c,) = hl["candidates"]
     assert (c["signals"]["keywords"], c["label"]) == expected
+
+
+def test_label_for_follows_the_hint_then_laughter_then_loudness():
+    style = get_style("gaming")
+    assert label_for({"laughter": 1.0}, style, "Big Play!") == "big-play"
+    assert label_for({"laughter": 0.6, "loudness": 0.9}, style) == "laugh"
+    assert label_for({"laughter": 0.1, "loudness": 0.7}, style) == "loud-moment"
+    assert label_for({}, style) == "gaming-moment"

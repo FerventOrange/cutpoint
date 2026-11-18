@@ -341,6 +341,7 @@ def test_the_ui_process_never_imports_torch_to_rank(
     project = make_project(home, tmp_path)
     monkeypatch.setattr(rerank, "_events_extra", lambda: True)  # the events extra "installed"
     monkeypatch.setattr(analyze, "EVENTS_MODULES", ())
+    monkeypatch.setattr(analyze.event_paths, "missing_files", lambda layers: [])  # models there
 
     def boom() -> bool:
         raise AssertionError("torch's own CUDA check ran in the UI process")
