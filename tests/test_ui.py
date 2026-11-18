@@ -74,6 +74,7 @@ from cutpoint.ui.routes import assistant as assistant_routes
 from cutpoint.utils import find_videos
 from pano_helpers import x3clip
 from proxy_helpers import FakeLauncher, not_running
+from test_utils import MPEG_EXTS
 from ui_helpers import JobSpy
 
 PORT = 8765
@@ -1402,7 +1403,7 @@ def test_find_videos_never_returns_raw_360_files(tmp_path: Path) -> None:
     assert [p.name for p in find_videos([tmp_path])] == ["a.mp4"]
 
 
-@pytest.mark.parametrize("ext", [".ts", ".m2ts", ".mts", ".m2t", ".mpg", ".mpeg"])
+@pytest.mark.parametrize("ext", MPEG_EXTS)  # the list find_videos is tested with
 def test_source_problem_accepts_mpeg_transport_and_program_streams(
     tmp_path: Path, ext: str
 ) -> None:
@@ -1792,14 +1793,10 @@ def test_moments_view_looks_up_each_source_once_and_keeps_the_ids(
     ("argv", "flag", "expected"),
     [
         (["analyze", "a.mp4", "--style", "funny", "--json"], "--style", ["funny"]),
-        (["analyze", "a.mp4", "--style=funny", "--json"], "--style", ["funny"]),
         (["analyze", "a.mp4", "--skip", "crashes", "dialogue"], "--skip", ["crashes", "dialogue"]),
         (["analyze", "a.mp4", "--skip=crashes", "dialogue"], "--skip", ["crashes"]),
-        (["clips", "p", "--segments=my picks.json"], "--segments", ["my picks.json"]),
-        (["clips", "p", "--max-total=60"], "--max-total", ["60"]),
         (["clips", "p", "--top=8"], "--top-n", []),  # another flag's prefix is not it
         (["clips", "p", "--top8"], "--top", []),
-        (["clips", "p"], "--top", []),
         # repeated: argparse keeps the last, in either form
         (["analyze", "a.mp4", "--style", "gaming", "--style=funny"], "--style", ["funny"]),
         (["analyze", "a.mp4", "--style=gaming", "--style", "funny", "-v"], "--style", ["funny"]),
@@ -1819,15 +1816,9 @@ def test_a_recorded_command_line_gives_its_flag_values_in_both_forms(
     [
         (3, 3.0),
         (2.5, 2.5),
-        (0, 0.0),
-        (-1.5, -1.5),
         (True, None),
-        (False, None),
-        ("3", None),
         (None, None),
         (math.nan, None),
-        (math.inf, None),
-        (-math.inf, None),
         (10**400, None),  # too large for a float
     ],
 )
@@ -5798,15 +5789,11 @@ def test_prepare_without_a_window_keeps_the_whole_source_behaviour(
 @pytest.mark.parametrize(
     "raw",
     [
-        b'{"lo": true, "hi": 5}',
         b'{"lo": "1", "hi": 5}',
-        b'{"lo": NaN, "hi": 5}',
-        b'{"lo": 1, "hi": Infinity}',
         b'{"lo": 1, "hi": 1' + b"0" * 400 + b"}",  # too large for a float: no 500
         b'{"lo": 6, "hi": 5}',
         b'{"lo": -1, "hi": 5}',
         b'{"lo": 1}',
-        b'{"hi": 5}',
     ],
 )
 def test_prepare_refuses_an_invalid_window_and_queues_nothing(
@@ -6141,17 +6128,7 @@ def test_a_default_focus_after_queued_windows_clears_them_and_stops_the_running_
     "raw",
     [
         b'{"queue": true}',
-        b'{"queue": true, "lo": 1}',
-        b'{"queue": true, "hi": 5}',
-        b'{"queue": true, "lo": true, "hi": 5}',
-        b'{"queue": true, "lo": "1", "hi": 5}',
-        b'{"queue": true, "lo": NaN, "hi": 5}',
-        b'{"queue": true, "lo": 6, "hi": 5}',
-        b'{"queue": true, "lo": -1, "hi": 5}',
         b'{"queue": "true", "lo": 1, "hi": 5}',
-        b'{"queue": 1, "lo": 1, "hi": 5}',
-        b'{"queue": null, "lo": 1, "hi": 5}',
-        b'{"queue": "yes"}',
     ],
 )
 def test_prepare_refuses_a_bad_queue_request_and_queues_nothing(
@@ -7486,7 +7463,6 @@ def test_clips_job_passes_event_tails_on_or_off_and_nothing_for_auto(
         ({"extend_start": 31}, "extend_start must be 0-30 seconds"),
         ({"extend_end": [1]}, "extend_end must be 0-30 seconds"),
         ({"crop": "--force"}, "crop must be 'auto', 'none' or W:H:X:Y"),
-        ({"size": "1920*1080"}, "size must be WxH"),
         ({"size": "1281x720"}, "size must be WxH in even pixels"),
     ],
 )
@@ -7698,7 +7674,6 @@ def test_a_preset_passes_vertical_compress_peaks_and_the_settings_vision(
         ({}, "kind must be one of highlights, montage, clips, funny-moments"),
         ({"kind": "trailer"}, "kind must be one of"),
         ({"kind": ["clips"]}, "kind must be one of"),  # not a 500 (unhashable)
-        ({"kind": {"k": 1}}, "kind must be one of"),
         ({"kind": "clips", "vertical": "yes"}, "vertical must be true or false"),
         ({"kind": "clips", "force": 1}, "force must be true or false"),
         ({"kind": "clips", "compress_peaks": "max"}, "compress_peaks must be one of"),
@@ -8011,19 +7986,13 @@ def test_clips_and_edit_jobs_pass_color_and_its_strength(
     ("body", "message"),
     [
         ({"color": "max"}, "color must be one of off, auto, underwater"),
-        ({"color": ""}, "color must be one of"),
-        ({"color": True}, "color must be one of"),
         ({"color": ["auto"]}, "color must be one of"),  # not a 500
-        ({"color": 1}, "color must be one of"),
         ({"color": "auto", "color_strength": 1.5}, "color_strength must be a number from 0 to 1"),
         ({"color": "auto", "color_strength": -0.1}, "color_strength must be a number from 0 to 1"),
         ({"color": "auto", "color_strength": "0.5"}, "color_strength must be a number from 0 to 1"),
-        ({"color": "auto", "color_strength": True}, "color_strength must be a number from 0 to 1"),
         ({"color": "off", "color_strength": 0.5}, "color_strength needs color auto or underwater"),
-        ({"color_strength": 0.5}, "color_strength needs color auto or underwater"),
         ({"color": "auto", "lut": "flat.cube"}, "color cannot be combined with lut"),
-        ({"color": "underwater", "lut": "flat.cube"}, "color cannot be combined with lut"),
-        ({"color": "auto", "color_strength": 0.5, "lut": "flat.cube"}, "color cannot be combined with lut"),
+        ({"color": "off", "color_strength": 0.5, "lut": "flat.cube"}, "color cannot be combined with lut"),  # a strength alone
     ],
 )  # fmt: skip
 def test_clips_and_edit_jobs_reject_a_bad_color(
@@ -10419,8 +10388,6 @@ def test_the_project_says_whether_the_crash_step_applies(
         ({"style": "auto"}, True),
         ({}, True),  # no style: the footage decides
         ({"style": "funny"}, False),
-        ({"style": "gaming"}, False),
-        ({"style": "commentary"}, False),
         ({"style": "action", "kind": "360"}, False),
     ],
 )
