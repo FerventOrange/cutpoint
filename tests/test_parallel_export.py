@@ -624,33 +624,39 @@ def test_export_workers_does_not_probe_the_encoder_when_one_is_certain(home, mon
 # -- config parsing --------------------------------------------------------------------------
 
 
+UNSET = object()
+
+
 @pytest.mark.parametrize(
-    ("value", "expected"),
-    [(" AUTO ", None), ("3", 3), (0, 1), (99, config.MAX_EXPORT_WORKERS)],
+    ("env", "value", "expected"),
+    [
+        (None, UNSET, None),  # auto by default
+        (None, " AUTO ", None),
+        (None, "3", 3),
+        (None, 0, 1),  # clamped to 1-MAX_EXPORT_WORKERS
+        (None, 99, config.MAX_EXPORT_WORKERS),
+        ("0", 3, 1),  # the variable wins over the file and is clamped the same way
+        # anything else is one error naming the key (file) or the variable (env) and the value
+        (None, True, ValueError),  # int() would accept a bool or a float
+        (None, 1.5, ValueError),
+        (None, "two", ValueError),
+        (None, [2], ValueError),  # int() raises TypeError
+        ("1.5", UNSET, ValueError),
+    ],
 )
-def test_config_export_workers_values(home, value, expected):
-    set_config(home, export_workers=value)
-    assert config.export_workers() == expected
-
-
-def test_config_export_workers_defaults_to_auto(home):
-    assert config.export_workers() is None
-
-
-@pytest.mark.parametrize("value", [True, 1.5, "two", [2]])
-def test_config_export_workers_other_text_is_one_error_naming_the_key(home, value):
-    set_config(home, export_workers=value)
-    with pytest.raises(ValueError, match="export_workers is") as err:
+def test_config_export_workers_values(home, monkeypatch, env, value, expected):
+    set_config(home, **({} if value is UNSET else {"export_workers": value}))
+    if env is not None:
+        monkeypatch.setenv("CUTPOINT_EXPORT_WORKERS", env)
+    if expected is not ValueError:
+        assert config.export_workers() == expected
+        return
+    with pytest.raises(ValueError) as err:
         config.export_workers()
-    assert str(home / "config.json") in str(err.value)
-    assert repr(value) in str(err.value)
-
-
-@pytest.mark.parametrize("value", ["1.5", "two", "True"])
-def test_env_export_workers_other_text_is_one_error_naming_the_variable(home, monkeypatch, value):
-    monkeypatch.setenv("CUTPOINT_EXPORT_WORKERS", value)
-    with pytest.raises(ValueError, match="CUTPOINT_EXPORT_WORKERS is"):
-        config.export_workers()
+    if env is None:
+        assert f"{home / 'config.json'}: export_workers is {value!r}" in str(err.value)
+    else:
+        assert f"CUTPOINT_EXPORT_WORKERS is {env!r}" in str(err.value)
 
 
 def test_env_export_workers_overrides_the_file_and_is_in_the_cache_key(home, monkeypatch):

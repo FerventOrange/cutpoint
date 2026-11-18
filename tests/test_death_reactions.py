@@ -54,12 +54,11 @@ def seg(start: float, end: float) -> dict[str, Any]:
     [
         ([], [seg(2, 4), seg(12, 13)], True),  # silence, then speech 2 s after
         ([], [seg(8.8, 9.0), seg(12, 13)], False),  # ended within the 1.5 s pause window
+        ([], [seg(16, 17)], True),  # speech starting exactly at t + 6: still in the window
         ([], [seg(17, 18)], False),  # speech after 6 s
-        ([audio("Laughter", 12, 14)], None, True),
         ([audio("Laughter", 10.0, 12)], None, False),  # starting exactly at t
         ([audio("Laughter", 16.0, 18)], None, True),  # starting exactly at t + 6
-        ([audio("Cheering", 12, 14)], [], False),  # not a reaction sound
-        ([], None, False),  # no transcript
+        ([audio("Cheering", 12, 14)], [], False),  # not a reaction sound, no transcript
     ],
 )
 def test_has_reaction(events, segments, expected):

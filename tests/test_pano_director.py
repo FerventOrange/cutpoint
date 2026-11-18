@@ -1220,24 +1220,43 @@ def test_the_qa_subject_at_the_edge_is_bad_and_fixed(stub_scores: dict) -> None:
     assert edge_keys(D.DirectorParams()) == 0
 
 
-def test_new_params_are_validated() -> None:
-    base = D.DirectorParams()
-    for gone in ("edge_rule", "framing", "people_size"):
-        for value in ("legacy", "bin", "close", "include_exclude"):
-            with pytest.raises(ValueError, match="unknown director param"):
-                D.with_params(base, {gone: value})
-    for bad in (
-        {"w_shift": -1},
-        {"near_box_scale": 0},
-        {"include_margin": 0.5},
-        {"near_min_score": -0.1},
-        {"cut_min_gain_s": -1},
-        {"cut_min_gap_s": -0.5},
-    ):
-        with pytest.raises(ValueError, match="director param"):
-            D.with_params(base, bad)
-    p = D.with_params(base, D.parse_param_args(["w_widen=0", "near_box_scale=1.2"]))
-    assert (p.w_widen, p.near_box_scale) == (0.0, 1.2)
+def test_param_args_and_coercion() -> None:
+    kv = D.parse_param_args(["max_speed=35", "n_bins = 24", "min_hold_s=3"])
+    p = D.with_params(D.DirectorParams(), kv)
+    assert p.max_speed == 35.0 and isinstance(p.max_speed, float)
+    assert p.n_bins == 24 and isinstance(p.n_bins, int)
+    assert p.min_hold_s == 3.0
+    assert D.with_params(p, {"n_bins": 12.0}).n_bins == 12  # JSON number
+    p = D.with_params(p, D.parse_param_args(["w_widen=0", "near_box_scale=1.2"]))
+    assert (p.w_widen, p.near_box_scale) == (0.0, 1.2)  # a >= 0 param takes its bound
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        (["max_speed"], "KEY=VALUE"),  # --param items, through parse_param_args
+        (["max_speed=fast"], "not a valid float"),
+        (["n_bins=2.5"], "not a valid int"),
+        (["max_speed=-5"], "must be > 0"),
+        # params that are gone are unknown, whatever the value
+        ({"edge_rule": "legacy"}, "unknown director param"),
+        ({"framing": "bin"}, "unknown director param"),
+        ({"people_size": "close"}, "unknown director param"),
+        # the bounds of newer params
+        ({"w_shift": -1}, "must be >= 0"),
+        ({"near_box_scale": 0}, "must be > 0"),
+        ({"include_margin": 0.5}, "must be < 0.5"),
+        ({"near_min_score": -0.1}, "must be >= 0"),
+        ({"cut_min_gain_s": -1}, "must be >= 0"),
+        ({"cut_min_gap_s": -0.5}, "must be >= 0"),
+    ],
+)
+def test_param_validation(overrides: list[str] | dict, match: str) -> None:
+    """``--param`` items (a list) and config.json values (a dict) are checked alike."""
+    with pytest.raises(ValueError, match=match):
+        if isinstance(overrides, list):
+            overrides = D.parse_param_args(overrides)
+        D.with_params(D.DirectorParams(), overrides)
 
 
 def test_path_for_reuses_by_the_fixed_span(

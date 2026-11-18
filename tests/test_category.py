@@ -1520,37 +1520,12 @@ def decided(p: SourceProbe, answer, every: bool = True, speech=None):
     return src
 
 
-@pytest.mark.parametrize("answer", [None, "gameplay", "camera", "screen", "action", "other"])
-@pytest.mark.parametrize(
-    "fields",
-    [
-        UNSURE,
-        GAME,
-        THIN_HUD,
-        CAMERA,
-        {**UNSURE, "hud_text": category.TEXT_ANCHORS},
-        {**UNSURE, "hud_text": 0},
-        {**THIN_HUD, "hud_text": category.TEXT_ANCHORS},
-    ],
-)
-def test_vision_detect_all_off_decides_as_today(fields, answer):
-    """Without the option the record has no flag and the text weighs as before; with it, a
-    probe the model did not answer (or answered `other`) is decided the same."""
-    p = probe(**fields, vision=answer)
-    off = category.decide([p])
-    assert off.every_source is False
-    assert "vision_detect_all" not in off.record("hype", "gaming", None)
-    if answer in (None, "other"):
-        on = category.decide([p], every_source=True)
-        assert on.sources == off.sources
-        assert (on.category, on.ambiguous, on.decided_by) == (
-            off.category, off.ambiguous, off.decided_by,
-        )  # fmt: skip
-
-
 def test_vision_detect_all_is_recorded_only_when_on():
     det = category.decide([probe(**GAME)], every_source=True)
     assert det.record("hype", "gaming", None)["vision_detect_all"] is True
+    off = category.decide([probe(**GAME, vision="camera")])  # answered, option off
+    assert off.every_source is False
+    assert "vision_detect_all" not in off.record("hype", "gaming", None)
 
 
 @pytest.mark.parametrize(
@@ -1615,7 +1590,17 @@ def test_camera_tags_keep_text_in_four_places_from_beating_the_model():
 @pytest.mark.parametrize("answer", [None, "other"])
 def test_vision_detect_all_without_a_usable_answer_decides_as_today(answer):
     """No answer (not asked, the model failed) or `other`: as without the option."""
-    for extra in (UNSURE, {**GAME, "hud_text": 5}, {**UNSURE, "hud_text": 5}):
+    for extra in (
+        UNSURE,
+        GAME,
+        THIN_HUD,
+        CAMERA,
+        {**GAME, "hud_text": 5},
+        {**UNSURE, "hud_text": 5},
+        {**UNSURE, "hud_text": category.TEXT_ANCHORS},
+        {**UNSURE, "hud_text": 0},
+        {**THIN_HUD, "hud_text": category.TEXT_ANCHORS},
+    ):
         p = probe(**extra)
         assert decided(p, answer) == decided(p, answer, every=False)
 

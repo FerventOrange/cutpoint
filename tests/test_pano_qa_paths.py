@@ -406,30 +406,6 @@ def test_compute_path_writes_quality_block(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 # --------------------------------------------------------------------------- params
-def test_param_args_and_coercion() -> None:
-    kv = D.parse_param_args(["max_speed=35", "n_bins = 24", "min_hold_s=3"])
-    p = D.with_params(D.DirectorParams(), kv)
-    assert p.max_speed == 35.0 and isinstance(p.max_speed, float)
-    assert p.n_bins == 24 and isinstance(p.n_bins, int)
-    assert p.min_hold_s == 3.0
-    assert D.with_params(p, {"n_bins": 12.0}).n_bins == 12  # JSON number
-
-
-@pytest.mark.parametrize(
-    "items,match",
-    [
-        (["max_speed"], "KEY=VALUE"),
-        (["nope=1"], "unknown director param"),
-        (["max_speed=fast"], "not a valid float"),
-        (["n_bins=2.5"], "not a valid int"),
-        (["max_speed=-5"], "must be > 0"),
-    ],
-)
-def test_param_validation(items: list[str], match: str) -> None:
-    with pytest.raises(ValueError, match=match):
-        D.with_params(D.DirectorParams(), D.parse_param_args(items))
-
-
 def _config(data: dict) -> None:
     set_config(paths.home(), **data)
 

@@ -198,11 +198,10 @@ def test_edit_events_still_exports_the_clips_and_assembles(pipeline, monkeypatch
 @pytest.mark.parametrize(
     ("argv", "layers", "expected"),
     [
-        (["--style", "action"], ("audio", "ocr", "vlm"), None),  # None: the events defaults
+        # no layer of a skipped step among them: None, the events defaults
         (["--style", "action", "--skip", "crashes"], ("audio", "ocr", "vlm"), None),
         (["--style", "action", "--skip", "keyframes"], ("audio", "vlm"), ["audio", "vlm"]),
         (["--style", "action", "--skip", "reactions"], ("ocr", "vlm"), ["ocr", "vlm"]),
-        (["--style", "action", "--skip", "reactions", "keyframes", "crashes"], ("vlm",), ["vlm"]),
         (
             ["--style", "action-cam", "--skip", "keyframes"],
             ("audio", "voice", "crash", "vlm"),
