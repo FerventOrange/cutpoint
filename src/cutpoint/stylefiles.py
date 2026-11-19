@@ -32,13 +32,12 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, features, jsonout, paths
+from cutpoint import cache, features, jsonout, library, paths
 from cutpoint.category import ACTION_CAM, CATEGORIES
 from cutpoint.styles import (
     AUTO,
@@ -54,11 +53,6 @@ logger = logging.getLogger(__name__)
 SCHEMA = 1
 SOURCES = ("hand", "fitted", "assistant")
 APPLIES_KEYS = ("categories", "profiles")
-NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
-# File names Windows refuses whatever the extension
-_RESERVED_STEMS = frozenset(
-    ["con", "prn", "aux", "nul"] + [f"{p}{i}" for p in ("com", "lpt") for i in range(1, 10)]
-)
 # Weight names of older style files: (base kind or None for every base) -> what to write instead
 _OLD_WEIGHTS = {
     "laughter": (
@@ -107,19 +101,15 @@ def _names(items: Iterable[str]) -> str:
 def name_problem(name: object) -> str | None:
     """Why ``name`` cannot name a user style, or None: it must be a safe file name and not a
     built-in or reserved style name (compared ignoring case)."""
-    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
-        return (
-            f"{name!r} is not a usable style name: use up to 64 letters, digits, '-' and '_', "
-            "starting with a letter or digit"
-        )
+    if msg := library.format_problem(name, "style"):
+        return msg
+    assert isinstance(name, str)
     low = name.lower()
     if low == AUTO:
         return f"{name!r} is reserved for --style {AUTO}"
     if low in STYLES:
         return f"{name!r} is a built-in style name; choose another name"
-    if low in _RESERVED_STEMS:
-        return f"{name!r} cannot be a file name on Windows; choose another name"
-    return None
+    return library.reserved_problem(name)
 
 
 def user_files() -> dict[str, Path]:
@@ -401,19 +391,20 @@ def list_styles() -> list[dict[str, Any]]:
 # --------------------------------------------------------------------------- show
 
 
+def _missing(name: str) -> str:
+    return (
+        f"no style named {name!r}; `cutpoint style list` shows the styles "
+        f"(your styles are in {paths.styles_dir()})"
+    )
+
+
 def _find(name: str) -> Path:
     """The style file of the user style ``name`` (exact name).
 
     Raises:
         FileNotFoundError: If the styles folder has no such file.
     """
-    path = user_files().get(name)
-    if path is None:
-        raise FileNotFoundError(
-            f"no style named {name!r}; `cutpoint style list` shows the styles "
-            f"(your styles are in {paths.styles_dir()})"
-        )
-    return path
+    return library.find(user_files(), name, _missing(name))
 
 
 def show(name: str) -> dict[str, Any]:
@@ -568,12 +559,8 @@ def create(
     doc["weights"] = {**own, **(weights or {})} if isinstance(own, dict) else own
 
     files = user_files()
-    clash = next((s for s in files if s.lower() == name.lower() and s != name), None)
-    if clash is not None:
-        raise jsonout.ArgumentError(
-            f"a style named {clash!r} exists; names that differ only in case clash on "
-            "Windows and macOS"
-        )
+    if msg := library.case_clash_problem(files, name, "style"):
+        raise jsonout.ArgumentError(msg)
     path = paths.styles_dir() / f"{name}.json"
     if name in files and not force:
         raise FileExistsError(f"style {name!r} already exists ({path}); add --force to replace it")
@@ -590,7 +577,7 @@ def create(
 
 
 def _looks_like_file(target: str) -> bool:
-    return target.endswith(".json") or "/" in target or "\\" in target or Path(target).is_file()
+    return library.looks_like_path(target) or Path(target).is_file()
 
 
 def validate(target: str) -> dict[str, Any]:
@@ -618,9 +605,7 @@ def validate(target: str) -> dict[str, Any]:
             }
         path = _find(target)
     else:
-        path = Path(target)
-        if not path.is_file():
-            raise FileNotFoundError(f"{target}: file not found")
+        path = library.file_target(target)
     data = cache.load_json(path)
     in_folder = path.parent.resolve() == paths.styles_dir().resolve()
     if not isinstance(data, dict):
@@ -655,9 +640,7 @@ def delete(name: str) -> Path:
         shadow = user_files().get(name)
         extra = f" (the file {shadow} is ignored; remove it by hand)" if shadow else ""
         raise jsonout.ArgumentError(f"{name!r} is a built-in style and cannot be deleted{extra}")
-    path = _find(name)
-    path.unlink()
-    return path
+    return library.delete(user_files(), name, _missing(name))
 
 
 # --------------------------------------------------------------------------- features
