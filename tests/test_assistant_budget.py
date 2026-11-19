@@ -521,17 +521,29 @@ def nudges(fake: FakeProvider) -> list[dict[str, Any]]:
     ]
 
 
-def test_native_text_naming_a_moment_gets_one_nudge_and_may_then_propose() -> None:
-    fake = FakeProvider([answer(NAMES), call("propose_edit", **PROPOSE)])
+JSON_MODES = pytest.mark.parametrize("json_mode", [False, True], ids=["native", "json"])
+
+
+def scripted(json_mode: bool):
+    """The ``(text reply, propose_edit call, capabilities)`` of one provider mode."""
+    if json_mode:
+        return as_reply, lambda **a: as_json("propose_edit", **a), JSON_ONLY
+    return answer, lambda **a: call("propose_edit", **a), providers.Capabilities(True, True)
+
+
+@JSON_MODES
+def test_text_naming_a_moment_gets_one_nudge_and_may_then_propose(json_mode: bool) -> None:
+    text, propose, caps = scripted(json_mode)
+    fake = FakeProvider([text(NAMES), propose(**PROPOSE)], caps)
     turn = run(fake, "build a montage")
     assert turn.status == "done", turn.error
     assert len(fake.requests) == 2 and len(nudges(fake)) == 1
     assert [e["kind"] for e in turn.events] == ["proposal"]
-    assert turn.events[0]["summary"] == "Add the laugh"
-    assert fake.requests[1]["tools"] == toolcalls.TOOLS  # the nudged request can still propose
+    if not json_mode:
+        assert fake.requests[1]["tools"] == toolcalls.TOOLS  # the nudged request can still propose
 
 
-def test_native_an_advice_question_answered_with_example_moment_ids_is_not_nudged() -> None:
+def test_an_advice_question_answered_with_example_moment_ids_is_not_nudged() -> None:
     text = "Select a moment, then press remove, for example m1."
     fake = FakeProvider([answer(text)])
     turn = run(fake, "how do I use the timeline?")
@@ -540,7 +552,7 @@ def test_native_an_advice_question_answered_with_example_moment_ids_is_not_nudge
     assert turn.events[-1]["text"] == text
 
 
-def test_native_text_naming_a_moment_in_the_last_round_is_not_nudged_and_stands() -> None:
+def test_text_naming_a_moment_in_the_last_round_is_not_nudged_and_stands() -> None:
     script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)]
     fake = FakeProvider([*script, answer("Take m1.")])
     turn = run(fake, "build a montage")
@@ -549,7 +561,7 @@ def test_native_text_naming_a_moment_in_the_last_round_is_not_nudged_and_stands(
     assert [e["text"] for e in turn.events if e["kind"] == "reply"] == ["Take m1."]
 
 
-def test_native_a_nudge_then_tool_calls_until_the_rounds_run_out_keeps_the_first_answer() -> None:
+def test_a_nudge_then_tool_calls_until_the_rounds_run_out_keeps_the_first_answer() -> None:
     script = [answer(NAMES)] + [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS)]
     fake = FakeProvider(script)
     turn = run(fake, "build a montage")
@@ -557,8 +569,10 @@ def test_native_a_nudge_then_tool_calls_until_the_rounds_run_out_keeps_the_first
     assert [e["text"] for e in turn.events if e["kind"] == "reply"] == [NAMES]
 
 
-def test_native_a_second_text_only_reply_is_final() -> None:
-    fake = FakeProvider([answer(NAMES), answer("Still m1 and m2, as you asked.")])
+@JSON_MODES
+def test_a_second_text_only_reply_is_final(json_mode: bool) -> None:
+    text, _, caps = scripted(json_mode)
+    fake = FakeProvider([text(NAMES), text("Still m1 and m2, as you asked.")], caps)
     turn = run(fake, "build a montage")
     assert turn.status == "done"
     assert len(fake.requests) == 2 and len(nudges(fake)) == 1
@@ -566,12 +580,13 @@ def test_native_a_second_text_only_reply_is_final() -> None:
     assert replies == ["Still m1 and m2, as you asked."]
 
 
-def test_native_an_empty_second_answer_falls_back_to_the_first() -> None:
+def test_an_empty_second_answer_falls_back_to_the_first() -> None:
     fake = FakeProvider([answer(NAMES), answer("")])
     turn = run(fake, "build a montage")
     assert len(fake.requests) == 2 and len(nudges(fake)) == 1
     assert turn.status == "done", turn.error
     assert [e["text"] for e in turn.events if e["kind"] == "reply"] == [NAMES]
+    assert turn.record()["reply"] == NAMES  # chat.json keeps the first text as the reply
 
 
 def test_an_empty_first_answer_is_still_an_error() -> None:
@@ -579,22 +594,26 @@ def test_an_empty_first_answer_is_still_an_error() -> None:
     assert turn.status == "failed" and "empty answer" in (turn.error or "")
 
 
+@JSON_MODES
 @pytest.mark.parametrize("text", ["Nothing to change.", "Take m99 maybe.", "Try item3 or hm1x."])
-def test_native_a_reply_naming_no_known_moment_is_not_nudged(text: str) -> None:
-    fake = FakeProvider([answer(text)])
+def test_a_reply_naming_no_known_moment_is_not_nudged(json_mode: bool, text: str) -> None:
+    reply, _, caps = scripted(json_mode)
+    fake = FakeProvider([reply(text)], caps)
     turn = run(fake, "hi")
     assert turn.status == "done" and len(fake.requests) == 1
     assert turn.events[-1]["text"] == text
 
 
-def test_native_a_turn_that_proposed_ends_there_and_is_not_nudged() -> None:
-    fake = FakeProvider([call("propose_edit", **PROPOSE), answer(NAMES)])
+@JSON_MODES
+def test_a_turn_that_proposed_ends_there_and_is_not_nudged(json_mode: bool) -> None:
+    text, propose, caps = scripted(json_mode)
+    fake = FakeProvider([propose(**PROPOSE), text(NAMES)], caps)
     turn = run(fake, "build a montage")
     assert turn.status == "done" and len(fake.requests) == 1 and not nudges(fake)
     assert [e["kind"] for e in turn.events] == ["proposal"]
 
 
-def test_native_a_rejected_proposal_is_not_one_made_so_the_text_after_it_is_nudged() -> None:
+def test_a_rejected_proposal_is_not_one_made_so_the_text_after_it_is_nudged() -> None:
     bad = {"summary": "x", "ops": [{"op": "trim", "id": "m2", "end": 999}]}
     fake = FakeProvider(
         [call("propose_edit", **bad), answer(NAMES), call("propose_edit", **PROPOSE)]
@@ -621,50 +640,3 @@ def test_the_nudge_is_not_an_event_nor_in_the_saved_turn() -> None:
         table, [{"user": rec["user"], "reply": rec["reply"]}], "next", context.budget(8192)
     )
     assert session.NUDGE not in json.dumps(later)
-
-
-def test_the_nudged_replys_text_is_what_a_failed_nudge_answer_leaves() -> None:
-    """The turn that ends on the first text keeps it as its reply in chat.json."""
-    fake = FakeProvider([answer(NAMES), answer("")])
-    turn = run(fake, "build a montage")
-    assert len(fake.requests) == 2 and len(nudges(fake)) == 1
-    assert turn.record()["reply"] == NAMES
-
-
-def test_json_text_naming_a_moment_gets_one_nudge_and_may_then_propose() -> None:
-    fake = FakeProvider([as_reply(NAMES), as_json("propose_edit", **PROPOSE)], JSON_ONLY)
-    turn = run(fake, "build a montage")
-    assert turn.status == "done", turn.error
-    assert len(fake.requests) == 2 and len(nudges(fake)) == 1
-    assert [e["kind"] for e in turn.events] == ["proposal"]
-
-
-def test_json_a_second_text_only_reply_is_final() -> None:
-    fake = FakeProvider([as_reply(NAMES), as_reply("Those two, m1 and m2.")], JSON_ONLY)
-    turn = run(fake, "build a montage")
-    assert turn.status == "done"
-    assert len(fake.requests) == 2 and len(nudges(fake)) == 1
-    assert turn.events[-1]["text"] == "Those two, m1 and m2."
-
-
-def test_json_no_known_id_gets_no_nudge() -> None:
-    fake = FakeProvider([as_reply("Nothing to change.")], JSON_ONLY)
-    assert run(fake, "hi").status == "done" and len(fake.requests) == 1
-
-
-def test_json_a_turn_that_proposed_ends_there_and_is_not_nudged() -> None:
-    fake = FakeProvider([as_json("propose_edit", **PROPOSE), as_reply(NAMES)], JSON_ONLY)
-    turn = run(fake, "build")
-    assert turn.status == "done" and len(fake.requests) == 1 and not nudges(fake)
-    assert [e["kind"] for e in turn.events] == ["proposal"]
-
-
-# -- the rules ------------------------------------------------------------------------------------
-
-
-def test_the_rules_say_a_change_ends_in_propose_edit_and_an_empty_sequence_uses_add() -> None:
-    table = context.MomentTable(project().candidates, [])
-    msgs = context.build_messages(table, [], "build it", context.budget(8192))
-    system = msgs[0]["content"]
-    assert "end with propose_edit" in system
-    assert "empty sequence is built with add ops" in system

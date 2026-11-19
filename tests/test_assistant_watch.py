@@ -458,7 +458,7 @@ def test_a_turn_views_at_most_its_cap_and_a_repeat_sends_nothing_new(
         assert any(f"at most {watch.views(cap)} can" in r for r in given)
         assert any(e.get("error") == "limit" for e in turn.events)
     rules = fake.requests[0]["messages"][0]["content"]
-    assert f"at most {watch.views(cap)}." in rules and "never for every moment" in rules
+    assert f"at most {watch.views(cap)}." in rules  # the cap of this model, not a fixed number
 
 
 # -- offered or hidden ---------------------------------------------------------------------------

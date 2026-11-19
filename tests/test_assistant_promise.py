@@ -49,9 +49,14 @@ def sent(fake: FakeProvider, text: str = session.PROMISE_NUDGE) -> int:
 # -- the nudge, natively and in JSON mode ----------------------------------------------------
 
 
-def test_the_issue_case_native_searches_after_the_nudge_and_shows_the_answer() -> None:
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_the_issue_case_searches_after_the_nudge_and_shows_the_answer(json_mode: bool) -> None:
     final = "She says it at 5 s in a.mp4."
-    fake = FakeProvider([say(ISSUE), call("find_words", query="a"), say(final)], NATIVE)
+    if json_mode:
+        script = [said_json(ISSUE), as_json("find_words", query="a"), said_json(final)]
+    else:
+        script = [say(ISSUE), call("find_words", query="a"), say(final)]
+    fake = FakeProvider(script, NO_TOOLS if json_mode else NATIVE)
     turn = run(fake, ASK, proj=chat_project())
     assert turn.status == "done", turn.error
     assert fake.requests[1]["messages"][-1] == {"role": "user", "content": session.PROMISE_NUDGE}
@@ -59,19 +64,6 @@ def test_the_issue_case_native_searches_after_the_nudge_and_shows_the_answer() -
     assert replies(turn) == [final]
     assert session.PROMISE_NUDGE not in json.dumps(turn.view()) + json.dumps(turn.record())
     assert turn.record()["reply"] == final
-
-
-def test_the_issue_case_in_json_mode() -> None:
-    final = "She says it at 5 s in a.mp4."
-    fake = FakeProvider(
-        [said_json(ISSUE), as_json("find_words", query="a"), said_json(final)], NO_TOOLS
-    )
-    turn = run(fake, ASK, proj=chat_project())
-    assert turn.status == "done", turn.error
-    assert fake.requests[1]["messages"][-1] == {"role": "user", "content": session.PROMISE_NUDGE}
-    assert sent(fake) == 1
-    assert replies(turn) == [final]
-    assert session.PROMISE_NUDGE not in json.dumps(turn.view()) + json.dumps(turn.record())
 
 
 def test_a_reply_that_announces_a_search_to_a_question_gets_the_promise_nudge() -> None:

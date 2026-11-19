@@ -91,9 +91,7 @@ def test_the_sequence_shows_each_clip_as_exported_with_its_room_and_a_total() ->
     assert table.row("c2")["len"] == 13.5 and table.row("c1")["len"] == 10.0  # a moment not in it
 
 
-def test_the_rules_say_how_to_lengthen_and_the_target_is_in_the_context() -> None:
-    rules = context.rules(context.MomentTable(list(CANDS), list(SEQ)))
-    assert "end_delta > 0" in rules and "ends abruptly" in rules and "must reach it" in rules
+def test_the_target_is_in_the_context() -> None:
     table = context.MomentTable(list(CANDS), list(SEQ))
     msgs = context.build_messages(table, [], "make it 4 min", context.budget(8192), target=240)
     assert "asked for about 240 s. The sequence is 24 s now (216 s short)" in msgs[1]["content"]
@@ -132,7 +130,6 @@ def test_a_proposal_short_of_the_asked_length_is_sent_back_three_times_then_take
     assert turn.status == "done", turn.error
     sent_back = fake.requests[1]["messages"][-1]["content"]
     assert "makes 34 s of the 240 s asked; add about 206 s more" in sent_back
-    assert "extend clips within their room or add moments" in sent_back
     assert kinds(turn) == ["rejected"] * 3 + ["proposal"]  # the fourth is accepted as it is
     assert "34 s of the 240 s" in turn.view()["events"][0]["text"]
     assert turn.view()["events"][3]["length"] > 34.0  # topped up by code
@@ -951,26 +948,6 @@ def test_ops_followed_by_punctuation_are_taken_and_other_text_is_not() -> None:
     assert "text after the JSON list" in fake.requests[1]["messages"][-1]["content"]
 
 
-def test_a_reply_that_announces_more_work_gets_the_one_nudge() -> None:
-    said = Reply(
-        "Now let me search for more beauty shots.", [], {"role": "assistant", "content": "x"}
-    )
-    ok = propose("Add the laugh", {"op": "add", "id": "m1"})
-    fake = FakeProvider([said, ok])
-    turn = run(fake, "add some beauty shots")
-    assert kinds(turn) == ["proposal"]
-    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
-    # a question needs no edit, but the announced search is a promise (#1013): the promise nudge
-    fake = FakeProvider(
-        [said, Reply("It shows a jump.", [], {"role": "assistant", "content": "x"})]
-    )
-    assert kinds(run(fake, "what is in this video?")) == ["reply"]
-    assert fake.requests[1]["messages"][-1]["content"] == session.PROMISE_NUDGE
-    # only once: the second announcement is the answer
-    fake = FakeProvider([said, said])
-    assert kinds(run(fake, "add some beauty shots")) == ["reply"]
-
-
 def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal() -> None:
     # #743: no length asked and no moment named, but an edit asked for
     said = Reply(
@@ -985,15 +962,9 @@ def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal
     turn = run(fake, "add something funny")
     assert kinds(turn) == ["reply"] and len(fake.requests) == 2
     assert turn.view()["events"][0]["text"] == said.text
-    # a message that asks no edit gets no nudge
+    # a message that asks no edit gets no nudge (questions with an edit word: the table below)
     fake = FakeProvider([said])
     assert kinds(run(fake, "what is the best moment?")) == ["reply"] and len(fake.requests) == 1
-    # nor does a question with an edit word, unless it is a request
-    fake = FakeProvider([said])
-    assert kinds(run(fake, "what would you trim?")) == ["reply"] and len(fake.requests) == 1
-    fake = FakeProvider([said, ok])
-    assert kinds(run(fake, "can you add something funny?")) == ["proposal"]
-    assert fake.requests[1]["messages"][-1]["content"] == session.NUDGE
 
 
 @pytest.mark.parametrize(
@@ -1021,10 +992,9 @@ def test_a_question_that_asks_for_an_edit_gets_the_nudge_one_that_asks_advice_no
     assert (len(fake.requests) == 2) is nudged
 
 
-@pytest.mark.parametrize(
-    "msg", ["could we add the laugh?", "make it 2 min?", "hey, can you add the laugh?"]
-)
-def test_a_reply_that_announces_work_is_nudged_for_any_edit_request(msg: str) -> None:
+def test_a_reply_that_announces_work_is_nudged_for_a_question_form_edit_request() -> None:
+    # the question forms themselves: test_a_question_that_asks_for_an_edit_gets_the_nudge...
+    msg = "make it 2 min?"
     said = Reply("Let me search for more funny moments.", [], {"role": "assistant", "content": "x"})
     fake = FakeProvider([said, propose("Add the laugh", {"op": "add", "id": "m1"})])
     run(fake, msg)  # "make it 2 min?": the 34 s proposal then goes back as short

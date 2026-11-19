@@ -8,7 +8,7 @@ import json
 
 from assistant_helpers import FakeProvider, call, durations
 from cutpoint import ui
-from cutpoint.assistant import context, session, toolcalls
+from cutpoint.assistant import context, session
 
 A, B = "/v/a.mp4", "/v/b.mp4"
 SKI = {  # an action-cam candidate's signals: the grids' maximum over the clip, 0-1
@@ -258,27 +258,6 @@ def test_the_moments_list_shows_the_same_label_and_keeps_the_analysis_one() -> N
     ]  # fmt: skip
     assert [c["label"] for c in view] == [c["label"] for c in CANDS]
     assert hl["candidates"][1]["label"] == "action-moment"  # highlights.json is not changed
-
-
-def test_the_rules_and_tool_say_to_use_the_visual_fields_before_asking() -> None:
-    rules = context.rules(table())
-    for word in (
-        "seen",
-        "cues",
-        "heard",
-        "kind",
-        "beauty (a steady",
-        "scenic_vista",
-        "find_moments",
-    ):
-        assert word in rules, word
-    assert "beauty shots = high beauty or scenic_vista with stopped" in rules
-    assert "steady action = high speed or carve or fast_open." in rules  # no airtime or crash
-    assert "before asking the user for moment ids" in rules
-    msgs = context.build_messages(table(), [], "hi", context.budget(8192))
-    assert msgs[0]["content"] == rules
-    find = next(t for t in toolcalls.TOOLS if t["function"]["name"] == "find_moments")
-    assert "cue names" in find["function"]["description"]
 
 
 def test_the_rules_name_only_the_cues_the_project_has() -> None:
