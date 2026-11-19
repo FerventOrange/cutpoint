@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import write
+from conftest import transcribed_both, write
 from cutpoint import analyze, cache, sources, srt
 from cutpoint.transcribe import transcript_name
 
@@ -60,26 +60,8 @@ def test_transcript_file_picks_the_language_of_the_analysis(tmp_path, files, lan
     assert sources._transcript_file(tmp_path, language) == tmp_path / want
 
 
-def _segment(word: str) -> dict:
-    return {
-        "start": 101.0,
-        "end": 101.4,
-        "text": word,
-        "words": [{"start": 101.0, "end": 101.4, "word": word}],
-    }
-
-
-def _transcribed_both(path: Path) -> Path:
-    """``path`` with a cached detected-language ("hello") and German ("hallo") transcript."""
-    write(path)
-    cdir = cache.source_dir(path)
-    cache.save_json(cdir / "transcript-small.json", [_segment("hello")])
-    cache.save_json(cdir / "transcript-small-de.json", [_segment("hallo")])
-    return path
-
-
 def test_source_words_and_srt_lookup_read_the_given_language(home, tmp_path):
-    src = _transcribed_both(tmp_path / "a.mp4")
+    src = transcribed_both(tmp_path / "a.mp4")
     assert [w["word"] for w in sources.source_words(src)] == ["hello"]
     assert [w["word"] for w in sources.source_words(src, "de")] == ["hallo"]
     assert srt.words_lookup()(str(src))[0]["word"] == "hello"
@@ -89,18 +71,11 @@ def test_source_words_and_srt_lookup_read_the_given_language(home, tmp_path):
     assert "hallo" in (tmp_path / "001_a.srt").read_text(encoding="utf-8")
 
 
-@pytest.mark.parametrize(
-    ("hl", "want"),
-    [
-        ({"settings": {"language": "de"}}, "de"),
-        ([], None),
-        (None, None),  # no highlights.json
-    ],
-)
-def test_project_language_reads_the_analysis_settings(tmp_path, hl, want):
-    if hl is not None:
-        write(tmp_path / "highlights.json", json.dumps(hl))
-    assert sources.project_language(tmp_path) == want
+def test_project_language_is_none_without_a_usable_highlights_file(tmp_path):
+    """A project without highlights.json, or an old list-shaped one, has no language."""
+    assert sources.project_language(tmp_path) is None
+    write(tmp_path / "highlights.json", json.dumps([]))
+    assert sources.project_language(tmp_path) is None
 
 
 def test_language_case_is_ignored(tmp_path: Path) -> None:

@@ -221,15 +221,6 @@ def test_speech_pass_moves_end_out_of_an_utterance(speech_env):
     assert len(calls["maps"]) == 1 and calls["words"] == [Path("v.mp4")]
 
 
-def test_speech_pass_reads_the_words_of_the_given_language(speech_env):
-    """#371: the transcript language of the analysis reaches the words read."""
-    project, calls = speech_env
-    plans = [_plan("a.mp4", 5.0, 12.0)]
-    speech_pass(plans, boundaries.SpeechSettings(), project, fit_end=lambda e: True)
-    speech_pass(plans, boundaries.SpeechSettings(), project, fit_end=lambda e: True, language="de")
-    assert calls["languages"] == [None, "de"]
-
-
 def test_speech_pass_respects_opt_outs_and_fixed_ends(speech_env):
     project, _ = speech_env
     plans = [

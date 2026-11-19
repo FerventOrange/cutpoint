@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cutpoint import analyze, clips, config, paths, reset_state
+from cutpoint import analyze, cache, clips, config, paths, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
 
 # Fixtures moved out of test_analyze_steps, test_batch_size, test_event_candidates and
@@ -219,6 +219,21 @@ def write(path: Path, text: str | bytes = "x") -> Path:
         path.write_bytes(text)
     else:
         path.write_text(text, encoding="utf-8")
+    return path
+
+
+def transcribed_both(path: Path) -> Path:
+    """``path`` with a cached detected-language ("hello") and German ("hallo") transcript
+    (#371), each one segment at 101.0-101.4 s."""
+    write(path)
+    for name, word in (("transcript-small.json", "hello"), ("transcript-small-de.json", "hallo")):
+        segment = {
+            "start": 101.0,
+            "end": 101.4,
+            "text": word,
+            "words": [{"start": 101.0, "end": 101.4, "word": word}],
+        }
+        cache.save_json(cache.source_dir(path) / name, [segment])
     return path
 
 

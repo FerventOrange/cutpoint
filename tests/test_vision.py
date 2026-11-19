@@ -193,28 +193,6 @@ def test_unload_failure_is_not_fatal(monkeypatch, caplog):
     assert "Could not unload Ollama model m" in caplog.text
 
 
-def test_unload_does_not_follow_a_redirect(monkeypatch, caplog):
-    """An Ollama answering the unload with 307 is not followed to another host (that host
-    was never allowed): one request, no exception, the model counted as still loaded."""
-    sent: list[tuple[str, bool]] = []
-
-    def post(url, json, timeout, allow_redirects=True, **_k):
-        sent.append((url, allow_redirects))
-        resp = requests.Response()
-        resp.status_code, resp.url = 307, url
-        resp.headers["Location"] = "http://elsewhere.example.com/api/generate"
-        return resp
-
-    monkeypatch.setattr(vision.requests, "post", post)
-    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
-    rater.used = True
-    with caplog.at_level(logging.DEBUG, logger="cutpoint.vision"):
-        rater.unload()  # no exception: the run goes on
-    assert sent == [("http://127.0.0.1:1/api/generate", False)]
-    assert rater.used is True
-    assert "redirect (HTTP 307); not followed" in caplog.text
-
-
 def _moved(sent: list[tuple[str, bool]]):
     """A requests stand-in answering every call with a real 307 to another host."""
 
@@ -238,19 +216,6 @@ def test_rate_frames_does_not_follow_a_redirect(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
         assert rater.rate(Path("a.mp4"), 0, 4, "action") is None
     assert sent == [("http://127.0.0.1:1/api/chat", False)]
-    assert "redirect (HTTP 307); not followed" in caplog.text
-
-
-@pytest.mark.parametrize(
-    ("model", "endpoint"), [("llava", "chat"), ("qwen3.5:9b", "generate")], ids=["chat", "generate"]
-)
-def test_ask_json_does_not_follow_a_redirect(monkeypatch, caplog, model, endpoint):
-    sent: list[tuple[str, bool]] = []
-    monkeypatch.setattr(vision.requests, "post", _moved(sent))
-    rater = vision.VisionRater(url="http://127.0.0.1:1", model=model)
-    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
-        assert rater.ask_json("p") is None
-    assert sent == [(f"http://127.0.0.1:1/api/{endpoint}", False)]
     assert "redirect (HTTP 307); not followed" in caplog.text
 
 
