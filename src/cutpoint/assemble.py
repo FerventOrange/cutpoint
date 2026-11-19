@@ -1437,87 +1437,97 @@ def assemble(
     # one run at a time: another would remove a run's staging folder
     with folders.swap_lock(clips_dir):
         folders.recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
-        return _assemble(
-            clips_dir,
-            out,
-            transition,
-            fade_dur,
-            loudnorm,
-            captions,
-            caption_model,
-            audio_fade,
-            compress_peaks,
-            audio,
-            output_format,
-            joins,
+        if out is None:  # clips -> final.mp4, clips_vertical -> final_vertical.mp4
+            name = clips_dir.resolve().name
+            stem = "final" + name[5:] if name.lower().startswith("clips") else f"final_{name}"
+            out = clips_dir.resolve().parent / f"{stem}.mp4"
+        out = out.resolve()
+        files = list_clips(clips_dir, exclude={out})
+        if not files:
+            raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
+        if output_format != "mp4":
+            return _write_timeline(
+                clips_dir, files, out, output_format, transition, fade_dur, audio, joins
+            )
+        mix = _Mix(
+            transition=transition,
+            fade_dur=fade_dur,
+            loudnorm=loudnorm,
+            captions=captions,
+            caption_model=caption_model,
+            audio_fade=audio_fade,
+            compress_peaks=compress_peaks,
+            audio_transition=audio,
+            joins=joins,
         )
+        return _write_mp4(clips_dir, files, out, mix)
 
 
-def _assemble(
-    clips_dir: Path,
-    out: Path | None,
-    transition: str,
-    fade_dur: float,
-    loudnorm: bool,
-    captions: bool,
-    caption_model: str | None,
-    audio_fade: float,
-    compress_peaks: str,
-    audio_transition: str,
-    output_format: str,
-    joins: list[dict[str, str]] | None = None,
-) -> Path:
-    """:func:`assemble`, with ``clips_dir`` locked."""
-    if out is None:  # clips -> final.mp4, clips_vertical -> final_vertical.mp4
-        name = clips_dir.resolve().name
-        stem = "final" + name[5:] if name.lower().startswith("clips") else f"final_{name}"
-        out = clips_dir.resolve().parent / f"{stem}.mp4"
-    out = out.resolve()
-    files = list_clips(clips_dir, exclude={out})
-    if not files:
-        raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
-    if output_format != "mp4":
-        return _write_timeline(
-            clips_dir, files, out, output_format, transition, fade_dur, audio_transition, joins
-        )
-    kinds = hard_cuts(clips_dir, files, transition, join_kinds(files, transition, joins))
+@dataclass(frozen=True)
+class _Mix:
+    """How :func:`_write_mp4` joins the clips: the options of :func:`assemble` of those names
+    (``audio_transition`` decided: ``cut`` or ``crossfade``)."""
+
+    transition: str
+    fade_dur: float
+    loudnorm: bool
+    captions: bool
+    caption_model: str | None
+    audio_fade: float
+    compress_peaks: str
+    audio_transition: str
+    joins: list[dict[str, str]] | None
+
+
+def _write_mp4(clips_dir: Path, files: list[Path], out: Path, mix: _Mix) -> Path:
+    """Join ``files`` of ``clips_dir`` (locked) into ``out`` as ``mix`` says, and write
+    ``<out>.srt``; the mp4 output of :func:`assemble`."""
+    kinds = hard_cuts(
+        clips_dir, files, mix.transition, join_kinds(files, mix.transition, mix.joins)
+    )
     # A run that fails before writing anything leaves no empty output folder behind.
     with folders.output_dir(out.parent):
         infos = [probe(f) for f in files]
-        mode = transition
-        if audio_transition != default_audio_transition(transition):
-            mode += f", audio {audio_transition}"
+        mode = mix.transition
+        if mix.audio_transition != default_audio_transition(mix.transition):
+            mode += f", audio {mix.audio_transition}"
         logger.info(
             "Assembling %d clips (%s): %s", len(files), mode, ", ".join(f.name for f in files)
         )
 
-        peaks = peak_filters(clips_dir, files, infos, compress_peaks)
-        limit = loudnorm or compress_peaks != "off"
-        language = srt.clips_language(clips_dir) if captions else None
+        peaks = peak_filters(clips_dir, files, infos, mix.compress_peaks)
+        limit = mix.loudnorm or mix.compress_peaks != "off"
+        language = srt.clips_language(clips_dir) if mix.captions else None
         # Written to a temporary name: final.mp4 only appears once complete.
         with folders.atomic_output(out) as part:
-            stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or captions) else part
+            stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or mix.captions) else part
             try:
                 used_fade = _join(
                     files,
                     infos,
                     clips_dir,
                     stage,
-                    transition,
-                    fade_dur,
-                    audio_fade,
+                    mix.transition,
+                    mix.fade_dur,
+                    mix.audio_fade,
                     peaks,
-                    audio_transition,
+                    mix.audio_transition,
                     kinds,
                 )
                 if limit:
                     lufs, tp = normalize_with_ceiling(
-                        stage, out, captions, caption_model, part, loudnorm, language
+                        stage, out, mix.captions, mix.caption_model, part, mix.loudnorm, language
                     )
                     logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
-                elif captions:
+                elif mix.captions:
                     post_process(
-                        stage, out, False, captions, caption_model, dst=part, language=language
+                        stage,
+                        out,
+                        False,
+                        mix.captions,
+                        mix.caption_model,
+                        dst=part,
+                        language=language,
                     )
             finally:
                 if stage != part:
@@ -1527,7 +1537,7 @@ def _assemble(
     logger.info("Wrote %s (%.2fs)", out, duration)
     _warn_earlier(out, "mp4")
     srt_path = srt.write_final_srt(clips_dir, files, infos, used_fade, out)
-    _report_joins(files, joins, used_fade)
+    _report_joins(files, mix.joins, used_fade)
     jsonout.output("format", "mp4")
     jsonout.output("final", out)
     jsonout.output("srt", srt_path)

@@ -24,8 +24,9 @@ Cutpoint owns this folder: each analysis removes the files of candidates it no l
 :data:`~cutpoint.pano.director.PATH_VERSION`, :data:`CACHE_VERSION`, the Cutpoint
 version, the code identity (:func:`code_id`: a hash of the source of the modules that plan
 and score the path, so a code change without a version bump plans anew), the clip's
-duration / fps / frames and the identity (name, size, modification time) of the cached view
-layer, voice layer and orientation track it reads.
+duration / fps / frames and the identity of the cached layers it reads: the view layer's
+content hash (:func:`_views_id`; a touched file keeps it), the name, size and modification
+time of the voice layer and the orientation track.
 ``clips`` (:class:`~cutpoint.pano.render.PanoExporter`) reuses a cached path only when the
 key it would plan with is equal (:func:`cached_path`); any difference (a span moved by
 tails, padding or the speech pass, other settings, a recomputed view layer) plans it anew,
@@ -171,6 +172,20 @@ def _file_id(path: Path) -> list[Any] | None:
     return None if stamp is None else [path.name, stamp[1], stamp[0]]
 
 
+def _views_id(views: Path) -> list[Any] | None:
+    """Identity of the view layer ``views`` (``pano-views-*.npz``): ``["pair", <hash>]``, the
+    hash of its arrays that :func:`~cutpoint.pano.views.save_views` writes into the .npz and
+    the .json beside it (read from the .json; the arrays are not loaded), so a touched file
+    keeps it. A layer without one (written before the token, or its .json unreadable) gives
+    its :func:`_file_id`; None when there is no layer."""
+    stamp = _file_id(views)
+    if stamp is None:
+        return None
+    meta = cache.load_json(views.with_suffix(".json"))
+    pair = meta.get("pair") if isinstance(meta, dict) else None
+    return ["pair", pair] if isinstance(pair, str) and pair else stamp
+
+
 def _inputs(src: Path) -> dict[str, Any]:
     """Identity of the cached layers a path of ``src`` reads.
 
@@ -183,7 +198,7 @@ def _inputs(src: Path) -> dict[str, Any]:
     views = VW.cache_path(src)
     return {
         "dir": views.parent.name,  # the source's cache folder: path, size and mtime
-        "views": _file_id(views),
+        "views": _views_id(views),
         "voice": _file_id(VO.cache_path(src, VO.VoiceParams())),
         "orient": _file_id(G._orient_path(src)),
     }

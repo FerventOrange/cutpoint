@@ -265,130 +265,7 @@ def compute_views(
     if reuse is not None and reuse.rays is None:  # loaded from the cache: no float64 rays
         logger.debug("%s: no rays to reuse; full recompute", src.name)
         reuse = None
-    dev = models.device
-    sampler = G.FisheyeSampler(dev, p.fisheye_fov)
-    view_rays = sampler.rays(G.flat_rays(p.view_px, p.view_px, p.view_fov, p.view_fov))
-    selfie_rays = sampler.rays(G.flat_rays(p.view_px, p.view_px, p.selfie_fov, p.selfie_fov))
-    eq_w = round(p.eq_width * (360 + 2 * p.eq_wrap_deg) / 360)
-    eq_h = p.eq_width // 2
-    # Equirect rays over 360 deg plus the wrap margin on both sides.
-    lon = (np.arange(eq_w) + 0.5) / p.eq_width * 360.0 - 180.0 - p.eq_wrap_deg
-    lat = ((2 * np.arange(eq_h) + 1) / eq_h - 1) * 90.0
-    lo, la = np.meshgrid(np.radians(lon), np.radians(lat))
-    eq_d = np.stack([np.cos(la) * np.sin(lo), np.sin(la), np.cos(la) * np.cos(lo)], -1)
-    eq_rays = sampler.rays(eq_d)
-    vrot = _view_rotations(p)
-    det_model = models.det
-    det_model.transform.min_size = (eq_h,)
-    det_model.transform.max_size = eq_w + 8
-    det_model.roi_heads.score_thresh = p.det_thresh
-
-    ts: list[float] = []
-    embs: list[np.ndarray] = []
-    dets: list[np.ndarray] = []
-    rays: list[np.ndarray] = []
-    crop_rows: list[int] = []
-    crop_embs: list[np.ndarray] = []
-    batch_t: list[float] = []
-    batch_f: list[np.ndarray] = []
-    gpu_s = 0.0
-    n_rows = 0
-    wear = wearer_v / np.linalg.norm(wearer_v)
-    person_lab = torch.tensor(DET_LABELS, device=dev)
-    flip = orient.forward_axis == G.axis_name(G.LENS_V)  # sampled in the DET_FRAME frame
-
-    def flush() -> None:
-        nonlocal gpu_s, n_rows
-        g0 = time.perf_counter()
-        b = len(batch_f)
-        x = torch.from_numpy(np.stack(batch_f)).to(dev).permute(0, 3, 1, 2).float() / 255
-        rv = np.stack([orient.r_vw(t) for t in batch_t])
-        if flip:
-            rv = rv @ DET_FLIP
-        with torch.inference_mode():
-            views = sampler.sample(x, rv, view_rays, vrot)  # (B, 8, 3, S, S)
-            sel = sampler.sample(
-                x, np.stack([r @ _selfie_rotation(r, wear) for r in rv]), selfie_rays
-            )  # (B, 3, S, S)
-            allv = torch.cat([views, sel[:, None]], 1).reshape(b * 9, 3, p.view_px, p.view_px)
-            e = models._embed(allv).view(b, 9, -1)
-        if flip:
-            e = e[:, DET_PERM]
-        embs.append(e.cpu().numpy().astype(np.float16))
-        if reuse is not None:  # detections and crops do not depend on the wearer axis
-            ts.extend(batch_t)
-            batch_t.clear()
-            batch_f.clear()
-            gpu_s += time.perf_counter() - g0
-            return
-        with torch.inference_mode():
-            eq = sampler.sample(x, rv, eq_rays)  # (B, 3, H, W)
-            if dev == "cuda":
-                with torch.autocast("cuda", dtype=torch.float16):
-                    outs = det_model(list(eq))
-            else:
-                outs = det_model(list(eq))
-        crops = []
-        for i, o in enumerate(outs):
-            keep = torch.isin(o["labels"], person_lab)
-            bx = o["boxes"][keep].float().cpu().numpy()
-            lab = o["labels"][keep].cpu().numpy()
-            sc = o["scores"][keep].float().cpu().numpy()
-            rows: list[list[float]] = []
-            n_crops = 0
-            for j in np.argsort(-sc):
-                x1, y1, x2, y2 = bx[j]
-                cxp, cyp = (x1 + x2) / 2, (y1 + y2) / 2
-                yaw = cxp / p.eq_width * 360.0 - 180.0 - p.eq_wrap_deg
-                if not -180.0 <= yaw < 180.0:
-                    continue  # the duplicate inside the wrap margin
-                pitch = 90.0 - cyp / eq_h * 180.0
-                wdeg = (x2 - x1) / p.eq_width * 360.0
-                hdeg = (y2 - y1) / eq_h * 180.0
-                dv = rv[i] @ G.yaw_pitch_ray(yaw, pitch)
-                wa = _wearer_deg(dv, wear)
-                rays.append(dv)
-                rows.append(
-                    [
-                        len(ts) + i,
-                        float(lab[j]),
-                        float(sc[j]),
-                        float(G.wrap_deg(yaw + 180.0)) if flip else yaw,
-                        pitch,
-                        wdeg,
-                        hdeg,
-                        wa,
-                        *dv.tolist(),
-                    ]
-                )
-                if lab[j] == COCO_PERSON and sc[j] >= p.box_min_score and n_crops < p.box_max:
-                    side = max(x2 - x1, y2 - y1) * 1.1
-                    a0, a1 = int(max(0, cxp - side / 2)), int(min(eq_w, cxp + side / 2))
-                    b0, b1 = int(max(0, cyp - side / 2)), int(min(eq_h, cyp + side / 2))
-                    if a1 - a0 >= 8 and b1 - b0 >= 8:
-                        crops.append(
-                            torch.nn.functional.interpolate(
-                                eq[i : i + 1, :, b0:b1, a0:a1].float(),
-                                size=(224, 224),
-                                mode="bilinear",
-                                antialias=True,
-                                align_corners=False,
-                            )
-                        )
-                        crop_rows.append(n_rows + len(rows) - 1)
-                        n_crops += 1
-            dets.append(np.asarray(rows, np.float32).reshape(-1, len(DET_COLS)))
-            n_rows += len(rows)
-        if crops:
-            with torch.inference_mode():
-                crop_embs.append(
-                    models._embed(torch.cat(crops, 0)).cpu().numpy().astype(np.float16)
-                )
-        ts.extend(batch_t)
-        batch_t.clear()
-        batch_f.clear()
-        gpu_s += time.perf_counter() - g0
-
+    vp = _ViewPass.start(torch, models, p, orient, wearer_v, reuse, DET_LABELS, COCO_PERSON)
     t0 = time.perf_counter()
     last = -1e9
     # Decode the copy source_remap points at; caches and meta keep the original path.
@@ -396,52 +273,267 @@ def compute_views(
         if t - last < p.min_gap_s:
             continue
         last = t
-        batch_t.append(t)
-        batch_f.append(frame)
-        if len(batch_f) >= p.batch:
-            flush()
-    if batch_f:
-        flush()
-    if not ts:
+        vp.batch_t.append(t)
+        vp.batch_f.append(frame)
+        if len(vp.batch_f) >= p.batch:
+            vp.flush()
+    if vp.batch_f:
+        vp.flush()
+    if not vp.ts:
         logger.warning("%s: 360 views decoded no frames", src.name)
         return None
-    t_arr = np.asarray(ts, np.float32)
+    t_arr = np.asarray(vp.ts, np.float32)
     if reuse is not None:
         if not np.array_equal(t_arr, reuse.t):
             logger.warning("%s: 360 views decoded other frames; full recompute", src.name)
             return compute_views(clip, models, p, orient, wearer_v)
-        det = reuse.det.copy()
-        det[:, 7] = [_wearer_deg(dv, wear) for dv in reuse.rays]
-        data = replace(reuse, t=t_arr, emb=np.concatenate(embs), det=det)
-        gpu_s += reuse.meta.get("gpu_s", 0.0)
+        data = vp.reused(t_arr, reuse)
+        vp.gpu_s += reuse.meta.get("gpu_s", 0.0)
         t0 -= reuse.meta.get("elapsed_s", 0.0)  # elapsed_s covers both passes
     else:
-        det = np.concatenate(dets) if dets else np.zeros((0, len(DET_COLS)), np.float32)
-        data = PanoViews(
-            t=t_arr,
-            emb=np.concatenate(embs),
-            det=det,
-            box_emb=(np.concatenate(crop_embs) if crop_embs else np.zeros((0, 768), np.float16)),
-            box_idx=np.asarray(crop_rows, np.int64),
-            rays=np.asarray(rays, np.float64).reshape(-1, 3),
-        )
+        data = vp.result(t_arr)
     elapsed = time.perf_counter() - t0
-    data.meta = {
+    data.meta = _views_meta(src, clip, p, orient, vp, data, elapsed)
+    return data
+
+
+def _views_meta(
+    src: Path,
+    clip: Any,
+    p: ViewParams,
+    orient: G.Orientation,
+    vp: _ViewPass,
+    data: PanoViews,
+    elapsed: float,
+) -> dict[str, Any]:
+    """The ``meta`` of :func:`compute_views`' result."""
+    meta = {
         "source": str(src),
         "clip": clip.clip_id,
-        "frames": len(ts),
+        "frames": len(vp.ts),
         "elapsed_s": round(elapsed, 1),
-        "gpu_s": round(gpu_s, 1),
+        "gpu_s": round(vp.gpu_s, 1),
         "person_crops": len(data.box_idx),
         "views": list(VIEW_NAMES),
-        "wearer_v": [round(float(v), 4) for v in wear],
+        "wearer_v": [round(float(v), 4) for v in vp.wear],
         "params": p.key(),
     }
     if orient.forward_axis != G.axis_name(G.FORWARD_V):  # load_views checks it
-        data.meta["forward_axis"] = orient.forward_axis
-    if flip:
-        data.meta["det_frame"] = DET_FRAME
-    return data
+        meta["forward_axis"] = orient.forward_axis
+    if vp.flip:
+        meta["det_frame"] = DET_FRAME
+    return meta
+
+
+@dataclass
+class _ViewPass:
+    """One decode pass of :func:`compute_views`: the samplers and models it runs on each
+    batch of keyframes (:meth:`flush`) and what they gave so far. ``torch`` is the module;
+    ``reuse`` (with ``rays``) skips the detector and the person crops."""
+
+    torch: Any
+    models: Any
+    p: ViewParams
+    orient: G.Orientation
+    reuse: PanoViews | None
+    sampler: Any
+    view_rays: Any
+    selfie_rays: Any
+    eq_rays: Any
+    eq_w: int
+    eq_h: int
+    vrot: np.ndarray
+    wear: np.ndarray
+    person_lab: Any
+    coco_person: int
+    flip: bool  # sampled in the DET_FRAME frame
+    ts: list[float] = field(default_factory=list)
+    embs: list[np.ndarray] = field(default_factory=list)
+    dets: list[np.ndarray] = field(default_factory=list)
+    rays: list[np.ndarray] = field(default_factory=list)
+    crop_rows: list[int] = field(default_factory=list)
+    crop_embs: list[np.ndarray] = field(default_factory=list)
+    batch_t: list[float] = field(default_factory=list)
+    batch_f: list[np.ndarray] = field(default_factory=list)
+    gpu_s: float = 0.0
+    n_rows: int = 0
+
+    @classmethod
+    def start(
+        cls,
+        torch: Any,
+        models: Any,
+        p: ViewParams,
+        orient: G.Orientation,
+        wearer_v: np.ndarray,
+        reuse: PanoViews | None,
+        det_labels: Any,
+        coco_person: int,
+    ) -> _ViewPass:
+        """The samplers' rays and the detector set up for ``p``; nothing decoded yet."""
+        dev = models.device
+        sampler = G.FisheyeSampler(dev, p.fisheye_fov)
+        view_rays = sampler.rays(G.flat_rays(p.view_px, p.view_px, p.view_fov, p.view_fov))
+        selfie_rays = sampler.rays(G.flat_rays(p.view_px, p.view_px, p.selfie_fov, p.selfie_fov))
+        eq_w = round(p.eq_width * (360 + 2 * p.eq_wrap_deg) / 360)
+        eq_h = p.eq_width // 2
+        # Equirect rays over 360 deg plus the wrap margin on both sides.
+        lon = (np.arange(eq_w) + 0.5) / p.eq_width * 360.0 - 180.0 - p.eq_wrap_deg
+        lat = ((2 * np.arange(eq_h) + 1) / eq_h - 1) * 90.0
+        lo, la = np.meshgrid(np.radians(lon), np.radians(lat))
+        eq_d = np.stack([np.cos(la) * np.sin(lo), np.sin(la), np.cos(la) * np.cos(lo)], -1)
+        eq_rays = sampler.rays(eq_d)
+        vrot = _view_rotations(p)
+        det_model = models.det
+        det_model.transform.min_size = (eq_h,)
+        det_model.transform.max_size = eq_w + 8
+        det_model.roi_heads.score_thresh = p.det_thresh
+        return cls(
+            torch=torch,
+            models=models,
+            p=p,
+            orient=orient,
+            reuse=reuse,
+            sampler=sampler,
+            view_rays=view_rays,
+            selfie_rays=selfie_rays,
+            eq_rays=eq_rays,
+            eq_w=eq_w,
+            eq_h=eq_h,
+            vrot=vrot,
+            wear=wearer_v / np.linalg.norm(wearer_v),
+            person_lab=torch.tensor(det_labels, device=dev),
+            coco_person=coco_person,
+            flip=orient.forward_axis == G.axis_name(G.LENS_V),
+        )
+
+    def flush(self) -> None:
+        """Run the batch: embed its 9 views and, unless reusing, detect people and embed
+        their crops."""
+        torch = self.torch
+        g0 = time.perf_counter()
+        x = torch.from_numpy(np.stack(self.batch_f)).to(self.models.device)
+        x = x.permute(0, 3, 1, 2).float() / 255
+        rv = np.stack([self.orient.r_vw(t) for t in self.batch_t])
+        if self.flip:
+            rv = rv @ DET_FLIP
+        self._embed_views(x, rv)
+        if self.reuse is None:  # detections and crops do not depend on the wearer axis
+            self._detect(x, rv)
+        self.ts.extend(self.batch_t)
+        self.batch_t.clear()
+        self.batch_f.clear()
+        self.gpu_s += time.perf_counter() - g0
+
+    def _embed_views(self, x: Any, rv: np.ndarray) -> None:
+        """The 8 horizon views and the selfie view of the batch, embedded as one batch."""
+        torch, p, b = self.torch, self.p, len(self.batch_f)
+        with torch.inference_mode():
+            views = self.sampler.sample(x, rv, self.view_rays, self.vrot)  # (B, 8, 3, S, S)
+            sel = self.sampler.sample(
+                x, np.stack([r @ _selfie_rotation(r, self.wear) for r in rv]), self.selfie_rays
+            )  # (B, 3, S, S)
+            allv = torch.cat([views, sel[:, None]], 1).reshape(b * 9, 3, p.view_px, p.view_px)
+            e = self.models._embed(allv).view(b, 9, -1)
+        if self.flip:
+            e = e[:, DET_PERM]
+        self.embs.append(e.cpu().numpy().astype(np.float16))
+
+    def _detect(self, x: Any, rv: np.ndarray) -> None:
+        """People on the batch's levelled equirects: their rows and their crops' embeddings."""
+        torch = self.torch
+        with torch.inference_mode():
+            eq = self.sampler.sample(x, rv, self.eq_rays)  # (B, 3, H, W)
+            if self.models.device == "cuda":
+                with torch.autocast("cuda", dtype=torch.float16):
+                    outs = self.models.det(list(eq))
+            else:
+                outs = self.models.det(list(eq))
+        crops: list[Any] = []
+        for i, o in enumerate(outs):
+            rows = self._rows(i, o, eq, rv[i], crops)
+            self.dets.append(np.asarray(rows, np.float32).reshape(-1, len(DET_COLS)))
+            self.n_rows += len(rows)
+        if crops:
+            with torch.inference_mode():
+                self.crop_embs.append(
+                    self.models._embed(torch.cat(crops, 0)).cpu().numpy().astype(np.float16)
+                )
+
+    def _rows(
+        self, i: int, o: dict[str, Any], eq: Any, rv: np.ndarray, crops: list[Any]
+    ) -> list[list[float]]:
+        """The det rows of batch frame ``i`` (detector output ``o``), best first; the crops of
+        its people go to ``crops``."""
+        torch, p, eq_w, eq_h = self.torch, self.p, self.eq_w, self.eq_h
+        keep = torch.isin(o["labels"], self.person_lab)
+        bx = o["boxes"][keep].float().cpu().numpy()
+        lab = o["labels"][keep].cpu().numpy()
+        sc = o["scores"][keep].float().cpu().numpy()
+        rows: list[list[float]] = []
+        n_crops = 0
+        for j in np.argsort(-sc):
+            x1, y1, x2, y2 = bx[j]
+            cxp, cyp = (x1 + x2) / 2, (y1 + y2) / 2
+            yaw = cxp / p.eq_width * 360.0 - 180.0 - p.eq_wrap_deg
+            if not -180.0 <= yaw < 180.0:
+                continue  # the duplicate inside the wrap margin
+            pitch = 90.0 - cyp / eq_h * 180.0
+            wdeg = (x2 - x1) / p.eq_width * 360.0
+            hdeg = (y2 - y1) / eq_h * 180.0
+            dv = rv @ G.yaw_pitch_ray(yaw, pitch)
+            wa = _wearer_deg(dv, self.wear)
+            self.rays.append(dv)
+            rows.append(
+                [
+                    len(self.ts) + i,
+                    float(lab[j]),
+                    float(sc[j]),
+                    float(G.wrap_deg(yaw + 180.0)) if self.flip else yaw,
+                    pitch,
+                    wdeg,
+                    hdeg,
+                    wa,
+                    *dv.tolist(),
+                ]
+            )
+            if lab[j] == self.coco_person and sc[j] >= p.box_min_score and n_crops < p.box_max:
+                side = max(x2 - x1, y2 - y1) * 1.1
+                a0, a1 = int(max(0, cxp - side / 2)), int(min(eq_w, cxp + side / 2))
+                b0, b1 = int(max(0, cyp - side / 2)), int(min(eq_h, cyp + side / 2))
+                if a1 - a0 >= 8 and b1 - b0 >= 8:
+                    crops.append(
+                        torch.nn.functional.interpolate(
+                            eq[i : i + 1, :, b0:b1, a0:a1].float(),
+                            size=(224, 224),
+                            mode="bilinear",
+                            antialias=True,
+                            align_corners=False,
+                        )
+                    )
+                    self.crop_rows.append(self.n_rows + len(rows) - 1)
+                    n_crops += 1
+        return rows
+
+    def reused(self, t_arr: np.ndarray, reuse: PanoViews) -> PanoViews:
+        """``reuse`` with this pass's frames and views, ``wearer_deg`` from its rays."""
+        det = reuse.det.copy()
+        det[:, 7] = [_wearer_deg(dv, self.wear) for dv in reuse.rays]
+        return replace(reuse, t=t_arr, emb=np.concatenate(self.embs), det=det)
+
+    def result(self, t_arr: np.ndarray) -> PanoViews:
+        """The arrays of a full pass (no meta yet)."""
+        det = np.concatenate(self.dets) if self.dets else np.zeros((0, len(DET_COLS)), np.float32)
+        return PanoViews(
+            t=t_arr,
+            emb=np.concatenate(self.embs),
+            det=det,
+            box_emb=(
+                np.concatenate(self.crop_embs) if self.crop_embs else np.zeros((0, 768), np.float16)
+            ),
+            box_idx=np.asarray(self.crop_rows, np.int64),
+            rays=np.asarray(self.rays, np.float64).reshape(-1, 3),
+        )
 
 
 def save_views(src: Path, data: PanoViews, params: ViewParams) -> Path:

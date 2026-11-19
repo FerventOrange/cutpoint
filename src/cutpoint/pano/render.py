@@ -413,38 +413,94 @@ def render_segment(
     Raises:
         FFmpegError: If ffmpeg fails with and without GPU decoding.
     """
-    from cutpoint.config import remap_source  # noqa: PLC0415
-
     src = src or resolve_source(clip)
     cmd_every = int(cmd_every or pano_cmd_every())
     # Start on a frame, so the audio seek matches the first video frame.
     fps = clip.fps or 30000 / 1001
     start = math.ceil(start * fps - 1e-6) / fps
     dur = end - start
-    orient = None
-    if not src.levelled:
-        if path.get("level") == UPRIGHT:
-            orient = upright_orientation(fps, max(clip.frames, math.ceil(end * fps) + 2))
-        else:
-            orient = clip_orientation(clip)
+    orient = _render_orientation(clip, path, src, end, fps)
     lines, init = command_lines(clip, path, src, start, dur, fmt, cmd_every, orient)
     work = work_dir or out.parent
     work.mkdir(parents=True, exist_ok=True)
+    rot = f"rorder=ryp:yaw={init['yaw']:.3f}:pitch={init['pitch']:.3f}:roll={init['roll']:.3f}"
+    cmd_file = _write_commands(work / (out.stem + ".cmd"), lines, src, rot, start, fps)
+    runs = _ffmpeg_runs(clip, src, start, end, fmt, init, rot, cmd_file, audio_fade, grade, work)
+    runs.name = out.name  # for the decoder fallback's WARNING
+    runs.prog = _Progress(progress, dur, out.name) if progress is not None else None
+    t0 = time.perf_counter()
+    # A failed auto GPU encode is redone with libx264; out only appears once complete.
+    with folders.atomic_output(out) as part:
+        text = encode_with_fallback(lambda enc: runs.encode(enc, part), out.name)
+        got = probe(part).duration
+    el = time.perf_counter() - t0
+    read_err = _read_error(text, got, start, dur, out.name)
+    if runs.prog is not None:
+        runs.prog.done()
+    return {
+        "mode": src.mode,
+        "inputs": list(src.inputs),
+        "levelled": src.levelled,
+        "flowstate": source_flowstate(src.mode, src.inputs),
+        "preview": src.preview,
+        "note": src.note,
+        "seconds": round(el, 1),
+        "realtime": round(dur / max(el, 1e-6), 2),
+        "commands": len(lines),
+        "cmd_every": cmd_every,
+        "cmd_file": cmd_file.name if cmd_file is not None else None,
+        "read_error": read_err,
+    }
+
+
+def _render_orientation(
+    clip: X3Clip, path: dict[str, Any], src: RenderSource, end: float, fps: float
+) -> G.Orientation | None:
+    """The orientation :func:`render_segment` levels an unlevelled ``src`` with (None for a
+    levelled one)."""
+    if src.levelled:
+        return None
+    if path.get("level") == UPRIGHT:
+        return upright_orientation(fps, max(clip.frames, math.ceil(end * fps) + 2))
+    return clip_orientation(clip)
+
+
+def _write_commands(
+    file: Path, lines: list[str], src: RenderSource, rot: str, start: float, fps: float
+) -> Path | None:
+    """Write the ``sendcmd`` file of :func:`render_segment` (``file``), or remove an earlier
+    one and return None for a still path."""
     # A still path has no commands: ffmpeg rejects an empty sendcmd file, and the
     # initial v360 options already hold the static view.
-    rot = f"rorder=ryp:yaw={init['yaw']:.3f}:pitch={init['pitch']:.3f}:roll={init['roll']:.3f}"
-    cmd_file = work / (out.stem + ".cmd") if lines else None
-    if cmd_file is not None:
-        # A sendcmd comment first: the initial rotation and the timing the incremental
-        # commands start from, so `360 qa` can replay what ffmpeg was told (CMD_HEADER).
-        head = f"{CMD_HEADER} input={src.projection} {rot.replace(':', ' ')} "
-        head += f"start={start:.6f} fps={fps:.6f}"
-        cmd_file.write_text("\n".join([head, *lines]) + "\n", encoding="utf-8")
-    else:  # an earlier render's commands would mislead `360 qa`
-        (work / (out.stem + ".cmd")).unlink(missing_ok=True)
+    if not lines:  # an earlier render's commands would mislead `360 qa`
+        file.unlink(missing_ok=True)
+        return None
+    # A sendcmd comment first: the initial rotation and the timing the incremental
+    # commands start from, so `360 qa` can replay what ffmpeg was told (CMD_HEADER).
+    head = f"{CMD_HEADER} input={src.projection} {rot.replace(':', ' ')} "
+    head += f"start={start:.6f} fps={fps:.6f}"
+    file.write_text("\n".join([head, *lines]) + "\n", encoding="utf-8")
+    return file
+
+
+def _ffmpeg_runs(
+    clip: X3Clip,
+    src: RenderSource,
+    start: float,
+    end: float,
+    fmt: Format360,
+    init: dict[str, float],
+    rot: str,
+    cmd_file: Path | None,
+    audio_fade: float,
+    grade: Grade | None,
+    work: Path,
+) -> _Runs:
+    """The filter graph pieces and the decoder of :func:`render_segment`'s ffmpeg runs."""
+    from cutpoint.config import remap_source  # noqa: PLC0415
+
+    dur = end - start
     sendcmd = f"sendcmd=f={cmd_file.name}," if cmd_file is not None else ""
-    seek = ["-ss", f"{start:.6f}", "-t", f"{dur:.3f}"]
-    two = src.projection == "dfisheye" and len(src.inputs) == 2
     if src.projection == "dfisheye":
         v360_in = f"input=dfisheye:ih_fov={G.DFISHEYE_FOV:g}:iv_fov={G.DFISHEYE_FOV:g}"
     else:
@@ -468,31 +524,67 @@ def render_segment(
         f"{sendcmd}{v360},setpts=PTS-STARTPTS,scale=in_range=pc:out_range=tv,"
         f"setsar=1,fps={fmt.fps}:round=down,{chain + ',' if chain else ''}format=yuv420p"
     )
-    af = f"[{audio_idx}:a:0]{a_fmt}[a]"
+    # One GPU decoder for every input, or the CPU: the probed one fits the GPU found here, and
+    # only 8-bit H.264 (see decoder_for) is decoded on a VAAPI GPU.
+    decs = {decoder_for(remap_source(inp)) for inp in src.inputs}
+    return _Runs(
+        clip=clip,
+        src=src,
+        seek=["-ss", f"{start:.6f}", "-t", f"{dur:.3f}"],
+        body=body,
+        af=f"[{audio_idx}:a:0]{a_fmt}[a]",
+        bt709=bool(color),
+        dur=dur,
+        work=work,
+        hw=decs.pop() if len(decs) == 1 else None,
+    )
 
-    def stack_for(dec: HwDecoder | None) -> str:
-        """The inputs joined for v360; VAAPI frames are downloaded first (CUDA and CPU ones are not)."""
+
+@dataclass
+class _Runs:
+    """The ffmpeg runs of one :func:`render_segment`: the command line per encoder and
+    decoder, and the decoder fallback. ``hw`` is the GPU decoder still tried (None after it
+    failed once: every later run decodes on the CPU); ``name`` names the output in the
+    fallback's WARNING; ``prog`` gets each run's progress."""
+
+    clip: X3Clip
+    src: RenderSource
+    seek: list[str]
+    body: str
+    af: str
+    bt709: bool
+    dur: float
+    work: Path
+    hw: HwDecoder | None
+    name: str = ""
+    prog: _Progress | None = None
+
+    def stack_for(self, dec: HwDecoder | None) -> str:
+        """The inputs joined for v360; VAAPI frames are downloaded first (CUDA and CPU ones
+        are not)."""
         dl = gpu_chain(dec, None)
-        if not two:
+        if not (self.src.projection == "dfisheye" and len(self.src.inputs) == 2):
             return f"[0:v]{dl}," if dl else "[0:v]"
         if not dl:
             return "[0:v][1:v]hstack=inputs=2,"
         return f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,"
 
     def args_for(
-        enc: VideoEncoder, dec: HwDecoder | None, dst: Path, prog: Path | None = None
+        self, enc: VideoEncoder, dec: HwDecoder | None, dst: Path, prog: Path | None = None
     ) -> list[str]:
+        from cutpoint.config import remap_source  # noqa: PLC0415
+
         args = ["ffmpeg", "-y", "-v", "error"]
         if prog is not None:
             args += ["-progress", str(prog), "-nostats"]
         # Read moved footage through source_remap; the record keeps the original inputs.
-        for inp in src.inputs:
-            args += (dec.input_args() if dec else []) + seek + ["-i", str(remap_source(inp))]
-        args += [*seek, "-i", str(remap_source(clip.source))]
+        for inp in self.src.inputs:
+            args += (dec.input_args() if dec else []) + self.seek + ["-i", str(remap_source(inp))]
+        args += [*self.seek, "-i", str(remap_source(self.clip.source))]
         return [
             *args,
             "-filter_complex",
-            f"{stack_for(dec)}{enc.chain(body)}[v];{af}",
+            f"{self.stack_for(dec)}{enc.chain(self.body)}[v];{self.af}",
             "-map",
             "[v]",
             "-map",
@@ -500,7 +592,7 @@ def render_segment(
             *enc.args(19),
             "-color_range",
             "tv",
-            *(BT709_TAGS if color else []),
+            *(BT709_TAGS if self.bt709 else []),
             "-fps_mode",
             "cfr",
             "-c:a",
@@ -512,7 +604,7 @@ def render_segment(
             "-ac",
             "2",
             "-t",
-            f"{dur:.3f}",
+            f"{self.dur:.3f}",
             "-video_track_timescale",
             "90000",
             "-movflags",
@@ -520,63 +612,41 @@ def render_segment(
             str(dst),
         ]
 
-    # One GPU decoder for every input, or the CPU: the probed one fits the GPU found here, and
-    # only 8-bit H.264 (see decoder_for) is decoded on a VAAPI GPU.
-    decs = {decoder_for(remap_source(inp)) for inp in src.inputs}
-    hw: list[HwDecoder | None] = [decs.pop() if len(decs) == 1 else None]
-    prog = _Progress(progress, dur, out.name) if progress is not None else None
+    def run_one(self, enc: VideoEncoder, dec: HwDecoder | None, dst: Path) -> str:
+        if self.prog is None:
+            return run(self.args_for(enc, dec, dst), cwd=self.work)
+        with self.prog.attempt() as pfile:
+            return run(self.args_for(enc, dec, dst, pfile), cwd=self.work)
 
-    def run_one(enc: VideoEncoder, dec: HwDecoder | None, dst: Path) -> str:
-        if prog is None:
-            return run(args_for(enc, dec, dst), cwd=work)
-        with prog.attempt() as pfile:
-            return run(args_for(enc, dec, dst, pfile), cwd=work)
-
-    def encode(enc: VideoEncoder, dst: Path) -> str:
+    def encode(self, enc: VideoEncoder, dst: Path) -> str:
         """Render into ``dst`` with ``enc``: GPU decoding first, then CPU decoding."""
-        if hw[0] is not None:
+        if self.hw is not None:
             try:
-                return run_one(enc, hw[0], dst)
+                return self.run_one(enc, self.hw, dst)
             except FFmpegError as err:
                 logger.warning(
                     "  %s: %s render failed, retrying on the CPU (%s)",
-                    out.name,
-                    hw[0].kind,
+                    self.name,
+                    self.hw.kind,
                     str(err).splitlines()[-1][:200],
                 )
-                hw[0] = None  # the CPU-encoder retry decodes on the CPU too
-        return run_one(enc, None, dst)
+                self.hw = None  # the CPU-encoder retry decodes on the CPU too
+        return self.run_one(enc, None, dst)
 
-    t0 = time.perf_counter()
-    # A failed auto GPU encode is redone with libx264; out only appears once complete.
-    with folders.atomic_output(out) as part:
-        text = encode_with_fallback(lambda enc: encode(enc, part), out.name)
-        got = probe(part).duration
-    el = time.perf_counter() - t0
+
+def _read_error(
+    text: str, got: float, start: float, dur: float, name: str
+) -> dict[str, Any] | None:
+    """The ``read_error`` record of a render that logged read errors or came out short
+    (logged), else None."""
     found = [m.strip() for m in READ_ERROR_RE.findall(text)]
-    read_err = None
-    if found or got < dur - 0.3:
-        read_err = {
-            "failure_time": round(start + got, 3),
-            "messages": found[:5],
-            "end": round(start + got, 3),
-        }
-        logger.warning("READ ERROR rendering %s: got %.2f of %.2f s", out.name, got, dur)
-    if prog is not None:
-        prog.done()
+    if not (found or got < dur - 0.3):
+        return None
+    logger.warning("READ ERROR rendering %s: got %.2f of %.2f s", name, got, dur)
     return {
-        "mode": src.mode,
-        "inputs": list(src.inputs),
-        "levelled": src.levelled,
-        "flowstate": source_flowstate(src.mode, src.inputs),
-        "preview": src.preview,
-        "note": src.note,
-        "seconds": round(el, 1),
-        "realtime": round(dur / max(el, 1e-6), 2),
-        "commands": len(lines),
-        "cmd_every": cmd_every,
-        "cmd_file": cmd_file.name if cmd_file is not None else None,
-        "read_error": read_err,
+        "failure_time": round(start + got, 3),
+        "messages": found[:5],
+        "end": round(start + got, 3),
     }
 
 

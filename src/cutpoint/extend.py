@@ -37,7 +37,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cutpoint import boundaries, cache, folders, jsonout, runstate, srt, tsrepair
 from cutpoint.clipresume import ClipResume, clip_key
@@ -56,6 +56,7 @@ from cutpoint.ffmpeg_utils import MediaInfo, probe
 from cutpoint.planning import (
     MANIFEST_GENERATOR,
     Padding,
+    ReplacePlan,
     exact_fade,
     file_size,
     manifest_entries,
@@ -70,6 +71,9 @@ from cutpoint.planning import (
 )
 from cutpoint.sources import project_language
 from cutpoint.utils import clip_files, seconds_keys
+
+if TYPE_CHECKING:
+    from cutpoint.pano.render import PanoExporter
 
 logger = logging.getLogger(__name__)
 
@@ -323,36 +327,130 @@ def extend_clips(
         ValueError: If nothing could be re-exported.
         FolderBusyError: If another run is using ``clips_dir`` or ``out_dir``.
     """
+    speech = speech or boundaries.SpeechSettings()
     with ExitStack() as held:
-        return _extend_locked(
-            held,
-            clips_dir,
-            padding,
+        manifest, out_dir, in_place = _claim(held, clips_dir, out_dir, padding, speech, force)
+        # As clips does: the clips are exported into a hidden staging folder and swapped in
+        # only when all succeeded, so a failed or cancelled run leaves the folder as it was (a
+        # new one is not made) and keeps its finished clips for the next run
+        # (cutpoint.clipresume). staged_dir refuses a drive root, a mount point or a bind mount
+        # before any export; only an empty one is exported into directly. A run that fails
+        # leaves no empty folders behind.
+        with (
+            folders.output_dir(out_dir.parent),
+            folders.staged_dir(out_dir, direct_if_empty=True, resume=True) as work,
+        ):
+            job = _plan_extend(clips_dir, manifest, padding, in_place, clip_overrides)
+            grades = _recorded_grades(job.plans)
+            reuse = _reuse_entries(reuse_dir, out_dir, work, job.fmt_d)
+            language = project_language(job.project)
+            speech_recs = speech_pass(
+                job.plans,
+                speech,
+                job.project,
+                fit_end=lambda e: not _fixed_tail(e),
+                hi_clamp=_hi_clamp,
+                language=language,
+            )
+            pano = _pano_exporter(job, clips_dir, out_dir, pano_source, pano_cmd_every)
+            _warn_dropped_peaks(job.plans, clips_dir)
+            replaced = _replace_set(job, out_dir, pano, pano_source)
+            entries, reused = _render(
+                job,
+                work,
+                out_dir,
+                grades=grades,
+                replaced=replaced,
+                language=language,
+                speech_recs=speech_recs,
+                pano=pano,
+                pano_source=pano_source,
+                audio_fade=audio_fade,
+                reuse=reuse,
+            )
+            if not entries:
+                raise ValueError(f"No clips with manifest entries in {clips_dir}")
+            _write_extend_manifest(
+                work,
+                manifest,
+                clips_dir,
+                entries,
+                plans=job.plans,
+                padding=padding,
+                speech=speech,
+                audio_fade=audio_fade,
+                skipped=job.skipped,
+                reuse=reuse,
+                reused=reused,
+                clip_overrides=clip_overrides,
+            )
+            if work != out_dir:  # staged: all or nothing; only the files named are replaced
+                folders.swap_in(work, out_dir, replaced.replace)
+        warn_kept(out_dir, replaced, "a source of these clips is never replaced;")
+        skipped = job.skipped
+        if skipped and not in_place:
+            jsonout.warn(
+                "skipped_clips",
+                f"Not re-exported from {clips_dir.absolute()}: "
+                + "; ".join(f"{n}: {why}" for n, why in skipped.items()),
+                [clips_dir / n for n in skipped],
+            )
+        logger.info(
+            "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
+            len(entries),
+            padding.start,
+            padding.end,
             out_dir,
-            force,
-            speech,
-            audio_fade,
-            pano_source,
-            pano_cmd_every,
-            clip_overrides,
-            reuse_dir,
+            f" ({reused} copied unchanged from {reuse_dir})" if reuse_dir else "",
+            f"; skipped {len(skipped)} without a manifest entry"
+            if skipped and not in_place
+            else "",
         )
+        report_clips(out_dir)
+        jsonout.output("seconds", {"start": padding.start, "end": padding.end})
+        return out_dir
 
 
-def _extend_locked(
+@dataclass
+class _ExtendJob:
+    """What :func:`_plan_extend` read from a clips folder for :func:`extend_clips`.
+
+    Attributes:
+        fmt_d: The manifest's ``format`` record.
+        fmt: Its output format.
+        vertical: Whether the clips are vertical.
+        plans: The clips to re-export, in folder order.
+        skipped: ``{file name: why it has no plan}``.
+        all_sources: :func:`~cutpoint.folders.source_keys` of every file the manifest's
+            clips were cut from.
+        project: The manifest's project (:func:`manifest_project`).
+        foreign: Whether ``project`` is not the folder's parent (:func:`_foreign_project`).
+    """
+
+    fmt_d: dict[str, Any]
+    fmt: OutputFormat
+    vertical: bool
+    plans: list[ExtendPlan]
+    skipped: dict[str, str]
+    all_sources: set[Any]
+    project: Path
+    foreign: bool
+
+
+def _claim(
     held: ExitStack,
     clips_dir: Path,
-    padding: Padding,
     out_dir: Path | None,
+    padding: Padding,
+    speech: boundaries.SpeechSettings,
     force: bool,
-    speech: boundaries.SpeechSettings | None,
-    audio_fade: float,
-    pano_source: str | None,
-    pano_cmd_every: int | None,
-    clip_overrides: dict[str, dict[str, Any]] | None,
-    reuse_dir: Path | None,
-) -> Path:
-    """:func:`extend_clips`, taking the folders' locks (:func:`swap_lock`) into ``held``."""
+) -> tuple[dict[str, Any], Path, bool]:
+    """Take the folders' locks (:func:`~cutpoint.folders.swap_lock`) into ``held`` and check
+    the run of :func:`extend_clips` before any export.
+
+    Returns:
+        ``(manifest of clips_dir, output folder, whether it is clips_dir)``.
+    """
     # One run at a time on each folder: another would remove this one's staging folder.
     held.enter_context(folders.swap_lock(clips_dir))
     folders.recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
@@ -361,7 +459,6 @@ def _extend_locked(
         raise FileNotFoundError(
             f"No manifest.json in {clips_dir}; it must come from `cutpoint clips`"
         )
-    speech = speech or boundaries.SpeechSettings()
     if not padding.active and not speech.enabled:
         raise jsonout.ArgumentError(
             "Nothing to do: give --seconds (or --start / --end) > 0, or leave --speech-aware on"
@@ -382,325 +479,428 @@ def _extend_locked(
             f"{out_dir} {'is the input folder' if in_place else 'is not empty'}; "
             f"{runstate.force_hint()}"
         )
-    # As clips does: the clips are exported into a hidden staging folder and swapped in only
-    # when all succeeded, so a failed or cancelled run leaves the folder as it was (a new one
-    # is not made) and keeps its finished clips for the next run (cutpoint.clipresume).
-    # staged_dir refuses a drive root, a mount point or a bind mount before any export; only
-    # an empty one is exported into directly. A run that fails leaves no empty folders behind.
-    with (
-        folders.output_dir(out_dir.parent),
-        folders.staged_dir(out_dir, direct_if_empty=True, resume=True) as work,
-    ):
-        staged = work != out_dir  # not exported into directly
-        fmt_d, entries = manifest_parts(
-            manifest, need_format=True, need_range=True, path=clips_dir / "manifest.json"
-        )
-        by_file = {e["file"]: e for e in entries}
-        fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
-        vertical = bool(fmt_d.get("vertical"))
-        files = clip_files(clips_dir)
-        infos: dict[str, MediaInfo] = {}
-        plans: list[ExtendPlan] = []
-        skipped: dict[str, str] = {}  # file name: why it has no plan
-        # every file the manifest's clips were cut from, so one in the folder is named so
-        all_sources = folders.source_keys(
-            (e["source"], _read_path(e), []) for e in by_file.values() if e.get("source")
-        )
-        known = manifest_entries(clips_dir, files)  # clips renamed during review too
-        project = manifest_project(manifest, clips_dir)
-        foreign = _foreign_project(project, clips_dir)
-        if foreign:
-            logger.info(
-                "%s names the project %s, not the folder's parent %s: its highlights.json and "
-                "360 clip list are read there, and 360 path files are written under %s",
-                clips_dir / "manifest.json",
-                project,
-                clips_dir.resolve().parent,
-                clips_dir.resolve().parent / "pano_paths",
-            )
-        # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
-        # analysis (#1052); one the analysis read so is never read in place
-        tsrepair.prepare_sources(
-            [source_path(e["source"]) for e in by_file.values() if e.get("source")],
-            required=tsrepair.remuxed_sources(cache.load_json(project / "highlights.json")),
-        )
-        for f in files:
-            e = by_file.get(f.name)
-            if e is None:
-                if folders.same_file(f, all_sources):
-                    why = "a source of these clips, not a clip"
-                elif f.name in known:
-                    why = (
-                        f"exported as {known[f.name]['file']} and renamed during review "
-                        "(only clips under their manifest.json names are re-exported)"
-                    )
-                else:
-                    why = "no manifest entry (added by hand?)"
-                if not in_place:  # in place it stays: the Kept warning below names it
-                    logger.warning("  %s: %s; skipped", f.name, why)
-                skipped[f.name] = why
-                continue
-            if not isinstance(e.get("pick"), dict):
-                raise ValueError(
-                    f"{clips_dir / 'manifest.json'}: the entry of {f.name} has no pick (clips "
-                    "exported by an older cutpoint); export the clips again with `cutpoint clips`"
-                )
-            src = _read_path(e)
-            if str(src) not in infos:
-                infos[str(src)] = probe(src)
-            info = infos[str(src)]
-            # an exact clip (a word splice) keeps its own edges: no padding
-            own = Padding() if e.get("exact") is True else padding
-            start, end, rec = pad(src, info, float(e["start"]), float(e["end"]), own, e)
-            plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
+    return manifest, out_dir, in_place
 
-        apply_overrides(plans, clip_overrides, padding)
-        # The grade a clip recorded is redone; a LUT must still load, a color grade be readable
-        # (before any export). A color grade keeps its recorded parameters: not measured again.
-        checked: dict[Lut, Lut] = {}
-        grades: dict[str, Grade | None] = {}
-        for plan in plans:
-            grade = _recorded_grade(plan.name, plan.entry)
-            if isinstance(grade, Lut):
-                if grade not in checked:
-                    checked[grade] = check_lut(grade.path, grade.strength, f"{plan.name}: lut")
-                grade = checked[grade]
-            grades[plan.name] = grade
-        recolored = sum(1 for g in grades.values() if isinstance(g, AutoGrade) and g.filter())
-        if recolored:
-            logger.info(
-                "%d clip(s) are graded with the --color parameters their manifest recorded "
-                "(not measured again for the new range)",
-                recolored,
-            )
-        reuse_by_file: dict[str, dict[str, Any]] = {}
-        reuse_same_format = False
-        if reuse_dir is not None:
-            if reuse_dir.resolve() in (out_dir.resolve(), work.resolve()):
-                raise ValueError("--reuse must be an earlier output, not the output folder")
-            reuse_manifest = cache.load_json(reuse_dir / "manifest.json")
-            if reuse_manifest is None:
-                raise FileNotFoundError(f"No manifest.json in --reuse folder {reuse_dir}")
-            reuse_fmt, reuse_entries = manifest_parts(
-                reuse_manifest, path=reuse_dir / "manifest.json"
-            )
-            reuse_by_file = {x["file"]: x for x in reuse_entries}
-            reuse_same_format = reuse_fmt == fmt_d
-        language = project_language(project)
-        speech_recs = speech_pass(
-            plans,
-            speech,
+
+def _plan_extend(
+    clips_dir: Path,
+    manifest: dict[str, Any],
+    padding: Padding,
+    in_place: bool,
+    clip_overrides: dict[str, dict[str, Any]] | None,
+) -> _ExtendJob:
+    """Plan the re-export of the clips in ``clips_dir`` (padded, ``clip_overrides`` applied;
+    the speech pass comes later); a file without a manifest entry is skipped, with a WARNING
+    unless ``in_place``."""
+    fmt_d, entries = manifest_parts(
+        manifest, need_format=True, need_range=True, path=clips_dir / "manifest.json"
+    )
+    by_file = {e["file"]: e for e in entries}
+    fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
+    vertical = bool(fmt_d.get("vertical"))
+    files = clip_files(clips_dir)
+    infos: dict[str, MediaInfo] = {}
+    plans: list[ExtendPlan] = []
+    skipped: dict[str, str] = {}  # file name: why it has no plan
+    # every file the manifest's clips were cut from, so one in the folder is named so
+    all_sources = folders.source_keys(
+        (e["source"], _read_path(e), []) for e in by_file.values() if e.get("source")
+    )
+    known = manifest_entries(clips_dir, files)  # clips renamed during review too
+    project = manifest_project(manifest, clips_dir)
+    foreign = _foreign_project(project, clips_dir)
+    if foreign:
+        logger.info(
+            "%s names the project %s, not the folder's parent %s: its highlights.json and "
+            "360 clip list are read there, and 360 path files are written under %s",
+            clips_dir / "manifest.json",
             project,
-            fit_end=lambda e: not _fixed_tail(e),
-            hi_clamp=_hi_clamp,
-            language=language,
+            clips_dir.resolve().parent,
+            clips_dir.resolve().parent / "pano_paths",
         )
-        pano = None
-        if any(p.entry.get("pano") for p in plans):
-            from cutpoint.pano.render import PATHS_DIR, Format360, PanoExporter  # noqa: PLC0415
-
-            pano = PanoExporter(
-                project,
-                out_dir,
-                vertical,
-                pano_source or "auto",
-                pano_cmd_every,
-            )
-            pano.fmt = Format360(fmt.width, fmt.height, fmt.fps)
-            if foreign:  # the manifest's project is read, never written (A663)
-                pano.paths_dir = clips_dir.resolve().parent / PATHS_DIR / out_dir.name
-        compressed = sum(1 for p in plans if p.entry.get("compress_peaks"))
-        if compressed:
-            message = (
-                f"{compressed} clip(s) were exported with --compress-peaks; extend re-exports "
-                "them without it (assemble --compress-peaks can apply it)"
-            )
-            logger.warning("%s", message)
-            jsonout.warn(
-                "compress_peaks_dropped",
-                message,
-                [clips_dir / p.name for p in plans if p.entry.get("compress_peaks")],
-            )
-        # Only clips with a manifest entry are written; none may be a file this run reads.
-        reads = []
-        for plan in plans:
-            e = plan.entry
-            mode = None if pano_source else (e.get("pano") or {}).get("mode")
-            pano_files = pano.inputs(e["source"], mode) if pano and e.get("pano") else []
-            reads.append((e["source"], plan.src, pano_files))
-        names = [p.name for p in plans]
-        sources = folders.source_keys(reads)
-        # Like clips --force: replace only the clips and .srt files out_dir's manifest.json
-        # lists (and leftover .part.mp4 files), never a file this run reads. Listed ones this
-        # run does not write (a clip not re-exported, the .srt of a clip deleted during review)
-        # are removed, as the new manifest.json no longer lists them; unlisted ones are never
-        # replaced. A clip renamed in case only (skipped above as having no entry) stays.
-        replaced = replace_plan(out_dir, names, sources, clip_sources=all_sources)
-        subs = srt.ClipSubtitles(replaced.protected_srts, language, out_dir)
-        # A staged run takes over the finished clips of an interrupted one with the same plan
-        # and keeps its own when interrupted (cutpoint.clipresume); 360 clips are redone.
-        resume = None
-        if staged:
-            resume = ClipResume(
-                out_dir,
-                work,
-                "extend",
-                {
-                    p.name: clip_key(
-                        p.src,
-                        p.start,
-                        p.end,
-                        fmt,
-                        vertical,
-                        _crop_box(p.entry),
-                        exact_fade(p.entry, audio_fade),
-                        "",
-                        grades[p.name],
-                    )
-                    for p in plans
-                    if not (pano is not None and p.entry.get("pano"))
-                },
-            )
-        # --json: finished clips of a stopped run this one did not encode again
-        jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
-        entries = []
-        pano_recs: list[tuple[str, dict[str, Any] | None]] = []
-        reused = 0
-        for plan in plans:
-            name, e, src, info = plan.name, plan.entry, plan.src, plan.info
-            start, end, rec = plan.start, plan.end, plan.rec
-            pano_rec = e.get("pano")
-            prior = reuse_by_file.get(name)
-            if (
-                reuse_dir is not None
-                and (reuse_dir / name).is_file()
-                and _reusable(
-                    prior,
-                    e | {"start": start, "end": end},
-                    reuse_same_format,
-                    exact_fade(e, audio_fade),
-                )
-            ):
-                with folders.atomic_output(work / name) as part:
-                    shutil.copy2(reuse_dir / name, part)
-                reused += 1
-                read_err = None
-                if resume is not None:
-                    resume.add(name, None)
-                logger.info("  %s: unchanged, copied from %s", name, reuse_dir.name)
-            elif resume is not None and name in resume.taken:
-                read_err = None
-            elif pano is not None and pano_rec:
-                old = Path(pano_rec["path_file"]) if pano_rec.get("path_file") else None
-                read_err, pano_rec = pano.export(
-                    e["source"],
-                    start,
-                    end,
-                    work / name,
-                    audio_fade=exact_fade(e, audio_fade),
-                    kind=e.get("kind"),
-                    reuse_path=old,
-                    source_mode=None if pano_source else pano_rec.get("mode"),
-                    grade=grades[name],
+    # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
+    # analysis (#1052); one the analysis read so is never read in place
+    tsrepair.prepare_sources(
+        [source_path(e["source"]) for e in by_file.values() if e.get("source")],
+        required=tsrepair.remuxed_sources(cache.load_json(project / "highlights.json")),
+    )
+    for f in files:
+        e = by_file.get(f.name)
+        if e is None:
+            if folders.same_file(f, all_sources):
+                why = "a source of these clips, not a clip"
+            elif f.name in known:
+                why = (
+                    f"exported as {known[f.name]['file']} and renamed during review "
+                    "(only clips under their manifest.json names are re-exported)"
                 )
             else:
-                read_err = export_clip_checked(
-                    src,
-                    info,
-                    start,
-                    end,
-                    work / name,
-                    fmt,
-                    vertical,
-                    _crop_box(e),
-                    exact_fade(e, audio_fade),
-                    "",  # extend does not compress peaks (warned above)
-                    grades[name],
+                why = "no manifest entry (added by hand?)"
+            if not in_place:  # in place it stays: the Kept warning names it
+                logger.warning("  %s: %s; skipped", f.name, why)
+            skipped[f.name] = why
+            continue
+        if not isinstance(e.get("pick"), dict):
+            raise ValueError(
+                f"{clips_dir / 'manifest.json'}: the entry of {f.name} has no pick (clips "
+                "exported by an older cutpoint); export the clips again with `cutpoint clips`"
+            )
+        src = _read_path(e)
+        if str(src) not in infos:
+            infos[str(src)] = probe(src)
+        info = infos[str(src)]
+        # an exact clip (a word splice) keeps its own edges: no padding
+        own = Padding() if e.get("exact") is True else padding
+        start, end, rec = pad(src, info, float(e["start"]), float(e["end"]), own, e)
+        plans.append(ExtendPlan(f.name, e, src, info, start, end, rec, _pick(e)))
+
+    apply_overrides(plans, clip_overrides, padding)
+    return _ExtendJob(fmt_d, fmt, vertical, plans, skipped, all_sources, project, foreign)
+
+
+def _recorded_grades(plans: list[ExtendPlan]) -> dict[str, Grade | None]:
+    """``{clip name: grade}``: the grade each clip recorded is redone; a LUT must still load,
+    a color grade be readable (before any export). A color grade keeps its recorded
+    parameters: not measured again."""
+    checked: dict[Lut, Lut] = {}
+    grades: dict[str, Grade | None] = {}
+    for plan in plans:
+        grade = _recorded_grade(plan.name, plan.entry)
+        if isinstance(grade, Lut):
+            if grade not in checked:
+                checked[grade] = check_lut(grade.path, grade.strength, f"{plan.name}: lut")
+            grade = checked[grade]
+        grades[plan.name] = grade
+    recolored = sum(1 for g in grades.values() if isinstance(g, AutoGrade) and g.filter())
+    if recolored:
+        logger.info(
+            "%d clip(s) are graded with the --color parameters their manifest recorded "
+            "(not measured again for the new range)",
+            recolored,
+        )
+    return grades
+
+
+@dataclass(frozen=True)
+class _Reuse:
+    """The ``--reuse`` folder of :func:`extend_clips` (:func:`_reuse_entries`).
+
+    Attributes:
+        dir: The earlier output folder.
+        by_file: ``{file name: entry}`` of its manifest.json.
+        same_format: Whether its clips have the run's format.
+    """
+
+    dir: Path
+    by_file: dict[str, dict[str, Any]]
+    same_format: bool
+
+
+def _reuse_entries(
+    reuse_dir: Path | None, out_dir: Path, work: Path, fmt_d: dict[str, Any]
+) -> _Reuse | None:
+    """The ``--reuse`` folder ``reuse_dir`` with its manifest's entries (None without one)."""
+    if reuse_dir is None:
+        return None
+    if reuse_dir.resolve() in (out_dir.resolve(), work.resolve()):
+        raise ValueError("--reuse must be an earlier output, not the output folder")
+    reuse_manifest = cache.load_json(reuse_dir / "manifest.json")
+    if reuse_manifest is None:
+        raise FileNotFoundError(f"No manifest.json in --reuse folder {reuse_dir}")
+    reuse_fmt, reuse_entries = manifest_parts(reuse_manifest, path=reuse_dir / "manifest.json")
+    return _Reuse(reuse_dir, {x["file"]: x for x in reuse_entries}, reuse_fmt == fmt_d)
+
+
+def _pano_exporter(
+    job: _ExtendJob,
+    clips_dir: Path,
+    out_dir: Path,
+    pano_source: str | None,
+    pano_cmd_every: int | None,
+) -> PanoExporter | None:
+    """The renderer of the 360 clips among ``job.plans`` (None: there are none)."""
+    if not any(p.entry.get("pano") for p in job.plans):
+        return None
+    from cutpoint.pano.render import PATHS_DIR, Format360, PanoExporter  # noqa: PLC0415
+
+    pano = PanoExporter(
+        job.project,
+        out_dir,
+        job.vertical,
+        pano_source or "auto",
+        pano_cmd_every,
+    )
+    pano.fmt = Format360(job.fmt.width, job.fmt.height, job.fmt.fps)
+    if job.foreign:  # the manifest's project is read, never written (A663)
+        pano.paths_dir = clips_dir.resolve().parent / PATHS_DIR / out_dir.name
+    return pano
+
+
+def _warn_dropped_peaks(plans: list[ExtendPlan], clips_dir: Path) -> None:
+    """WARNING for the clips exported with ``--compress-peaks``: re-exported without it."""
+    compressed = sum(1 for p in plans if p.entry.get("compress_peaks"))
+    if compressed:
+        message = (
+            f"{compressed} clip(s) were exported with --compress-peaks; extend re-exports "
+            "them without it (assemble --compress-peaks can apply it)"
+        )
+        logger.warning("%s", message)
+        jsonout.warn(
+            "compress_peaks_dropped",
+            message,
+            [clips_dir / p.name for p in plans if p.entry.get("compress_peaks")],
+        )
+
+
+def _replace_set(
+    job: _ExtendJob, out_dir: Path, pano: PanoExporter | None, pano_source: str | None
+) -> ReplacePlan:
+    """What the re-export replaces in ``out_dir`` (:func:`replace_plan`).
+
+    Like clips --force: replace only the clips and .srt files out_dir's manifest.json lists
+    (and leftover .part.mp4 files), never a file this run reads. Listed ones this run does not
+    write (a clip not re-exported, the .srt of a clip deleted during review) are removed, as
+    the new manifest.json no longer lists them; unlisted ones are never replaced. A clip
+    renamed in case only (skipped as having no entry) stays.
+    """
+    # Only clips with a manifest entry are written; none may be a file this run reads.
+    reads = []
+    for plan in job.plans:
+        e = plan.entry
+        mode = None if pano_source else (e.get("pano") or {}).get("mode")
+        pano_files = pano.inputs(e["source"], mode) if pano and e.get("pano") else []
+        reads.append((e["source"], plan.src, pano_files))
+    names = [p.name for p in job.plans]
+    sources = folders.source_keys(reads)
+    return replace_plan(out_dir, names, sources, clip_sources=job.all_sources)
+
+
+def _render(
+    job: _ExtendJob,
+    work: Path,
+    out_dir: Path,
+    *,
+    grades: dict[str, Grade | None],
+    replaced: ReplacePlan,
+    language: str | None,
+    speech_recs: dict[str, dict[str, Any]],
+    pano: PanoExporter | None,
+    pano_source: str | None,
+    audio_fade: float,
+    reuse: _Reuse | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Re-export ``job.plans`` into ``work`` (``out_dir`` itself, or its staging folder) with
+    their ``.srt`` subtitles.
+
+    Returns:
+        ``(manifest entries, clips copied from the reuse folder)``.
+    """
+    subs = srt.ClipSubtitles(replaced.protected_srts, language, out_dir)
+    # A staged run takes over the finished clips of an interrupted one with the same plan
+    # and keeps its own when interrupted (cutpoint.clipresume); 360 clips are redone.
+    resume = None
+    if work != out_dir:
+        resume = ClipResume(
+            out_dir,
+            work,
+            "extend",
+            {
+                p.name: clip_key(
+                    p.src,
+                    p.start,
+                    p.end,
+                    job.fmt,
+                    job.vertical,
+                    _crop_box(p.entry),
+                    exact_fade(p.entry, audio_fade),
+                    "",
+                    grades[p.name],
                 )
-                if resume is not None:
-                    resume.add(name, read_err)
-            pano_recs.append((name, pano_rec))
-            if read_err and read_err["end"] < end:
-                end = read_err["end"]
-            sub = subs.write(work / name, e["source"], start, end)
-            moved = any(
-                (speech_recs.get(name) or {}).get(k, {}).get("moved") for k in ("start", "end")
-            )
-            logger.info(
-                "  %s  [%.2f-%.2f] -> [%.2f-%.2f] (pad +%.2f / +%.2f)%s%s",
-                name,
-                e["start"],
-                e["end"],
-                start,
-                end,
-                rec["applied"]["start"],
-                rec["applied"]["end"],
-                f" clamped {rec['clamped']}" if rec.get("clamped") else "",
-                " speech-adjusted" if moved else "",
-            )
-            p0, p1 = plan.keep
-            entries.append(
-                {k: v for k, v in e.items() if k not in ("read_from", "srt", *PEAK_KEYS)}
-                | {
-                    "size": file_size(work / name),
-                    **({"read_from": str(src)} if str(src) != e["source"] else {}),
-                    "start": start,
-                    "end": end,
-                    "duration": round(end - start, 3),
-                    "pick": {"start": round(p0, 3), "end": round(p1, 3)},
-                    "extend": rec,
-                    **({"speech": speech_recs[name]} if name in speech_recs else {}),
-                    "audio_fade": exact_fade(e, audio_fade),
-                    **({"pano": pano_rec} if pano_rec else {}),
-                    **({"read_error": read_err} if read_err else {}),
-                    **({"srt": sub} if sub else {}),
-                }
-            )
-        subs.report(len(plans))
-        warn_pano_sources(pano_recs, out_dir)
-        if not entries:
-            raise ValueError(f"No clips with manifest entries in {clips_dir}")
-        # Off when every clip has "speech_aware": false (the pass left them all alone).
-        speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
-        cache.save_json(
-            work / "manifest.json",
-            {k: v for k, v in manifest.items() if k != "compress_peaks"}
-            | {
-                "generator": MANIFEST_GENERATOR,
-                "created": datetime.now().isoformat(timespec="seconds"),
-                "extended_from": str(clips_dir.resolve()),
-                "extend": {"start": padding.start, "end": padding.end},
-                "speech_aware": speech.to_json() | {"enabled": speech_on},
-                "audio_fade": audio_fade,
-                "skipped_no_manifest": list(skipped),
-                **(
-                    {"reused_from": str(reuse_dir.resolve()), "reused": reused}
-                    if reuse_dir is not None
-                    else {}
-                ),
-                **({"clip_overrides": clip_overrides} if clip_overrides else {}),
-                "clips": entries,
+                for p in job.plans
+                if not (pano is not None and p.entry.get("pano"))
             },
         )
-        if staged:  # all or nothing; only the clips and .srt files named above are replaced
-            folders.swap_in(work, out_dir, replaced.replace)
-    warn_kept(out_dir, replaced, "a source of these clips is never replaced;")
-    if skipped and not in_place:
-        jsonout.warn(
-            "skipped_clips",
-            f"Not re-exported from {clips_dir.absolute()}: "
-            + "; ".join(f"{n}: {why}" for n, why in skipped.items()),
-            [clips_dir / n for n in skipped],
+    # --json: finished clips of a stopped run this one did not encode again
+    jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
+    entries = []
+    pano_recs: list[tuple[str, dict[str, Any] | None]] = []
+    reused = 0
+    for plan in job.plans:
+        read_err, pano_rec, copied = _export_one(
+            plan,
+            work,
+            job,
+            grade=grades[plan.name],
+            resume=resume,
+            pano=pano,
+            pano_source=pano_source,
+            audio_fade=audio_fade,
+            reuse=reuse,
         )
-    logger.info(
-        "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
-        len(entries),
-        padding.start,
-        padding.end,
-        out_dir,
-        f" ({reused} copied unchanged from {reuse_dir})" if reuse_dir else "",
-        f"; skipped {len(skipped)} without a manifest entry" if skipped and not in_place else "",
+        reused += copied
+        pano_recs.append((plan.name, pano_rec))
+        end = plan.end
+        if read_err and read_err["end"] < end:
+            end = read_err["end"]
+        sub = subs.write(work / plan.name, plan.entry["source"], plan.start, end)
+        entries.append(
+            _clip_entry(plan, work, end, speech_recs, audio_fade, pano_rec, read_err, sub)
+        )
+    subs.report(len(job.plans))
+    warn_pano_sources(pano_recs, out_dir)
+    return entries, reused
+
+
+def _export_one(
+    plan: ExtendPlan,
+    work: Path,
+    job: _ExtendJob,
+    *,
+    grade: Grade | None,
+    resume: ClipResume | None,
+    pano: PanoExporter | None,
+    pano_source: str | None,
+    audio_fade: float,
+    reuse: _Reuse | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+    """Write one clip of :func:`_render` into ``work``: copied unchanged from ``reuse``,
+    taken over from an interrupted run (``resume``), rendered as a 360 clip, or exported.
+
+    Returns:
+        ``(read error record or None, 360 record or None, whether it was copied)``.
+    """
+    name, e, src, info = plan.name, plan.entry, plan.src, plan.info
+    start, end = plan.start, plan.end
+    pano_rec = e.get("pano")
+    if (
+        reuse is not None
+        and (reuse.dir / name).is_file()
+        and _reusable(
+            reuse.by_file.get(name),
+            e | {"start": start, "end": end},
+            reuse.same_format,
+            exact_fade(e, audio_fade),
+        )
+    ):
+        with folders.atomic_output(work / name) as part:
+            shutil.copy2(reuse.dir / name, part)
+        if resume is not None:
+            resume.add(name, None)
+        logger.info("  %s: unchanged, copied from %s", name, reuse.dir.name)
+        return None, pano_rec, True
+    if resume is not None and name in resume.taken:
+        return None, pano_rec, False
+    if pano is not None and pano_rec:
+        old = Path(pano_rec["path_file"]) if pano_rec.get("path_file") else None
+        read_err, pano_rec = pano.export(
+            e["source"],
+            start,
+            end,
+            work / name,
+            audio_fade=exact_fade(e, audio_fade),
+            kind=e.get("kind"),
+            reuse_path=old,
+            source_mode=None if pano_source else pano_rec.get("mode"),
+            grade=grade,
+        )
+        return read_err, pano_rec, False
+    read_err = export_clip_checked(
+        src,
+        info,
+        start,
+        end,
+        work / name,
+        job.fmt,
+        job.vertical,
+        _crop_box(e),
+        exact_fade(e, audio_fade),
+        "",  # extend does not compress peaks (warned before)
+        grade,
     )
-    report_clips(out_dir)
-    jsonout.output("seconds", {"start": padding.start, "end": padding.end})
-    return out_dir
+    if resume is not None:
+        resume.add(name, read_err)
+    return read_err, pano_rec, False
+
+
+def _clip_entry(
+    plan: ExtendPlan,
+    work: Path,
+    end: float,
+    speech_recs: dict[str, dict[str, Any]],
+    audio_fade: float,
+    pano_rec: dict[str, Any] | None,
+    read_err: dict[str, Any] | None,
+    sub: str | None,
+) -> dict[str, Any]:
+    """Log the re-exported clip and return its new manifest entry (``end``: its out point,
+    before a read error)."""
+    name, e, src, start, rec = plan.name, plan.entry, plan.src, plan.start, plan.rec
+    moved = any((speech_recs.get(name) or {}).get(k, {}).get("moved") for k in ("start", "end"))
+    logger.info(
+        "  %s  [%.2f-%.2f] -> [%.2f-%.2f] (pad +%.2f / +%.2f)%s%s",
+        name,
+        e["start"],
+        e["end"],
+        start,
+        end,
+        rec["applied"]["start"],
+        rec["applied"]["end"],
+        f" clamped {rec['clamped']}" if rec.get("clamped") else "",
+        " speech-adjusted" if moved else "",
+    )
+    p0, p1 = plan.keep
+    return {k: v for k, v in e.items() if k not in ("read_from", "srt", *PEAK_KEYS)} | {
+        "size": file_size(work / name),
+        **({"read_from": str(src)} if str(src) != e["source"] else {}),
+        "start": start,
+        "end": end,
+        "duration": round(end - start, 3),
+        "pick": {"start": round(p0, 3), "end": round(p1, 3)},
+        "extend": rec,
+        **({"speech": speech_recs[name]} if name in speech_recs else {}),
+        "audio_fade": exact_fade(e, audio_fade),
+        **({"pano": pano_rec} if pano_rec else {}),
+        **({"read_error": read_err} if read_err else {}),
+        **({"srt": sub} if sub else {}),
+    }
+
+
+def _write_extend_manifest(
+    work: Path,
+    manifest: dict[str, Any],
+    clips_dir: Path,
+    entries: list[dict[str, Any]],
+    *,
+    plans: list[ExtendPlan],
+    padding: Padding,
+    speech: boundaries.SpeechSettings,
+    audio_fade: float,
+    skipped: dict[str, str],
+    reuse: _Reuse | None,
+    reused: int,
+    clip_overrides: dict[str, dict[str, Any]] | None,
+) -> None:
+    """Write ``work/manifest.json``: ``clips_dir``'s ``manifest`` with the run's settings and
+    the new ``entries``."""
+    # Off when every clip has "speech_aware": false (the pass left them all alone).
+    speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
+    cache.save_json(
+        work / "manifest.json",
+        {k: v for k, v in manifest.items() if k != "compress_peaks"}
+        | {
+            "generator": MANIFEST_GENERATOR,
+            "created": datetime.now().isoformat(timespec="seconds"),
+            "extended_from": str(clips_dir.resolve()),
+            "extend": {"start": padding.start, "end": padding.end},
+            "speech_aware": speech.to_json() | {"enabled": speech_on},
+            "audio_fade": audio_fade,
+            "skipped_no_manifest": list(skipped),
+            **(
+                {"reused_from": str(reuse.dir.resolve()), "reused": reused}
+                if reuse is not None
+                else {}
+            ),
+            **({"clip_overrides": clip_overrides} if clip_overrides else {}),
+            "clips": entries,
+        },
+    )
