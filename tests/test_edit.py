@@ -124,6 +124,19 @@ def test_edit_without_new_subtitles_does_not_copy_a_stale_final_srt(pipeline, ho
     assert "none (no transcript)" in caplog.text
 
 
+def test_edit_keeping_a_stale_named_srt_is_a_json_warning(pipeline, home, capsys):
+    project = home / "projects" / "My Clip"
+    project.mkdir(parents=True)
+    stale = project / "My Clip-final.srt"
+    stale.write_text("from an earlier run", encoding="utf-8")
+    pipeline.write_srt = False  # no transcript this run: assemble writes no final.srt
+    assert cli.main(["edit", str(pipeline.video), "--json"]) == 0
+    doc = envelope(capsys.readouterr().out)
+    assert [(w["code"], w["files"]) for w in doc["warnings"] if w["code"] == "stale_srt"] == [
+        ("stale_srt", [str(stale)])
+    ]
+
+
 @pytest.mark.parametrize(
     ("config", "argv", "expect"),
     [

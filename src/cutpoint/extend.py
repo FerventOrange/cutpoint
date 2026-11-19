@@ -39,7 +39,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import boundaries, cache, folders, jsonout, srt, tsrepair
+from cutpoint import boundaries, cache, folders, jsonout, runstate, srt, tsrepair
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import COLOR_VERSION, AutoGrade
 from cutpoint.config import path_key, remap_source, source_path
@@ -60,11 +60,13 @@ from cutpoint.planning import (
     file_size,
     manifest_entries,
     manifest_parts,
+    manifest_project,
     pad,
     replace_plan,
     report_clips,
     speech_pass,
     warn_kept,
+    warn_pano_sources,
 )
 from cutpoint.sources import project_language
 from cutpoint.utils import clip_files, seconds_keys
@@ -110,18 +112,6 @@ def default_out_dir(clips_dir: Path, padding: Padding) -> Path:
     return clips_dir.with_name(f"{clips_dir.name}_ext{tag}s")
 
 
-def manifest_project(manifest: dict[str, Any], clips_dir: Path) -> Path:
-    """Project folder of a clips folder (manifest ``project``, else the parent)."""
-    recorded = manifest.get("project")
-    if recorded:
-        try:
-            if Path(recorded).is_dir():
-                return Path(recorded)
-        except OSError:
-            pass
-    return clips_dir.resolve().parent
-
-
 def _foreign_project(project: Path, clips_dir: Path) -> bool:
     """Whether ``project`` (:func:`manifest_project`) is not the clips folder's parent: a
     clips folder exported elsewhere (``clips --out``) or copied from another machine, whose
@@ -134,6 +124,9 @@ def _pick(e: dict[str, Any]) -> tuple[float, float]:
     """The picked moment of a manifest entry (before any padding)."""
     return float(e["pick"]["start"]), float(e["pick"]["end"])
 
+
+PEAK_KEYS = ("compress_peaks", "compress_peaks_makeup_db")
+"""Manifest entry keys of ``clips --compress-peaks``; extend re-exports without them."""
 
 PAD_KEYS = ("extend", "extend_start", "extend_end")
 """``--clip-override`` keys that set a clip's total padding (s) per side."""
@@ -386,8 +379,8 @@ def _extend_locked(
     non_empty = out_dir.exists() and any(out_dir.iterdir())
     if (in_place or non_empty) and not force:
         raise FileExistsError(
-            f"{out_dir} {'is the input folder' if in_place else 'is not empty'};"
-            " use --force to overwrite"
+            f"{out_dir} {'is the input folder' if in_place else 'is not empty'}; "
+            f"{runstate.force_hint()}"
         )
     # As clips does: the clips are exported into a hidden staging folder and swapped in only
     # when all succeeded, so a failed or cancelled run leaves the folder as it was (a new one
@@ -414,8 +407,6 @@ def _extend_locked(
             (e["source"], _read_path(e), []) for e in by_file.values() if e.get("source")
         )
         known = manifest_entries(clips_dir, files)  # clips renamed during review too
-        # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
-        # analysis (#1052); one the analysis read so is never read in place
         project = manifest_project(manifest, clips_dir)
         foreign = _foreign_project(project, clips_dir)
         if foreign:
@@ -427,15 +418,11 @@ def _extend_locked(
                 clips_dir.resolve().parent,
                 clips_dir.resolve().parent / "pano_paths",
             )
-        highlights = cache.load_json(project / "highlights.json")
-        remuxed = [
-            e["path"]
-            for e in (highlights.get("sources") if isinstance(highlights, dict) else None) or []
-            if isinstance(e, dict) and e.get("timeline") and isinstance(e.get("path"), str)
-        ]
+        # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
+        # analysis (#1052); one the analysis read so is never read in place
         tsrepair.prepare_sources(
             [source_path(e["source"]) for e in by_file.values() if e.get("source")],
-            required=remuxed,
+            required=tsrepair.remuxed_sources(cache.load_json(project / "highlights.json")),
         )
         for f in files:
             e = by_file.get(f.name)
@@ -524,10 +511,15 @@ def _extend_locked(
                 pano.paths_dir = clips_dir.resolve().parent / PATHS_DIR / out_dir.name
         compressed = sum(1 for p in plans if p.entry.get("compress_peaks"))
         if compressed:
-            logger.warning(
-                "%d clip(s) were exported with --compress-peaks; extend re-exports them "
-                "without it (assemble --compress-peaks can apply it)",
-                compressed,
+            message = (
+                f"{compressed} clip(s) were exported with --compress-peaks; extend re-exports "
+                "them without it (assemble --compress-peaks can apply it)"
+            )
+            logger.warning("%s", message)
+            jsonout.warn(
+                "compress_peaks_dropped",
+                message,
+                [out_dir / p.name for p in plans if p.entry.get("compress_peaks")],
             )
         # Only clips with a manifest entry are written; none may be a file this run reads.
         reads = []
@@ -572,6 +564,7 @@ def _extend_locked(
         # --json: finished clips of a stopped run this one did not encode again
         jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
         entries = []
+        pano_recs: list[tuple[str, dict[str, Any] | None]] = []
         reused = 0
         for plan in plans:
             name, e, src, info = plan.name, plan.entry, plan.src, plan.info
@@ -626,6 +619,7 @@ def _extend_locked(
                 )
                 if resume is not None:
                     resume.add(name, read_err)
+            pano_recs.append((name, pano_rec))
             if read_err and read_err["end"] < end:
                 end = read_err["end"]
             sub = subs.write(work / name, e["source"], start, end)
@@ -646,11 +640,7 @@ def _extend_locked(
             )
             p0, p1 = plan.keep
             entries.append(
-                {
-                    k: v
-                    for k, v in e.items()
-                    if k not in ("read_from", "srt", "compress_peaks", "compress_peaks_makeup_db")
-                }
+                {k: v for k, v in e.items() if k not in ("read_from", "srt", *PEAK_KEYS)}
                 | {
                     "size": file_size(work / name),
                     **({"read_from": str(src)} if str(src) != e["source"] else {}),
@@ -667,6 +657,7 @@ def _extend_locked(
                 }
             )
         subs.report(len(plans))
+        warn_pano_sources(pano_recs, out_dir)
         if not entries:
             raise ValueError(f"No clips with manifest entries in {clips_dir}")
         # Off when every clip has "speech_aware": false (the pass left them all alone).

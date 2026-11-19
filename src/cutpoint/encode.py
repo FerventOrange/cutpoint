@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePath
 from typing import Any, Protocol
@@ -479,24 +480,32 @@ def warn_if_log(src: Path, info: MediaInfo, at: float) -> None:
         )
 
 
-def audio_fade_filter(dur: float, fade: float, audio: float | None = None) -> str:
+def audio_fade_filter(
+    dur: float,
+    fade: float,
+    audio: float | None = None,
+    *,
+    fade_in: bool = True,
+    fade_out: bool = True,
+) -> str:
     """``afade`` in/out for a clip of ``dur`` seconds ("" when ``fade`` is 0).
 
     ``audio`` is the audio the clip holds (s), None when unknown. Audio more than
     :data:`AUDIO_SHORT_S` shorter than the clip fades out at its own end (#250), not
     after it. The fade is at most a quarter of the clip (or of the shorter audio).
     Timestamps are reset first so ``st`` is relative to the clip start whatever the
-    input seek produced.
+    input seek produced. ``fade_in`` / ``fade_out`` False leave that side out ("" when both
+    are left out).
     """
     if audio is not None and audio < dur - AUDIO_SHORT_S:
         dur = audio
     f = min(fade, dur / 4)
-    if f <= 0.005:
+    if f <= 0.005 or not (fade_in or fade_out):
         return ""
-    return (
-        f",asetpts=PTS-STARTPTS,afade=t=in:st=0:d={f:.3f}:curve=qsin,"
-        f"afade=t=out:st={max(0.0, dur - f):.3f}:d={f:.3f}:curve=qsin"
-    )
+    edges = [f"afade=t=in:st=0:d={f:.3f}:curve=qsin"] if fade_in else []
+    if fade_out:
+        edges.append(f"afade=t=out:st={max(0.0, dur - f):.3f}:d={f:.3f}:curve=qsin")
+    return ",asetpts=PTS-STARTPTS," + ",".join(edges)
 
 
 def limiter_chain(limit_db: float, soxr: bool) -> str:
@@ -682,6 +691,43 @@ def plan_makeup(
     grid = np.arange(-p.max_cut, p.max_boost + _GAIN_STEP / 2, _GAIN_STEP)
     best = float(grid[int(np.argmin([abs(loudness(m) - target) + 0.01 * abs(m) for m in grid]))])
     return replace(plan, makeup=tuple(None if g is None else round(g, 2) for g in gains(best)))
+
+
+def plan_set(
+    preset: str,
+    measure: Callable[[int, str], list[float]],
+    durations: list[float],
+    apply: list[bool],
+    baked: int | None = None,
+) -> PeakPlan | None:
+    """:func:`plan_peaks` and :func:`plan_makeup` for one set of clips, with one INFO line.
+
+    ``measure(i, chain)`` is clip ``i``'s momentary loudness
+    (:func:`~cutpoint.ffmpeg_utils.clip_momentary`; ``chain`` "" for the clip as it is, else
+    :meth:`PeakPlan.measure_chain`, the clips that get a filter measured again through it);
+    ``apply`` as in :func:`plan_peaks`. ``baked``: the clips with compression baked in, named
+    in the INFO line (None: not named). Returns None (one INFO line) when no clip has audio
+    above silence.
+    """
+    series = [measure(i, "") for i in range(len(durations))]
+    plan = plan_peaks(preset, series, durations, apply)
+    if plan is None:
+        logger.info("Compress peaks: no clip has audio above silence")
+        return None
+    compressed = [
+        measure(i, chain) if (chain := plan.measure_chain(i)) else [] for i in range(len(series))
+    ]
+    plan = plan_makeup(plan, series, compressed)
+    logger.info(
+        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; makeup %s"
+        + ("" if baked is None else "; %d baked"),
+        preset,
+        plan.threshold,
+        " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
+        " ".join("-" if m is None else f"{m:+.1f}" for m in plan.makeup),
+        *(() if baked is None else (baked,)),
+    )
+    return plan
 
 
 @dataclass(frozen=True)
@@ -948,7 +994,12 @@ def _export_checked(
     _export(
         src, info, start, safe_end, part, fmt, vertical, crop, audio_fade, out.name, peaks, grade
     )
-    logger.warning("  %s trimmed to end at %.2f (before the unreadable spot)", out.name, safe_end)
+    message = (
+        f"{out.name} from {src.name} trimmed to end at {safe_end:.2f} (before the unreadable "
+        f"spot at ~{fail_t:.1f} s)"
+    )
+    logger.warning("  %s", message)
+    jsonout.warn("read_error_trimmed", message, [src])
     return {
         "failure_time": round(fail_t, 3),
         "messages": messages,

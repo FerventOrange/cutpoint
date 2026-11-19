@@ -57,11 +57,11 @@ from itertools import pairwise
 from pathlib import Path, PurePath
 from typing import Any
 
-from cutpoint import cache, folders, jsonout, paths
+from cutpoint import cache, folders, jsonout, paths, srt
+from cutpoint.clips import export_clips
 from cutpoint.encode import (
     A_FMT,
     AUDIO_OUT,
-    AUDIO_SHORT_S,
     BT709_TAGS,
     PEAK_PRESETS,
     PEAK_TAG,
@@ -73,8 +73,7 @@ from cutpoint.encode import (
     color_kind,
     filter_path,
     limiter_chain,
-    plan_makeup,
-    plan_peaks,
+    plan_set,
 )
 from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.ffmpeg_utils import (
@@ -89,8 +88,9 @@ from cutpoint.ffmpeg_utils import (
     probe,
     run,
 )
-from cutpoint.timeline import TIMELINE_FORMATS, per_join, write_timeline
-from cutpoint.transcribe import Segment, Transcriber, flat_words, split_markers
+from cutpoint.planning import EXACT_AUDIO_FADE_S, manifest_entries
+from cutpoint.timeline import TIMELINE_FORMATS, clip_offsets, per_join, write_timeline
+from cutpoint.transcribe import Transcriber, split_markers
 from cutpoint.utils import clip_files
 
 logger = logging.getLogger(__name__)
@@ -104,8 +104,6 @@ def list_clips(clips_dir: Path, exclude: set[Path]) -> list[Path]:
 def baked_fades(clips_dir: Path, files: list[Path]) -> list[float]:
     """Audio fade already baked into each file, per its folder's manifest.json entry (renamed
     clips included, see :func:`~cutpoint.planning.manifest_entries`; 0 if none)."""
-    from cutpoint.planning import manifest_entries  # noqa: PLC0415
-
     by_file = manifest_entries(clips_dir, files)
     return [float((by_file.get(f.name) or {}).get("audio_fade") or 0.0) for f in files]
 
@@ -125,8 +123,6 @@ def baked_peaks(clips_dir: Path, files: list[Path]) -> list[bool]:
     (renamed clips included, see :func:`~cutpoint.planning.manifest_entries`) says so, or, for a
     file without one (added during review), its own tag. The entry wins: ffmpeg copies a
     tagged source's comment into a clip exported without it."""
-    from cutpoint.planning import manifest_entries  # noqa: PLC0415
-
     by_file = manifest_entries(clips_dir, files)
     return [
         e.get("compress_peaks") in PEAK_PRESETS
@@ -152,26 +148,15 @@ def peak_filters(
     if all(baked):
         logger.info("Compress peaks: every clip is already compressed (baked)")
         return [""] * len(files)
-    series = [clip_momentary(f, min(i.audio_streams, 1)) for f, i in zip(files, infos, strict=True)]
-    plan = plan_peaks(preset, series, [i.duration for i in infos], [not b for b in baked])
-    if plan is None:
-        logger.info("Compress peaks: no clip has audio above silence")
-        return [""] * len(files)
-    compressed = [
-        clip_momentary(f, min(i.audio_streams, 1), chain=chain)
-        if (chain := plan.measure_chain(n))
-        else []
-        for n, (f, i) in enumerate(zip(files, infos, strict=True))
-    ]
-    plan = plan_makeup(plan, series, compressed)
-    logger.info(
-        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; makeup %s; %d baked",
+    plan = plan_set(
         preset,
-        plan.threshold,
-        " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
-        " ".join("-" if m is None else f"{m:+.1f}" for m in plan.makeup),
+        lambda n, chain: clip_momentary(files[n], min(infos[n].audio_streams, 1), chain=chain),
+        [i.duration for i in infos],
+        [not b for b in baked],
         sum(baked),
     )
+    if plan is None:
+        return [""] * len(files)
     return [plan.filter(i) for i in range(len(files))]
 
 
@@ -343,25 +328,6 @@ def cut_audio_ends(infos: list[MediaInfo]) -> list[float]:
     return [i.duration for i in infos[:-1]] + [infos[-1].vduration]
 
 
-def clip_offsets(infos: list[MediaInfo], fade: float | list[float] = 0.0) -> list[float]:
-    """Where each clip starts in the joined video: back to back, each crossfade
-    (``fade`` s, 0 for cuts, or a list with one such value per join) overlapping it with the
-    previous clip.
-
-    Cuts (concat demuxer or filter) start a clip where the previous file ends: its
-    container ``duration``, longer than its video when the audio runs on. Crossfades
-    follow the video (``vduration``), and so does every join of a video that has one."""
-    joins = per_join(fade, len(infos))
-    video = any(f > 0 for f in joins)
-    offsets, t = [], 0.0
-    for info, f in zip(infos, [*joins, 0.0], strict=False):
-        offsets.append(t)
-        # a cut join: the concat demuxer starts the next file at the container duration, so
-        # the cut offsets (so final.srt) and the audio rebuilt by concat_copy use it too
-        t += info.vduration - f if video else info.duration
-    return offsets
-
-
 def crossfade_duration(infos: list[MediaInfo], fade: float, fps: Fraction | None = None) -> float:
     """The crossfade :func:`crossfade` uses for ``fade``: rounded to whole output frames (``fps``,
     default the first clip's rate, as :func:`_normalize_inputs`), at least one frame and at most
@@ -433,20 +399,6 @@ def crossfade(
     return fade
 
 
-def _open_edges(info: MediaInfo, fade: float, fade_in: bool, fade_out: bool) -> str:
-    """The edge fade of a clip padded to its video, as :func:`~cutpoint.encode.audio_fade_filter`
-    gives it, on the chosen sides only: the sides that are no audio crossfade."""
-    dur = info.vduration
-    if info.audio_duration is not None and info.audio_duration < dur - AUDIO_SHORT_S:
-        dur = info.audio_duration
-    f = min(fade, dur / 4)
-    if f <= 0.005:
-        return ""
-    return (f",afade=t=in:st=0:d={f:.3f}:curve=qsin" if fade_in else "") + (
-        f",afade=t=out:st={max(0.0, dur - f):.3f}:d={f:.3f}:curve=qsin" if fade_out else ""
-    )
-
-
 def _crossfade_chains(
     infos: list[MediaInfo],
     fade: float | list[float],
@@ -492,11 +444,19 @@ def _crossfade_chains(
         chains.append(f"{pairs}concat=n={len(infos)}:v=0:a=1[a]")
     else:
         for i, info in enumerate(infos):
+            # a clip padded to its video gets its edge fade on the sides that are no crossfade
             edges = ""
             if isinstance(fade, list) and fades:
-                edges = _open_edges(info, fades[i], before[i] == 0, after[i] == 0)
+                edges = audio_fade_filter(
+                    info.vduration,
+                    fades[i],
+                    info.audio_duration,
+                    fade_in=before[i] == 0,
+                    fade_out=after[i] == 0,
+                )
             chains.append(
-                f"[a{i}]apad,atrim=end={info.vduration:.6f},asetpts=PTS-STARTPTS{edges}[at{i}]"
+                f"[a{i}]apad,atrim=end={info.vduration:.6f}"
+                f"{edges or ',asetpts=PTS-STARTPTS'}[at{i}]"
             )
     half_frame = 0.5 / float(fps) if fps > 0 else 0.0
     vprev, aprev = "v0", "at0"
@@ -921,35 +881,6 @@ def _ass_time(t: float) -> str:
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
-def caption_chunks(
-    segments: list[Segment], max_words: int = 4, max_gap: float = 0.6
-) -> list[tuple[float, float, str]]:
-    """Group words into short (2-4 word) caption chunks."""
-    chunks: list[tuple[float, float, str]] = []
-    cur: list[dict] = []
-
-    def flush() -> None:
-        if cur:
-            chunks.append((cur[0]["start"], cur[-1]["end"], " ".join(w["word"] for w in cur)))
-            cur.clear()
-
-    for w in flat_words(segments):
-        if cur and (
-            len(cur) >= max_words
-            or w["start"] - cur[-1]["end"] > max_gap
-            or cur[-1]["word"][-1:] in ".?!,"
-        ):
-            flush()
-        cur.append(w)
-    flush()
-    # Hold each chunk a little longer, without overlapping the next one.
-    held = []
-    for i, (s, e, text) in enumerate(chunks):
-        nxt = chunks[i + 1][0] if i + 1 < len(chunks) else e + 1.0
-        held.append((s, min(max(e + 0.15, s + 0.5), nxt), text))
-    return held
-
-
 FALLBACK_CAPTION_FONT = "DejaVu Sans"
 
 
@@ -1112,7 +1043,7 @@ def post_process(
                 tr.close()
                 wav.unlink(missing_ok=True)
             ass = out.with_suffix(".ass")
-            chunks = caption_chunks(split_markers(segments))
+            chunks = srt.caption_chunks(split_markers(segments))
             write_ass(chunks, info.width, info.height, ass)
             logger.info(
                 "Captions: %d chunks (whisper %s on %s)", len(chunks), tr.model_name, tr.device
@@ -1195,17 +1126,15 @@ def normalize_with_ceiling(
                 jsonout.warn("loudness_below_target", msg)
             return lufs, tp
         limit_db -= tp - TP_CEILING + LIMIT_MARGIN_DB
-    logger.warning(
-        "True peak %+.2f dBTP is still above %.1f after %d passes", tp, TP_CEILING, LIMIT_PASSES
-    )
+    msg = f"True peak {tp:+.2f} dBTP is still above {TP_CEILING:.1f} after {LIMIT_PASSES} passes"
+    logger.warning("%s", msg)
+    jsonout.warn("true_peak_over_ceiling", msg, [out])
     return lufs, tp
 
 
 def exact_clips(clips_dir: Path, files: list[Path]) -> list[bool]:
     """Whether each file is an exact clip (its manifest entry has ``"exact": true``; renamed
     clips included, see :func:`~cutpoint.planning.manifest_entries`)."""
-    from cutpoint.planning import manifest_entries  # noqa: PLC0415
-
     by_file = manifest_entries(clips_dir, files)
     return [(by_file.get(f.name) or {}).get("exact") is True for f in files]
 
@@ -1233,8 +1162,6 @@ def hard_cuts(
 def _edge_fades(clips_dir: Path, files: list[Path], audio_fade: float) -> list[float]:
     """The audio edge fade to add to each clip: ``audio_fade`` where none is baked in, else 0;
     at most :data:`~cutpoint.planning.EXACT_AUDIO_FADE_S` for an exact clip."""
-    from cutpoint.planning import EXACT_AUDIO_FADE_S  # noqa: PLC0415
-
     baked = baked_fades(clips_dir, files)
     exact = exact_clips(clips_dir, files)
     fades = [
@@ -1328,7 +1255,8 @@ def join_fade(
     infos: list[MediaInfo], transition: str, fade_dur: float, kinds: list[str] | None = None
 ) -> float | list[float]:
     """The crossfade a join of ``infos`` uses (:func:`crossfade_duration`), 0 for cuts or one
-    clip. A fade without room for one frame joins with cuts (one WARNING).
+    clip. A fade without room for one frame joins with cuts (one WARNING, ``--json``
+    ``crossfade_no_room``).
 
     ``kinds`` (:func:`join_kinds`) replaces ``transition`` with each join's own and a fade
     without room becomes a cut at that join only (:func:`_per_join_fade`). The result is then
@@ -1341,10 +1269,13 @@ def join_fade(
         return 0.0
     used = crossfade_duration(infos, fade_dur)
     if used == 0:
-        logger.warning(
+        message = (
             "One frame is more than 45% of the shortest clip: no room for a crossfade; "
             "joining with cuts"
         )
+        logger.warning("%s", message)
+        shortest = min(infos, key=lambda i: i.vduration)
+        jsonout.warn("crossfade_no_room", message, [shortest.path])
     return used
 
 
@@ -1563,9 +1494,7 @@ def _assemble(
 
         peaks = peak_filters(clips_dir, files, infos, compress_peaks)
         limit = loudnorm or compress_peaks != "off"
-        from cutpoint.srt import clips_language  # noqa: PLC0415 - it imports this module
-
-        language = clips_language(clips_dir) if captions else None
+        language = srt.clips_language(clips_dir) if captions else None
         # Written to a temporary name: final.mp4 only appears once complete.
         with folders.atomic_output(out) as part:
             stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or captions) else part
@@ -1598,9 +1527,7 @@ def _assemble(
     duration = probe(out).duration
     logger.info("Wrote %s (%.2fs)", out, duration)
     _warn_earlier(out, "mp4")
-    from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
-
-    srt_path = write_final_srt(clips_dir, files, infos, used_fade, out)
+    srt_path = srt.write_final_srt(clips_dir, files, infos, used_fade, out)
     _report_joins(files, joins, used_fade)
     jsonout.output("format", "mp4")
     jsonout.output("final", out)
@@ -1637,9 +1564,7 @@ def _write_timeline(
     duration = clip_offsets(infos, fade)[-1] + infos[-1].vduration  # as the timeline's length
     logger.info("Wrote %s (%.2fs, %d clips in %s)", path, duration, len(files), clips_dir)
     _warn_earlier(out, kind)
-    from cutpoint.srt import write_final_srt  # noqa: PLC0415 - it imports this module
-
-    srt_path = write_final_srt(clips_dir, files, infos, fade, out)
+    srt_path = srt.write_final_srt(clips_dir, files, infos, fade, out)
     _report_joins(files, joins, fade)
     jsonout.output("format", kind)
     jsonout.output(kind, path)
@@ -1655,7 +1580,9 @@ def _warn_earlier(out: Path, written: str) -> None:
     for kind in OUTPUT_FORMATS:
         other = out.with_suffix(f".{kind}")
         if kind != written and other.is_file():
-            logger.warning("%s is from an earlier run and may not match %s", other, out.stem)
+            message = f"{other} is from an earlier run and may not match {out.stem}"
+            logger.warning("%s", message)
+            jsonout.warn("earlier_output", message, [other])
 
 
 # ------------------------------------------------------- assembling without keeping the clips
@@ -1801,8 +1728,6 @@ def assemble_project(
             unknown, ``force`` is given with ``mp4``, or the drive has too little free space;
             and as :func:`~cutpoint.clips.export_clips` and :func:`assemble` raise.
     """
-    from cutpoint.clips import export_clips  # noqa: PLC0415 - it imports this module (srt)
-
     if (why := check_transitions(transition, audio_transition)) is not None:
         raise ValueError(why)
     if output_format not in OUTPUT_FORMATS:

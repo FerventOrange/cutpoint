@@ -585,25 +585,23 @@ def test_mixed_or_unlevelled_360_sources_warn_once_with_the_clips() -> None:
 def test_clips_run_logs_one_pano_mixed_sources_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    from cutpoint import clips, jsonout  # noqa: PLC0415
+    from cutpoint import jsonout, planning  # noqa: PLC0415
 
     got = []
     monkeypatch.setattr(jsonout, "warn", lambda code, msg, files=(): got.append((code, files)))
-    plans = [SimpleNamespace(name=n) for n in ("001_a.mp4", "002_b.mp4", "003_flat.mp4")]
-    results = [
-        clips.RenderResult(tmp_path / "001_a.mp4", 1.0, pano=PLAIN_SDK),
-        clips.RenderResult(tmp_path / "002_b.mp4", 1.0, pano=DFISH),
-        clips.RenderResult(tmp_path / "003_flat.mp4", 1.0),  # not a 360 clip
+    recs = [
+        ("001_a.mp4", PLAIN_SDK),
+        ("002_b.mp4", DFISH),
+        ("003_flat.mp4", None),  # not a 360 clip
     ]
     with caplog.at_level(logging.WARNING):
-        clips._warn_pano_sources(plans, results, tmp_path)
+        planning.warn_pano_sources(recs, tmp_path)
     assert len(caplog.records) == 1 and "002_b.mp4" in caplog.text
     assert got == [(render.MIXED_SOURCES, [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"])]
     got.clear()
     caplog.clear()
-    uniform = [clips.RenderResult(tmp_path / "001_a.mp4", 1.0, pano=DFISH)] * 2
     with caplog.at_level(logging.WARNING):
-        clips._warn_pano_sources(plans[:2], uniform, None)
+        planning.warn_pano_sources([("001_a.mp4", DFISH), ("002_b.mp4", DFISH)], None)
     assert got == [] and caplog.text == ""
 
 

@@ -15,7 +15,7 @@ import pytest
 
 from assemble_helpers import SHORT, export_clips
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, encode, jsonout, sources
+from cutpoint import assemble, encode, jsonout, sources, timeline
 from cutpoint.assemble import Body, Run, VideoPackets
 from cutpoint.ffmpeg_utils import VideoEncoder, probe
 
@@ -310,7 +310,7 @@ def test_a_run_encodes_its_fades_at_the_old_graphs_offsets(tmp_path, monkeypatch
     run_ = Run(0, 270, 2, 10)
     assemble._encode_run(VideoEncoder("cpu"), files, infos, packets, run_, fade, tmp_path / "o.mp4")
     args = calls[0]
-    half, offsets = 0.5 / 30, assemble.clip_offsets(infos, fade)
+    half, offsets = 0.5 / 30, timeline.clip_offsets(infos, fade)
     t0 = offsets[0] + 270 / 30
     graph = args[args.index("-filter_complex") + 1]
     for n in (1, 2):

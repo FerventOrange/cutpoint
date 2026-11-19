@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import assemble, encode, ffmpeg_utils, jsonout, sources
+from cutpoint import assemble, encode, ffmpeg_utils, jsonout, sources, timeline
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import MediaInfo, VideoEncoder
 
@@ -27,9 +27,9 @@ def _info(duration: float, vduration: float) -> MediaInfo:
 
 def test_cut_offsets_use_the_container_duration():
     infos = [_info(2.3, 2.0), _info(2.3, 2.0), _info(2.0, 2.0)]
-    assert assemble.clip_offsets(infos) == pytest.approx([0.0, 2.3, 4.6])
+    assert timeline.clip_offsets(infos) == pytest.approx([0.0, 2.3, 4.6])
     # xfade works on the video: crossfades use the video duration, not the container's
-    assert assemble.clip_offsets(infos, 0.5) == pytest.approx([0.0, 1.5, 3.0])
+    assert timeline.clip_offsets(infos, 0.5) == pytest.approx([0.0, 1.5, 3.0])
 
 
 def _clip(out: Path, video: float, audio: float, rate: str = "25") -> None:
@@ -100,7 +100,7 @@ def test_crossfade_passes_one_fade_to_xfade_acrossfade_and_offsets(tmp_path, mon
     files = [tmp_path / f"00{i}_x.mp4" for i in range(3)]
     fade = assemble.crossfade_duration(infos, 1 / 3)  # 8 frames: 0.333333..., not 0.333
     assert assemble.crossfade(files, infos, tmp_path / "final.mp4", fade) == fade
-    lead = [o - 1 / 48 for o in assemble.clip_offsets(infos, fade)]  # half a frame early
+    lead = [o - 1 / 48 for o in timeline.clip_offsets(infos, fade)]  # half a frame early
     assert f"xfade=transition=fade:duration={fade:.6f}:offset={lead[1]:.6f}[vx1]" in graphs[0]
     assert f"duration={fade:.6f}:offset={lead[2]:.6f}[v]" in graphs[0]
     assert graphs[0].count(f"acrossfade=d={fade:.6f}[") == 2
@@ -145,7 +145,7 @@ def test_assemble_crossfade_length_matches_the_srt_offsets(tmp_path, monkeypatch
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
     infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
     fade = assemble.crossfade_duration(infos, 0.25)
-    predicted = assemble.clip_offsets(infos, fade)[-1] + infos[-1].vduration
+    predicted = timeline.clip_offsets(infos, fade)[-1] + infos[-1].vduration
     frame = 1 / float(Fraction(rate))
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(predicted, abs=frame / 2)
@@ -545,7 +545,7 @@ def test_assemble_fade_with_audio_cut_keeps_audio_as_long_as_the_video(tmp_path,
     final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25, audio_transition="cut")
     infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
     fade = assemble.crossfade_duration(infos, 0.25)
-    predicted = assemble.clip_offsets(infos, fade)[-1] + infos[-1].vduration
+    predicted = timeline.clip_offsets(infos, fade)[-1] + infos[-1].vduration
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(predicted, abs=0.02)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
@@ -620,6 +620,16 @@ def test_loudness_gives_up_after_the_last_pass_with_a_warning(monkeypatch, tmp_p
     assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]
 
 
+def test_a_true_peak_still_over_the_ceiling_is_a_json_warning_on_the_final(monkeypatch, tmp_path):
+    _loudness_passes(monkeypatch, [(-14.0, -0.5)] * assemble.LIMIT_PASSES)
+    final, part = tmp_path / "f.mp4", tmp_path / ".f.part.mp4"
+    with jsonout.run("assemble") as res:
+        assemble.normalize_with_ceiling(tmp_path / "s.mp4", final, False, None, part)
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("true_peak_over_ceiling", [str(final)])  # the final, not the file being written
+    ]
+
+
 def test_a_final_well_below_the_loudness_target_warns(monkeypatch, tmp_path):
     _loudness_passes(monkeypatch, [(-16.5, -2.0)])
     with jsonout.run("assemble") as res:
@@ -654,10 +664,10 @@ def _named(*names: str, duration: float = 4.0, **over) -> list[MediaInfo]:
 def test_clip_offsets_with_a_join_list_follow_the_video_where_any_join_fades():
     infos = [_info(2.3, 2.0), _info(2.3, 2.0), _info(2.0, 2.0)]
     # a dissolve then a cut: the cut starts the clip where the video ends, not the container
-    assert assemble.clip_offsets(infos, [0.5, 0.0]) == pytest.approx([0.0, 1.5, 3.5])
-    assert assemble.clip_offsets(infos, [0.0, 0.5]) == pytest.approx([0.0, 2.0, 3.5])
+    assert timeline.clip_offsets(infos, [0.5, 0.0]) == pytest.approx([0.0, 1.5, 3.5])
+    assert timeline.clip_offsets(infos, [0.0, 0.5]) == pytest.approx([0.0, 2.0, 3.5])
     # every join a cut: the audio runs on into the next clip's start, as for a plain cut
-    assert assemble.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 2.3, 4.6])
+    assert timeline.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 2.3, 4.6])
 
 
 @pytest.mark.parametrize(
@@ -785,6 +795,24 @@ def test_a_join_without_room_becomes_a_cut_alone_and_is_reported():
     # nothing left to fade: the plain cut, not a list of zeros
     with jsonout.run("assemble"):
         assert assemble.join_fade([a, c], "cut", 0.2, ["fade"]) == 0.0
+
+
+def test_a_crossfade_without_room_is_a_json_warning_naming_the_shortest_clip():
+    a, b = _named("a.mp4", "b.mp4", duration=4.0)
+    b = replace(b, duration=0.05, vduration=0.05)  # 45% of it is under one frame
+    with jsonout.run("assemble") as res:
+        assert assemble.join_fade([a, b], "fade", 0.2) == 0.0
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("crossfade_no_room", [str(Path("b.mp4").absolute())])
+    ]
+
+
+def test_an_earlier_output_of_another_format_is_a_json_warning(tmp_path):
+    final, old = tmp_path / "final.mp4", tmp_path / "final.otio"
+    old.write_text("old", encoding="utf-8")  # no final.fcpxml: no warning for it
+    with jsonout.run("assemble") as res:
+        assemble._warn_earlier(final, "mp4")
+    assert [(w["code"], w["files"]) for w in res.warnings] == [("earlier_output", [str(old)])]
 
 
 def test_the_fade_length_ignores_clips_that_are_only_on_cut_joins():

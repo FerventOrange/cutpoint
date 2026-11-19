@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg, write
-from cutpoint import assemble, capabilities, cli, config, encode, ffmpeg_utils, reset_state
+from cutpoint import assemble, capabilities, cli, config, encode, ffmpeg_utils, jsonout, reset_state
 from cutpoint.crop import Crop
 from cutpoint.errors import EncoderUnavailableError, FFmpegError
 from cutpoint.events import setup
@@ -393,3 +393,13 @@ def test_checked_full_length_without_messages_is_none(monkeypatch, tmp_path):
     rec, calls = _checked(monkeypatch, tmp_path, [""], [10.0])
     assert rec is None
     assert calls == [20.0]
+
+
+def test_a_clip_trimmed_by_a_read_error_is_a_json_warning_naming_the_source(monkeypatch, tmp_path):
+    with jsonout.run("clips") as res:
+        rec, _ = _checked(monkeypatch, tmp_path, [ERR, ERR, ""], [4.0, 4.0, 3.5])
+    assert rec["failure_time"] is not None
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("read_error_trimmed", [str(tmp_path / "s.mp4")])
+    ]
+    assert "001_x.mp4" in res.warnings[0]["message"]

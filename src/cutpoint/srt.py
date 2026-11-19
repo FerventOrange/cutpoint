@@ -3,8 +3,8 @@
 Cues come from the cached source transcripts that ``cutpoint analyze`` wrote
 (:func:`cutpoint.sources.source_words`, hallucinations dropped), so no
 transcription runs for them. Words are grouped into cues by the burned-in
-captions' :func:`~cutpoint.assemble.caption_chunks` and placed with the joined
-video's :func:`~cutpoint.assemble.clip_offsets`. A clip's source range is its
+captions' :func:`caption_chunks` and placed with the joined
+video's :func:`~cutpoint.timeline.clip_offsets`. A clip's source range is its
 manifest ``start`` / ``end``: the in/out points after tails, padding
 (``extend``) and speech moves. A clip renamed during review has no manifest
 entry; its own ``.srt``, renamed with it, is used instead.
@@ -21,11 +21,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, sources
-from cutpoint.assemble import caption_chunks, clip_offsets
+from cutpoint import cache, jsonout, sources
 from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.ffmpeg_utils import MediaInfo
-from cutpoint.planning import manifest_parts
+from cutpoint.planning import manifest_parts, manifest_project
+from cutpoint.timeline import clip_offsets
+from cutpoint.transcribe import Segment, flat_words
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,36 @@ def read_srt(path: Path) -> list[Cue] | None:
 def write_srt(path: Path, cues: list[Cue]) -> None:
     """Write ``cues`` to ``path`` atomically, UTF-8 (see :func:`cutpoint.cache.save_bytes`)."""
     cache.save_bytes(path, format_srt(cues).encode("utf-8"))
+
+
+def caption_chunks(
+    segments: list[Segment], max_words: int = 4, max_gap: float = 0.6
+) -> list[tuple[float, float, str]]:
+    """Group words into short (2-4 word) caption chunks: the burned-in captions of
+    ``assemble --captions`` and, with ``max_words`` :data:`SRT_MAX_WORDS`, the cues."""
+    chunks: list[tuple[float, float, str]] = []
+    cur: list[dict] = []
+
+    def flush() -> None:
+        if cur:
+            chunks.append((cur[0]["start"], cur[-1]["end"], " ".join(w["word"] for w in cur)))
+            cur.clear()
+
+    for w in flat_words(segments):
+        if cur and (
+            len(cur) >= max_words
+            or w["start"] - cur[-1]["end"] > max_gap
+            or cur[-1]["word"][-1:] in ".?!,"
+        ):
+            flush()
+        cur.append(w)
+    flush()
+    # Hold each chunk a little longer, without overlapping the next one.
+    held = []
+    for i, (s, e, text) in enumerate(chunks):
+        nxt = chunks[i + 1][0] if i + 1 < len(chunks) else e + 1.0
+        held.append((s, min(max(e + 0.15, s + 0.5), nxt), text))
+    return held
 
 
 def clip_cues(words: list[dict[str, Any]], start: float, end: float) -> list[Cue]:
@@ -150,7 +181,7 @@ class ClipSubtitles:
         self.protected = protected or set()
         self.folder = folder
         self.no_words: list[str] = []
-        self.not_written: list[str] = []
+        self.not_written: list[Path] = []
 
     def write(self, clip: Path, source: str, start: float, end: float) -> str | None:
         """Write ``<clip>.srt`` for the source range ``start``-``end`` of ``source``.
@@ -163,7 +194,7 @@ class ClipSubtitles:
             return None
         name = clip.with_suffix(".srt").name
         if path_key(name, self.folder or clip.parent) in self.protected:
-            self.not_written.append(name)
+            self.not_written.append((self.folder or clip.parent) / name)
             return None
         write_srt(clip.with_suffix(".srt"), clip_cues(w, start, end))
         return name
@@ -173,11 +204,13 @@ class ClipSubtitles:
         if self.no_words:
             skipped_info(f"{len(self.no_words)} of {total} clips", self.no_words)
         if self.not_written:
-            logger.warning(
-                "Kept %s: an earlier run's manifest.json does not list them (made by hand?), "
-                "so they are not replaced and these clips get no new subtitles",
-                ", ".join(self.not_written),
+            message = (
+                f"Kept {', '.join(p.name for p in self.not_written)}: an earlier run's manifest.json does not "
+                "list them (made by hand?), so they are not replaced and these clips get no new "
+                "subtitles"
             )
+            logger.warning("%s", message)
+            jsonout.warn("kept_srt", message, self.not_written)
 
 
 def final_cues(
@@ -192,7 +225,7 @@ def final_cues(
 
     ``entries`` maps file names to their manifest entries. A clip without one (renamed
     during review) uses its sibling ``<clip>.srt``, if any. Each clip's cues are clipped
-    to the clip and shifted to its :func:`~cutpoint.assemble.clip_offsets` start; where a
+    to the clip and shifted to its :func:`~cutpoint.timeline.clip_offsets` start; where a
     crossfade overlaps two clips, a cue ends when the next one starts.
 
     Returns:
@@ -233,9 +266,7 @@ def final_cues(
 
 def clips_language(clips_dir: Path) -> str | None:
     """Transcription language the analysis of ``clips_dir``'s project forced (the project
-    of :func:`~cutpoint.extend.manifest_project`), or None: detected, or no analysis."""
-    from cutpoint.extend import manifest_project  # noqa: PLC0415 - it imports this module
-
+    of :func:`~cutpoint.planning.manifest_project`), or None: detected, or no analysis."""
     manifest = cache.load_json(clips_dir / "manifest.json")
     if not isinstance(manifest, dict):
         manifest = {}
@@ -274,7 +305,9 @@ def write_final_srt(
     if len(missing) == len(files):
         skipped_info(video.name, missing_sources)
         if srt.exists():
-            logger.warning("%s is from an earlier run and does not match %s", srt, video.name)
+            message = f"{srt} is from an earlier run and does not match {video.name}"
+            logger.warning("%s", message)
+            jsonout.warn("stale_srt", message, [srt])
         return None
     if missing:
         skipped_info(f"{', '.join(missing)} in {video.name}", missing_sources)
