@@ -1296,6 +1296,158 @@ def _claimed(out_dir: Path, force: bool) -> Iterator[None]:
         yield
 
 
+def _check_options(color_strength: float, crop: str | None) -> None:
+    """Refuse a ``color_strength`` outside 0-1 and an unreadable ``crop`` of
+    :func:`export_clips`, before any work.
+
+    Raises:
+        jsonout.ArgumentError: Naming the option.
+    """
+    if not 0 <= color_strength <= 1:
+        raise jsonout.ArgumentError(f"--color-strength {color_strength:g}: must be from 0 to 1")
+    if crop is not None:
+        try:
+            parse_spec(crop)  # fail before any work
+        except ValueError as err:
+            raise jsonout.ArgumentError(str(err)) from None
+
+
+def _ordered_moments(
+    project: Path,
+    style: Style,
+    segments: Path | None,
+    order: str | None,
+    top: int | None,
+    ids: list[str] | None,
+    max_total: float | None,
+) -> tuple[list[dict[str, Any]], str]:
+    """``(moments in clip order, order)`` of :func:`export_clips`: the ``segments`` file's
+    (order ``segments``, or ``arc``), else the selected candidates in ``order`` (default: the
+    ``style``'s)."""
+    if segments is not None:
+        ordered = load_segments(segments)
+        if order == "arc":  # the file's order is the day's order
+            ordered = order_moments(index_sources(ordered), "arc")
+        else:
+            order = "segments"
+    else:
+        chosen, _ = select_moments(project, top=top, ids=ids, max_total=max_total)
+        order = order or style.default_order
+        ordered = order_moments(chosen, order)
+    return ordered, order
+
+
+def _event_tails(
+    project: Path, event_tails: bool | None, event_window: float | None
+) -> tuple[dict[str, list[dict[str, Any]]] | None, EventTailSettings]:
+    """``(project events or None, event tail settings)`` of :func:`export_clips`; a WARNING
+    when ``event_tails`` asks for them and the project has no events.json."""
+    project_events = load_events(project) if event_tails is not False else None
+    if event_tails and project_events is None:
+        message = (
+            f"--event-tails: {project} has no events.json (run `cutpoint events`); "
+            "continuing without event tails"
+        )
+        logger.warning("%s", message)
+        jsonout.warn("event_tails_no_events", message, [project / "events.json"])
+    ev_settings = EventTailSettings(
+        enabled=project_events is not None,
+        **({"window": event_window} if event_window is not None else {}),
+    )
+    return project_events, ev_settings
+
+
+def _read_sources(
+    ordered: list[dict[str, Any]], hl: dict[str, Any]
+) -> tuple[dict[str, Path], dict[str, MediaInfo]]:
+    """``({source: path read}, {source: probe})`` of the moments' sources.
+
+    Sources keep their recorded path as identity (events, tails, manifest); the file actually
+    read may be a remapped copy (config ``source_remap``).
+    """
+    io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
+    # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
+    # analysis (#1052); one the analysis read so is never read in place
+    tsrepair.prepare_sources(
+        [source_path(s) for s in io_paths], required=tsrepair.remuxed_sources(hl)
+    )
+    for s, p in io_paths.items():
+        if str(p) != s:
+            logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
+    infos = {s: probe(p) for s, p in io_paths.items()}
+    return io_paths, infos
+
+
+def _export_format(
+    infos: dict[str, MediaInfo],
+    pano: PanoExporter | None,
+    vertical: bool,
+    size: tuple[int, int] | None,
+) -> OutputFormat:
+    """The clips' output format (:func:`choose_format`, ``size``, or the 360 renders'; sets
+    ``pano.fmt`` to it).
+
+    Raises:
+        jsonout.ArgumentError: If ``size`` is not positive and even.
+    """
+    fmt = choose_format(
+        [i for s, i in infos.items() if pano is None or not pano.handles(s)]
+        or list(infos.values()),
+        vertical,
+    )
+    if size is not None and not vertical:
+        w, h = size
+        if w <= 0 or h <= 0 or w % 2 or h % 2:
+            raise jsonout.ArgumentError(
+                f"--size {w}x{h}: width and height must be positive and even"
+            )
+        fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
+    if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
+        fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
+        pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
+    return fmt
+
+
+def _clip_resume(
+    out_dir: Path,
+    work: Path,
+    plans: list[ClipPlan],
+    peaks: list[str],
+    grades: list[Grade | None],
+    fmt: OutputFormat,
+    vertical: bool,
+    audio_fade: float,
+) -> ClipResume | None:
+    """The finished clips of an interrupted run into ``out_dir`` with the same plan are taken
+    over; the next run takes this one's over when it is interrupted (none when ``work`` is
+    ``out_dir``: not staged). ``--json`` gets the count taken over."""
+    resume = None
+    if work != out_dir:
+        resume = ClipResume(
+            out_dir,
+            work,
+            "clips",
+            {
+                p.name: clip_key(
+                    p.src,
+                    p.start,
+                    p.end,
+                    fmt,
+                    vertical,
+                    p.crop,
+                    exact_fade(p.entry, audio_fade),
+                    k,
+                    g,
+                )
+                for p, k, g in zip(plans, peaks, grades, strict=True)
+                if not p.pano
+            },
+        )
+    # --json: finished clips of a stopped run this one did not encode again
+    jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
+    return resume
+
+
 def export_clips(
     project: Path,
     *,
@@ -1408,13 +1560,7 @@ def export_clips(
             too little free space.
         jsonout.ArgumentError: For ``color`` with ``lut``, or ``color_strength`` outside 0-1.
     """
-    if not 0 <= color_strength <= 1:
-        raise jsonout.ArgumentError(f"--color-strength {color_strength:g}: must be from 0 to 1")
-    if crop is not None:
-        try:
-            parse_spec(crop)  # fail before any work
-        except ValueError as err:
-            raise jsonout.ArgumentError(str(err)) from None
+    _check_options(color_strength, crop)
     highlights = cache.load_json(project / "highlights.json")
     hl = highlights if isinstance(highlights, dict) else {}
     language = (hl.get("settings") or {}).get("language")
@@ -1422,16 +1568,7 @@ def export_clips(
     # The recorded style: a deleted user style degrades to the built-in base the file records;
     # a file (or none) that records no style gets auto's style for unclear footage (#1002)
     style: Style = analysis_style(hl)
-    if segments is not None:
-        ordered = load_segments(segments)
-        if order == "arc":  # the file's order is the day's order
-            ordered = order_moments(index_sources(ordered), "arc")
-        else:
-            order = "segments"
-    else:
-        chosen, _ = select_moments(project, top=top, ids=ids, max_total=max_total)
-        order = order or style.default_order
-        ordered = order_moments(chosen, order)
+    ordered, order = _ordered_moments(project, style, segments, order, top, ids, max_total)
     color_mode = _color_mode(color, lut, style, known_style=known_style)
     base_tail = TailSettings.from_style(
         style, enabled=smart_tail_on, tail_min=tail_min, tail_max=tail_max
@@ -1439,18 +1576,7 @@ def export_clips(
     speech = boundaries.SpeechSettings.from_style(
         style, enabled=speech_aware, max_extend=speech_max_extend, max_lead=speech_max_lead
     )
-    project_events = load_events(project) if event_tails is not False else None
-    if event_tails and project_events is None:
-        message = (
-            f"--event-tails: {project} has no events.json (run `cutpoint events`); "
-            "continuing without event tails"
-        )
-        logger.warning("%s", message)
-        jsonout.warn("event_tails_no_events", message, [project / "events.json"])
-    ev_settings = EventTailSettings(
-        enabled=project_events is not None,
-        **({"window": event_window} if event_window is not None else {}),
-    )
+    project_events, ev_settings = _event_tails(project, event_tails, event_window)
     project_cfg = cache.load_json(project / "project.json")
     out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")
     # The clips are exported into a hidden staging folder and swapped in only when all
@@ -1470,33 +1596,8 @@ def export_clips(
         if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
             pano = None
 
-        # Sources keep their recorded path as identity (events, tails, manifest);
-        # the file actually read may be a remapped copy (config ``source_remap``).
-        io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
-        # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
-        # analysis (#1052); one the analysis read so is never read in place
-        tsrepair.prepare_sources(
-            [source_path(s) for s in io_paths], required=tsrepair.remuxed_sources(hl)
-        )
-        for s, p in io_paths.items():
-            if str(p) != s:
-                logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
-        infos = {s: probe(p) for s, p in io_paths.items()}
-        fmt = choose_format(
-            [i for s, i in infos.items() if pano is None or not pano.handles(s)]
-            or list(infos.values()),
-            vertical,
-        )
-        if size is not None and not vertical:
-            w, h = size
-            if w <= 0 or h <= 0 or w % 2 or h % 2:
-                raise jsonout.ArgumentError(
-                    f"--size {w}x{h}: width and height must be positive and even"
-                )
-            fmt = OutputFormat(width=w, height=h, fps=fmt.fps)
-        if pano is not None:  # 360 renders are 1920x1080 (or 1080x1920): match them
-            fmt = OutputFormat(pano.fmt.width, pano.fmt.height, fmt.fps)
-            pano.fmt = type(pano.fmt)(fmt.width, fmt.height, fmt.fps)
+        io_paths, infos = _read_sources(ordered, hl)
+        fmt = _export_format(infos, pano, vertical, size)
         logger.info(
             "Exporting %d clips at %dx%d@%d (%s order); smart tail %s",
             len(ordered),
@@ -1542,33 +1643,10 @@ def export_clips(
             grades = _color_grades(plans, color_mode, color_strength, fmt, vertical)
         if force and not any(grades):
             _warn_dropped_grade(out_dir)
-        # The finished clips of an interrupted run into out_dir with the same plan are taken
-        # over; the next run takes this one's over when it is interrupted (not for temporary
-        # clips, removed right after the join).
+        # not for temporary clips, removed right after the join
         resume = None
-        if work != out_dir and not temporary:
-            resume = ClipResume(
-                out_dir,
-                work,
-                "clips",
-                {
-                    p.name: clip_key(
-                        p.src,
-                        p.start,
-                        p.end,
-                        fmt,
-                        vertical,
-                        p.crop,
-                        exact_fade(p.entry, audio_fade),
-                        k,
-                        g,
-                    )
-                    for p, k, g in zip(plans, peaks, grades, strict=True)
-                    if not p.pano
-                },
-            )
-        if not temporary:  # --json: finished clips of a stopped run this one did not encode again
-            jsonout.output("taken_over", len(resume.taken) if resume is not None else 0)
+        if not temporary:
+            resume = _clip_resume(out_dir, work, plans, peaks, grades, fmt, vertical, audio_fade)
         workers = export_workers(plans)
         if workers > 1:
             logger.info("Exporting %d clips at a time (export_workers)", workers)

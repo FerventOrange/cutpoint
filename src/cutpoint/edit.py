@@ -198,63 +198,93 @@ def run_edit(
             other than vlm is left after ``skip`` (before any analysis).
     """
     with progress.run(progress.EDIT_STEPS) as steps:
-        return _run_edit(
-            inputs,
+        from cutpoint.analyze import analyze  # noqa: PLC0415
+
+        steps.start("transcribe")  # the checks below fail the first step
+        to = _edit_targets(inputs, project, vertical, force, keep_clips, output_format)
+        if kind.style == AUTO:
+            style: Style | AutoRequest = AutoRequest(kind.emphasis)
+        else:
+            style = get_style(kind.style)
+        event_layers = None  # the events defaults
+        # joined MPEG-TS/PS recordings: their stream copies before the detection probes them (#1052)
+        tsrepair.prepare_sources(to.videos)
+        # one client of the vision model for both detections (here and in analyze): a failed
+        # request is not tried again; None with --no-vision / "vision": false
+        with category.footage_vision(
+            vision, ollama_url, ollama_model, context, vision_detect_all
+        ) as footage:
+            if events:
+                event_layers = _event_layers(style, to.videos, footage, skip)
+
+            # A failed or interrupted analyze removes the (still empty) folders it created.
+            analyze(
+                inputs,
+                style,
+                project,
+                vision=vision,
+                vision_top=vision_top,
+                ollama_url=ollama_url,
+                ollama_model=ollama_model,
+                layers=True,
+                skip=skip,
+                visual_index=visual_index,
+                ocr_det_skip=bool(ocr_det_skip),
+                footage=footage,
+                vision_time_share=vision_time_share,
+                context=context,
+            )
+        if events:
+            _run_events(project, steps, event_layers, ollama_url, ollama_model, ocr_det_skip)
+        srt = (project / to.final_name).with_suffix(".srt")
+        before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles
+        final = _export_and_join(
             project,
             kind,
+            to,
             steps,
             vertical=vertical,
             force=force,
-            events=events,
-            vision=vision,
-            vision_top=vision_top,
-            ollama_url=ollama_url,
-            ollama_model=ollama_model,
-            skip=skip,
-            visual_index=visual_index,
-            ocr_det_skip=ocr_det_skip,
-            vision_detect_all=vision_detect_all,
             compress_peaks=compress_peaks,
             lut=lut,
             color=color,
             color_strength=color_strength,
             keep_clips=keep_clips,
             output_format=output_format,
-            vision_time_share=vision_time_share,
-            context=context,
         )
+        return _publish(final, to, srt, before, keep_clips, output_format)
 
 
-def _run_edit(
+@dataclass(frozen=True)
+class _EditTargets:
+    """What :func:`run_edit` reads and writes (:func:`_edit_targets`).
+
+    Attributes:
+        videos: The source videos.
+        clips_dir: The clips folder (kept clips).
+        final_name: ``final.mp4`` or ``final_vertical.mp4``.
+        named: The copy of the final (:func:`run_edit`'s result).
+        named_srt: The copy of its subtitles.
+        kept: Whether the clips of an interrupted run are kept (:func:`runstate.clips_kept`).
+    """
+
+    videos: list[Path]
+    clips_dir: Path
+    final_name: str
+    named: Path
+    named_srt: Path
+    kept: bool
+
+
+def _edit_targets(
     inputs: list[Path],
     project: Path,
-    kind: Kind,
-    steps: progress.Run,
-    *,
     vertical: bool,
     force: bool,
-    events: bool,
-    vision: bool | None,
-    vision_top: int | None,
-    ollama_url: str | None,
-    ollama_model: str | None,
-    skip: Collection[str],
-    visual_index: bool | None,
-    ocr_det_skip: bool | None,
-    vision_detect_all: bool,
-    compress_peaks: str,
-    lut: Lut | None,
-    color: str | None,
-    color_strength: float,
     keep_clips: bool,
     output_format: str,
-    vision_time_share: float | None,
-    context: str | None,
-) -> Path:
-    """:func:`run_edit`, reporting to ``steps``."""
-    from cutpoint.analyze import analyze, report_highlights  # noqa: PLC0415
-
-    steps.start("transcribe")  # the checks below fail the first step
+) -> _EditTargets:
+    """The files of :func:`run_edit`, checked before any analysis (see its Raises)."""
     if output_format != "mp4" and not keep_clips:
         raise jsonout.ArgumentError(
             f"--format {output_format} references the clips; it cannot go with --no-keep-clips"
@@ -276,58 +306,75 @@ def _run_edit(
     kept = keep_clips and runstate.clips_kept(project, clips_dir)
     if keep_clips and clips_dir.exists() and any(clips_dir.iterdir()) and not (force or kept):
         raise FileExistsError(f"{clips_dir} is not empty; {runstate.force_hint()}")
-    if kind.style == AUTO:
-        style: Style | AutoRequest = AutoRequest(kind.emphasis)
-    else:
-        style = get_style(kind.style)
-    event_layers = None  # the events defaults
-    # joined MPEG-TS/PS recordings: their stream copies before the detection probes them (#1052)
-    tsrepair.prepare_sources(videos)
-    # one client of the vision model for both detections (here and in analyze): a failed
-    # request is not tried again; None with --no-vision / "vision": false
-    with category.footage_vision(
-        vision, ollama_url, ollama_model, context, vision_detect_all
-    ) as footage:
-        if events:
-            from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
-            from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, preflight  # noqa: PLC0415
+    return _EditTargets(videos, clips_dir, final_name, named, named_srt, kept)
 
-            is_cam = _action_cam(style, videos, footage)
-            defaults = ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS
-            # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
-            layers = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
-            event_layers = layers if layers != defaults else None
-            preflight(layers)
 
-        # A failed or interrupted analyze removes the (still empty) folders it created.
-        analyze(
-            inputs,
-            style,
-            project,
-            vision=vision,
-            vision_top=vision_top,
+def _event_layers(
+    style: Style | AutoRequest,
+    videos: list[Path],
+    footage: category.FootageVision | None,
+    skip: Collection[str],
+) -> tuple[str, ...] | None:
+    """``--layers`` of the ``cutpoint events`` run of ``run_edit --events`` (None: its
+    defaults), checked (:func:`~cutpoint.events.pipeline.preflight`) before any analysis."""
+    from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
+    from cutpoint.events.pipeline import (  # noqa: PLC0415
+        ACTION_CAM_LAYERS,
+        DEFAULT_LAYERS,
+        preflight,
+    )
+
+    is_cam = _action_cam(style, videos, footage)
+    defaults = ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS
+    # --skip leaves out the layers of its steps here too (keyframes: no HUD discovery).
+    layers = tuple(x for x in defaults if LAYER_STEP.get(x) not in skip)
+    preflight(layers)
+    return layers if layers != defaults else None
+
+
+def _run_events(
+    project: Path,
+    steps: progress.Run,
+    layers: tuple[str, ...] | None,
+    ollama_url: str | None,
+    ollama_model: str | None,
+    ocr_det_skip: bool | None,
+) -> None:
+    """``cutpoint events`` on ``project`` (``layers``: see :func:`_events_namespace`), as the
+    ``keyframes`` step, and the report of the re-ranked highlights."""
+    from cutpoint.analyze import report_highlights  # noqa: PLC0415
+    from cutpoint.events.cli import run_args  # noqa: PLC0415
+
+    with steps.step("keyframes", detail="describing moments with the VLM"):
+        run_args(
+            _events_namespace(project, layers, bool(ocr_det_skip)),
             ollama_url=ollama_url,
             ollama_model=ollama_model,
-            layers=True,
-            skip=skip,
-            visual_index=visual_index,
-            ocr_det_skip=bool(ocr_det_skip),
-            footage=footage,
-            vision_time_share=vision_time_share,
-            context=context,
         )
-    if events:
-        from cutpoint.events.cli import run_args  # noqa: PLC0415
+    report_highlights(project, project / "highlights.json")  # events re-ranked it
 
-        with steps.step("keyframes", detail="describing moments with the VLM"):
-            run_args(
-                _events_namespace(project, event_layers, bool(ocr_det_skip)),
-                ollama_url=ollama_url,
-                ollama_model=ollama_model,
-            )
-        report_highlights(project, project / "highlights.json")  # events re-ranked it
-    srt = (project / final_name).with_suffix(".srt")
-    before = file_stamp(srt)  # an earlier run's final.srt is not this run's subtitles
+
+def _export_and_join(
+    project: Path,
+    kind: Kind,
+    to: _EditTargets,
+    steps: progress.Run,
+    *,
+    vertical: bool,
+    force: bool,
+    compress_peaks: str,
+    lut: Lut | None,
+    color: str | None,
+    color_strength: float,
+    keep_clips: bool,
+    output_format: str,
+) -> Path:
+    """The ``clips`` and ``assemble`` steps of :func:`run_edit` (its options of those names).
+
+    Returns:
+        What was assembled: the final video or its timeline.
+    """
+    clips_dir, kept = to.clips_dir, to.kept
     with temporary_clips(project) if not keep_clips else nullcontext(clips_dir) as work:
         temporary = {} if keep_clips else {"out_dir": work, "temporary": True}
         with steps.step("clips", "kept from the interrupted run" if kept else None):
@@ -351,15 +398,28 @@ def _run_edit(
         if keep_clips:
             runstate.clips_written(project, clips_dir)
         steps.start("assemble")
-        final = assemble(
+        return assemble(
             work,
-            None if keep_clips else project / final_name,
+            None if keep_clips else project / to.final_name,
             transition=kind.transition,
             loudnorm=kind.loudnorm,
             captions=kind.captions,
             compress_peaks=compress_peaks,
             output_format=output_format,
         )
+
+
+def _publish(
+    final: Path,
+    to: _EditTargets,
+    srt: Path,
+    before: tuple[int, int, int] | None,
+    keep_clips: bool,
+    output_format: str,
+) -> Path:
+    """Copy ``final`` and this run's subtitles ``srt`` (stamped ``before`` the run:
+    :func:`file_stamp`) to ``to.named`` and ``to.named_srt``, and report them."""
+    named, named_srt = to.named, to.named_srt
     _link_or_copy(final, named)
     written = (now := file_stamp(srt)) is not None and now != before
     if written:
@@ -370,7 +430,7 @@ def _run_edit(
         jsonout.warn("stale_srt", message, [named_srt])
     logger.info("%s %s", "Final video:" if output_format == "mp4" else "Timeline:   ", named)
     logger.info("Subtitles:   %s", named_srt if written else "none (no transcript)")
-    logger.info("Clips:       %s", clips_dir if keep_clips else "none (temporary, removed)")
+    logger.info("Clips:       %s", to.clips_dir if keep_clips else "none (temporary, removed)")
     # analyze, export_clips and assemble added their outputs and warnings to the same result.
     jsonout.output("copy", named)
     jsonout.output("copy_srt", named_srt if written else None)
