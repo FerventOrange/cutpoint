@@ -109,9 +109,11 @@ KEY=VALUE`.
 in `<project>/pano_candidates/` (`candidates.py`). The cache key is the source, the exact span,
 16:9 or 9:16, the moment kind, the resulting settings, the path version, a hash of the source
 of the modules that plan and score the path (`candidates.CODE_MODULES`: director, views,
-geometry, the QA, voice, visual scoring) and the identity (name, size, modification time) of
-the view, voice and orientation caches the director reads, so a path `clips` reuses is the one
-it would plan. A changed span, setting, layer or planning code plans it anew.
+geometry, the QA, voice, visual scoring) and the identity of the caches the director reads
+(the view layer's content hash, else its name, size and modification time; name, size and
+modification time of the voice and orientation caches), so a path `clips` reuses is the one it
+would plan. A changed span, setting, layer content or planning code plans it anew; a view layer
+that was only touched does not.
 
 ## Renderer
 

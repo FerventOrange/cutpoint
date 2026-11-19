@@ -49,10 +49,9 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from itertools import pairwise
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -808,91 +807,92 @@ def _near_people(
     return [by_frame[int(j)] if j >= 0 else empty for j in idx]  # one array per view frame
 
 
-def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams) -> Any:
-    """``offenders(i, f, y)``, ``bad(i, f, y)``, ``runs(a, b, min_run)``, ``n_bad(a, b)``,
-    ``subject(i)`` and ``constraints(i)`` on the current ``ctx`` path (see
-    :func:`_safe_area_pass`); ``runs`` and ``n_bad`` count the steps of ``fix``.
+def _is_subject(box: np.ndarray, sj: np.ndarray | None) -> bool:
+    """``box`` is the framed subject ``sj`` (same yaw within half its width, 5 deg at least)."""
+    return sj is not None and abs(G.wrap_deg(box[0] - sj[0])) < max(5.0, sj[2] / 2)
 
-    A step is bad by :func:`_include_exclude`'s rule (``ctx["persons"]``, else
-    ``near``), and also when the view halfway to a neighbouring step is
-    (``persons_mid``, the people at that time; else the earlier step's). That view is
-    the average of the two (yaw unwrapped); a pair farther apart than the re-limit
-    allows, or one across a shot's end (``ctx["cut_after"]``), is a cut, where the
-    earlier view is held. ``bad(i, f, y)`` with a view checks step ``i``'s people and
-    those halfway to its neighbours in that one view (``mids=False``: the step's only).
-    """
-    from cutpoint.pano import qa_paths as QP  # noqa: PLC0415
-    from cutpoint.pano.qa import (  # noqa: PLC0415
-        QAThresholds,
-        edge_candidates,
-        edge_hit,
-        wearer_allowed,
-    )
 
-    th = QP.paths_thresholds(QAThresholds())  # the --paths QA's edge floor
-    yaw, pitch, fov = ctx["yaw"], ctx["pitch"], ctx["fov"]
-    subj, near, size = ctx["subj"], ctx["near"], ctx["size"]
-    target = ctx["target"]
-    persons = ctx.get("persons", near)
-    persons_mid = ctx.get("persons_mid") or persons[:-1]
-    m = p.safe_margin
-    base_run = int(SAFE_MIN_S / p.dt) + 1
-    cut_deg = SAFE_SPEED * p.max_speed * p.dt + 1e-6  # farther per step: a cut
-    cut_after = ctx.setdefault("cut_after", set())  # steps a shot ends at: a cut follows
-    hold = ctx.get("hold")  # upright: display yaw = held yaw + hold (#547)
-    memo: dict[tuple, list[float]] = {}
-    rays: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+def _side_cut(res: tuple[tuple[float, float, float, float], float]) -> bool:
+    """A sliver cut by a side: its box, the part in view, ends at the frame's side
+    (never framed whole, at any margin)."""
+    return res[1] < G.SLIVER_SHARE and (res[0][0] <= 0.0 or res[0][2] >= 1.0)
 
-    def subject(i: int) -> np.ndarray | None:
+
+def _row_score(rows: np.ndarray) -> np.ndarray:
+    """Detection score per :func:`_near_people` row (1 without the column)."""
+    return rows[:, 5] if rows.shape[1] > 5 else np.ones(len(rows))
+
+
+def _row_is_self(rows: np.ndarray) -> np.ndarray:
+    """Per :func:`_near_people` row: the wearer (False without the column)."""
+    return rows[:, 4] > 0 if rows.shape[1] > 4 else np.zeros(len(rows), bool)
+
+
+@dataclass(eq=False)
+class _Framing:
+    """The framing checks of :func:`_framing_checks` on the current ``ctx`` path.
+
+    The arrays and lists are ``ctx``'s own (edits to ``ctx["yaw"]`` and the others in
+    place, and to the ``cut_after`` set, show here); ``persons`` falls back to ``near``
+    and ``persons_mid`` to the earlier step's people."""
+
+    yaw: np.ndarray
+    pitch: np.ndarray
+    fov: np.ndarray
+    subj: np.ndarray
+    size: tuple[int, int]
+    target: list[str]
+    persons: list[np.ndarray]
+    persons_mid: list[np.ndarray]
+    cut_after: set[int]  # steps a shot ends at: a cut follows
+    hold: np.ndarray | None  # upright: display yaw = held yaw + hold (#547)
+    fix: tuple[int, int]  # the steps ``runs`` and ``n_bad`` count
+    p: DirectorParams
+    th: Any  # the --paths QA's thresholds (its edge floor)
+    cut_deg: float  # farther per step: a cut
+    memo: dict[tuple, tuple[list[float], bool]] = field(default_factory=dict)
+    rays: dict[int, tuple[np.ndarray, np.ndarray]] = field(default_factory=dict)
+
+    # ---------------------------------------------------------------- one view
+    def subject(self, i: int) -> np.ndarray | None:
         """The framed subject of step ``i`` (None: none)."""
-        if target[i] == "friend" and not np.isnan(subj[i]).any():
-            return subj[i]
+        if self.target[i] == "friend" and not np.isnan(self.subj[i]).any():
+            return self.subj[i]
         return None
 
-    def is_subject(box: np.ndarray, sj: np.ndarray | None) -> bool:
-        return sj is not None and abs(G.wrap_deg(box[0] - sj[0])) < max(5.0, sj[2] / 2)
-
-    def side_cut(res: tuple[tuple[float, float, float, float], float]) -> bool:
-        """A sliver cut by a side: its box, the part in view, ends at the frame's side
-        (never framed whole, at any margin)."""
-        return res[1] < G.SLIVER_SHARE and (res[0][0] <= 0.0 or res[0][2] >= 1.0)
-
-    def score(rows: np.ndarray) -> np.ndarray:
-        return rows[:, 5] if rows.shape[1] > 5 else np.ones(len(rows))
-
-    def is_self(rows: np.ndarray) -> np.ndarray:
-        return rows[:, 4] > 0 if rows.shape[1] > 4 else np.zeros(len(rows), bool)
-
-    def near_rows(rows: np.ndarray, sj: np.ndarray | None) -> np.ndarray:
+    def near_rows(self, rows: np.ndarray, sj: np.ndarray | None) -> np.ndarray:
         """``(k, 4)`` near people of ``rows`` (not the wearer or the subject), boxes scaled
         by ``near_box_scale``."""
-        ok = ~is_self(rows) & (score(rows) >= p.near_min_score) & (rows[:, 3] >= p.near_min_h_deg)
+        p = self.p
+        ok = ~_row_is_self(rows) & (_row_score(rows) >= p.near_min_score)
+        ok &= rows[:, 3] >= p.near_min_h_deg
         out = [
             [r[0], r[1], r[2] * p.near_box_scale, r[3] * p.near_box_scale]
             for r in rows[ok]
-            if not is_subject(r, sj)
+            if not _is_subject(r, sj)
         ]
         return np.asarray(out, float).reshape(-1, 4)
 
-    def in_view(rows: np.ndarray, vy: float, vp: float, vf: float) -> np.ndarray:
+    def in_view(self, rows: np.ndarray, vy: float, vp: float, vf: float) -> np.ndarray:
         """Per row: the box may reach into the view. The others lie wholly in front of
         the camera and beyond the view's corners (or have their centre behind it): out
         for every rule, so they are not projected."""
         if not len(rows):
             return np.zeros(0, bool)
+        p, size = self.p, self.size
         t = math.tan(math.radians(vf) / 2)
         corner = math.degrees(math.atan(t * math.hypot(1.0, size[1] / size[0])))
-        if id(rows) not in rays:  # per view frame: the box centres and their reach
+        if id(rows) not in self.rays:  # per view frame: the box centres and their reach
             reach = (rows[:, 2] + rows[:, 3]) / 2 * max(1.0, p.near_box_scale)
             reach += 2 * p.exclude_clear_deg + np.maximum(np.abs(rows[:, 1]) - 80.0, 0.0) + 1.0
-            rays[id(rows)] = (G.yaw_pitch_ray(rows[:, 0], rows[:, 1]), reach)
-        ray, reach = rays[id(rows)]
+            self.rays[id(rows)] = (G.yaw_pitch_ray(rows[:, 0], rows[:, 1]), reach)
+        ray, reach = self.rays[id(rows)]
         dist = np.degrees(np.arccos(np.clip(ray @ G.yaw_pitch_ray(vy, vp), -1.0, 1.0)))
         out = (dist - reach > corner) & (dist + reach < 89.0)
         return (dist < 90.5) & ~out
 
     def view_offenders(
-        vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
+        self, vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
     ) -> tuple[list[float], bool]:
         """``(yaws, hard)``: what is badly framed in one view by the include / exclude
         rule (the subject's safe area, the wearer, near people split by the edge and the
@@ -901,46 +901,78 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         close to a side."""
         if tg == "selfie":
             return [], False
-        rows = rows[in_view(rows, vy, vp, vf)]
-        near = near_rows(rows, sj)
+        p = self.p
+        rows = rows[self.in_view(rows, vy, vp, vf)]
+        near = self.near_rows(rows, sj)
         c = 2 * p.exclude_clear_deg
         wide = near + np.array([0.0, 0.0, c, c])  # OUT: clear of the view
         pad = near + np.array([0.0, 0.0, 2 * p.include_check_pad_deg, 0.0])  # IN: padded
         own = [] if sj is None else [sj[:4]]
         res = G.project_boxes(
-            vy, vp, vf, size, np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], pad, wide])
+            vy,
+            vp,
+            vf,
+            self.size,
+            np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], pad, wide]),
         )
-        out = []
-        lost = near_hard = False
+        out: list[float] = []
+        lost = False
         if sj is not None:
-            r = res.pop(0)
-            lost = r is None or not (r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0)
-            if r is None:
-                out.append(float(sj[0]))
-            else:
-                x1, y1, x2, y2 = r[0]
-                if (
-                    r[1] < G.SLIVER_SHARE  # mostly out of view: badly framed on any side
-                    or x1 < m
-                    or x2 > 1 - m
-                    or (y1 < th.safe_top and y2 < th.edge_top_max_y2)
-                ):
-                    out.append(float(sj[0]))
+            out, lost = self._subject_offence(res.pop(0), sj)
         res_rows, res_near, res_wide = (
             res[: len(rows)],
             res[len(rows) : len(rows) + len(near)],
             res[len(rows) + len(near) :],
         )
-        ok = score(rows) >= th.person_min_score
-        for k in np.flatnonzero(is_self(rows) & ok):
+        ok = _row_score(rows) >= self.th.person_min_score
+        out += self._wearer_offenders(rows, res_rows, ok)
+        split, near_hard = self._near_offenders((vy, vp, vf), near, res_near, res_wide)
+        out += split
+        edge, qa = self._qa_edge_offenders((vy, vp, vf), rows, res_rows, ok)
+        out += edge
+        return out, qa or lost or near_hard
+
+    def _subject_offence(self, r: Any, sj: np.ndarray) -> tuple[list[float], bool]:
+        """``(yaws, lost)`` of the subject: outside its safe area (or mostly out of
+        view), and out of view entirely."""
+        th, m = self.th, self.p.safe_margin
+        lost = r is None or not (r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0)
+        if r is None:
+            return [float(sj[0])], lost
+        x1, y1, x2, y2 = r[0]
+        if (
+            r[1] < G.SLIVER_SHARE  # mostly out of view: badly framed on any side
+            or x1 < m
+            or x2 > 1 - m
+            or (y1 < th.safe_top and y2 < th.edge_top_max_y2)
+        ):
+            return [float(sj[0])], lost
+        return [], lost
+
+    def _wearer_offenders(self, rows: np.ndarray, res_rows: list, ok: np.ndarray) -> list[float]:
+        """Yaws of the wearer's boxes (confident ones) where the QA does not allow them."""
+        from cutpoint.pano.qa import wearer_allowed  # noqa: PLC0415
+
+        out = []
+        for k in np.flatnonzero(_row_is_self(rows) & ok):
             r = res_rows[k]
-            if r is not None and not wearer_allowed(np.clip(r[0], 0.0, 1.0), th):
+            if r is not None and not wearer_allowed(np.clip(r[0], 0.0, 1.0), self.th):
                 out.append(float(rows[k, 0]))
-        res_hard = G.project_boxes(vy, vp, vf, size, near) if p.near_soft_as_hard else res_near
+        return out
+
+    def _near_offenders(
+        self, v: tuple[float, float, float], near: np.ndarray, res_near: list, res_wide: list
+    ) -> tuple[list[float], bool]:
+        """``(yaws, hard)`` of the near people neither framed whole nor clear of the view
+        (split); hard: with ``near_soft_as_hard``, one large and close to a side."""
+        p = self.p
+        res_hard = G.project_boxes(*v, self.size, near) if p.near_soft_as_hard else res_near
+        out = []
+        near_hard = False
         for bx, r, rw, rh in zip(near, res_near, res_wide, res_hard, strict=True):
             if (
                 r is not None
-                and not side_cut(r)
+                and not _side_cut(r)
                 and p.include_margin <= r[0][0] <= r[0][2] <= 1 - p.include_margin
             ):
                 continue  # IN: framed whole
@@ -954,7 +986,17 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
                         min(x1, 1 - x2) < NEAR_HARD_GAP * p.include_margin
                         and (x2 - x1) * (y2 - y1) >= NEAR_HARD_AREA
                     )
-        # the geometric QA's edge cuts: only boxes touching the sides or the top count
+        return out, near_hard
+
+    def _qa_edge_offenders(
+        self, v: tuple[float, float, float], rows: np.ndarray, res_rows: list, ok: np.ndarray
+    ) -> tuple[list[float], bool]:
+        """``(yaws, hard)`` of the geometric QA's edge cuts and slivers: only boxes
+        touching the sides or the top count."""
+        from cutpoint.pano import qa_paths as QP  # noqa: PLC0415
+        from cutpoint.pano.qa import edge_candidates, edge_hit  # noqa: PLC0415
+
+        th = self.th
         touch = [
             r is not None
             and (
@@ -966,17 +1008,15 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         ]
         keep_k = np.flatnonzero(ok)
         if not np.asarray(touch, bool)[keep_k].any():
-            return out, lost or near_hard
+            return [], False
         qa_rows = rows[keep_k]
         det, sel, sl, src, sl_src = QP.project_frame(
             qa_rows[:, :4],
-            score(qa_rows),
-            is_self(qa_rows),
+            _row_score(qa_rows),
+            _row_is_self(qa_rows),
             0,
-            vy,
-            vp,
-            vf,
-            size,
+            *v,
+            self.size,
             [res_rows[k] for k in keep_k],
         )
         det, sel = np.asarray(det, float).reshape(-1, 7), np.asarray(sel, bool)
@@ -984,118 +1024,137 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         keep = QP._nms(det)
         det, sel, src = det[keep], sel[keep], np.asarray(src, int)[keep]
         hit = src[edge_candidates(det, sel, th) & edge_hit(det, th)]
-        out += [float(qa_rows[k, 0]) for k in hit]
+        out = [float(qa_rows[k, 0]) for k in hit]
         qa = len(hit) > 0
         if len(sl) and (
             QP.sliver_edge_frames(sl, th) or QP.sliver_subject_frames(sl, det, sel, th)
         ):
             out += [float(qa_rows[k, 0]) for k in sl_src]
             qa = True
-        return out, qa or lost or near_hard
+        return out, qa
 
     def at(
-        vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
+        self, vy: float, vp: float, vf: float, tg: str, sj: np.ndarray | None, rows: np.ndarray
     ) -> tuple[list[float], bool]:
-        """:func:`view_offenders`, memoised (steps of one view frame share ``rows``)."""
+        """:meth:`view_offenders`, memoised (steps of one view frame share ``rows``)."""
         key = (id(rows), vy, vp, vf, tg, None if sj is None else tuple(sj))
-        if key not in memo:
-            memo[key] = view_offenders(vy, vp, vf, tg, sj, rows)
-        return memo[key]
+        if key not in self.memo:
+            self.memo[key] = self.view_offenders(vy, vp, vf, tg, sj, rows)
+        return self.memo[key]
 
-    def is_cut(i: int) -> bool:
+    # ---------------------------------------------------------------- steps of the path
+    def is_cut(self, i: int) -> bool:
         """A cut between steps ``i`` and ``i + 1``."""
-        if i in cut_after:
+        if i in self.cut_after:
             return True
+        yaw, hold = self.yaw, self.hold
         dh = 0.0 if hold is None else float(hold[i + 1] - hold[i])  # the held step's own change
-        return abs(float(G.wrap_deg(yaw[i + 1] - yaw[i] - dh))) > cut_deg
+        return abs(float(G.wrap_deg(yaw[i + 1] - yaw[i] - dh))) > self.cut_deg
 
-    def held(i: int) -> list[np.ndarray]:
+    def held(self, i: int) -> list[np.ndarray]:
         """People step ``i``'s view is held over until a cut to step ``i + 1``: halfway
         and at the cut (a frame just before it shows them)."""
-        return [r for r in (persons_mid[i], persons[i + 1]) if r is not persons[i]]
+        persons = self.persons
+        return [r for r in (self.persons_mid[i], persons[i + 1]) if r is not persons[i]]
 
-    def view(i: int, f: float | None = None, y: float | None = None) -> tuple[float, ...]:
-        return float(yaw[i] if y is None else y), float(pitch[i]), float(fov[i] if f is None else f)
+    def view(self, i: int, f: float | None = None, y: float | None = None) -> tuple[float, ...]:
+        """Step ``i``'s ``(yaw, pitch, fov)``, with ``f`` / ``y`` instead when given."""
+        yaw, fov = self.yaw, self.fov
+        return (
+            float(yaw[i] if y is None else y),
+            float(self.pitch[i]),
+            float(fov[i] if f is None else f),
+        )
 
-    def offenders(i: int, f: float | None = None, y: float | None = None) -> list[float]:
+    def offenders(self, i: int, f: float | None = None, y: float | None = None) -> list[float]:
         """Yaws of what is badly framed at step ``i`` (empty: fine)."""
-        return at(*view(i, f, y), target[i], subject(i), persons[i])[0]
+        return self.at(*self.view(i, f, y), self.target[i], self.subject(i), self.persons[i])[0]
 
-    def wearer_seen(i: int) -> bool:
+    def wearer_seen(self, i: int) -> bool:
         """Step ``i``'s view shows part of the wearer (any self box, allowed or not)."""
-        rows = persons[i]
-        own = rows[is_self(rows)] if target[i] != "selfie" else rows[:0]
+        rows = self.persons[i]
+        own = rows[_row_is_self(rows)] if self.target[i] != "selfie" else rows[:0]
         if not len(own):
             return False
         return any(  # in front and overlapping the frame
             r is not None and r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0
-            for r in G.project_boxes(*view(i), size, own[:, :4])
+            for r in G.project_boxes(*self.view(i), self.size, own[:, :4])
         )
 
-    def held_bad(j: int) -> bool:
+    def held_bad(self, j: int) -> bool:
         """Step ``j``'s view, held until a cut after it, is hard bad at step ``j + 1``'s
-        time (:func:`qa_bad`)."""
-        if j < 0 or j + 1 >= len(yaw) or target[j] == "selfie":
+        time (:meth:`qa_bad`)."""
+        target = self.target
+        if j < 0 or j + 1 >= len(self.yaw) or target[j] == "selfie":
             return False
-        return at(*view(j), target[j], subject(j), persons[j + 1])[1]
+        return self.at(*self.view(j), target[j], self.subject(j), self.persons[j + 1])[1]
 
-    def qa_bad(i: int, f: float | None = None, y: float | None = None) -> bool:
+    def qa_bad(self, i: int, f: float | None = None, y: float | None = None) -> bool:
         """Step ``i`` is hard bad: the geometric QA counts an edge cut or the subject is
         out of view (in its view, or the view held until a cut to it, at its time; with
         ``f`` / ``y``: in that view only)."""
-        if at(*view(i, f, y), target[i], subject(i), persons[i])[1]:
+        target, persons = self.target, self.persons
+        if self.at(*self.view(i, f, y), target[i], self.subject(i), persons[i])[1]:
             return True
         if f is not None or y is not None:
             return False
         j = i - 1
-        if j < 0 or target[j] == "selfie" or not is_cut(j) or persons[i] is persons[j]:
+        if j < 0 or target[j] == "selfie" or not self.is_cut(j) or persons[i] is persons[j]:
             return False
-        return at(*view(j), target[j], subject(j), persons[i])[1]
+        return self.at(*self.view(j), target[j], self.subject(j), persons[i])[1]
 
-    def mid_bad(i: int) -> bool:
+    def mid_bad(self, i: int) -> bool:
         """The view halfway from step ``i`` to ``i + 1`` is badly framed (not checked
         where it is a step's view with that step's people)."""
+        yaw, pitch, fov, target, subj = self.yaw, self.pitch, self.fov, self.target, self.subj
         if i < 0 or i + 1 >= len(yaw) or "selfie" in (target[i], target[i + 1]):
             return False
-        rows = persons_mid[i]
+        rows = self.persons_mid[i]
         d = float(G.wrap_deg(yaw[i + 1] - yaw[i]))
-        sj, sj1 = subject(i), subject(i + 1)
-        if is_cut(i):  # the earlier view is held
-            return any(at(*view(i), target[i], sj, r)[0] for r in held(i))
+        sj, sj1 = self.subject(i), self.subject(i + 1)
+        if self.is_cut(i):  # the earlier view is held
+            return any(self.at(*self.view(i), target[i], sj, r)[0] for r in self.held(i))
         vy = float(yaw[i]) + d / 2
         vp, vf = float(pitch[i] + pitch[i + 1]) / 2, float(fov[i] + fov[i + 1]) / 2
         tg = target[i] if target[i] == target[i + 1] else "view"
         for j in (i, i + 1):
             same = abs(vy - yaw[j]) <= 0.5 and abs(vp - pitch[j]) <= 0.5
-            if rows is persons[j] and same and abs(vf - fov[j]) <= 0.5 and tg == target[j]:
+            if rows is self.persons[j] and same and abs(vf - fov[j]) <= 0.5 and tg == target[j]:
                 return False
         if sj is not None and sj1 is not None:
             sj = (sj + sj1) / 2
             sj[0] = subj[i, 0] + float(G.wrap_deg(subj[i + 1, 0] - subj[i, 0])) / 2
         else:
             sj = None
-        return bool(at(vy, vp, vf, tg, sj, rows)[0])
+        return bool(self.at(vy, vp, vf, tg, sj, rows)[0])
 
-    def bad(i: int, f: float | None = None, y: float | None = None, mids: bool = True) -> bool:
+    def bad(
+        self, i: int, f: float | None = None, y: float | None = None, mids: bool = True
+    ) -> bool:
+        """Step ``i`` is badly framed (see :func:`_framing_checks`)."""
         if f is None and y is None:
-            return bool(offenders(i)) or mid_bad(i - 1) or mid_bad(i)
-        if offenders(i, f, y):
+            return bool(self.offenders(i)) or self.mid_bad(i - 1) or self.mid_bad(i)
+        if self.offenders(i, f, y):
             return True
         if not mids:
             return False
-        sj = subject(i)
-        mids = [persons_mid[j] for j in (i - 1, i) if 0 <= j < len(persons_mid)]
-        return any(at(*view(i, f, y), target[i], sj, r)[0] for r in mids if r is not persons[i])
+        sj = self.subject(i)
+        persons, persons_mid = self.persons, self.persons_mid
+        rows = [persons_mid[j] for j in (i - 1, i) if 0 <= j < len(persons_mid)]
+        view = self.view(i, f, y)
+        return any(self.at(*view, self.target[i], sj, r)[0] for r in rows if r is not persons[i])
 
-    def flags(a: int, b: int) -> tuple[int, list[bool]]:
-        lo, hi = max(a, fix[0]), min(b, fix[1])
-        return lo, [bad(i) for i in range(lo, hi)]
+    # ---------------------------------------------------------------- stretches of steps
+    def flags(self, a: int, b: int) -> tuple[int, list[bool]]:
+        """``(lo, bad per step)`` of ``[a, b)`` inside ``fix`` (from ``lo``)."""
+        lo, hi = max(a, self.fix[0]), min(b, self.fix[1])
+        return lo, [self.bad(i) for i in range(lo, hi)]
 
-    def runs(a: int, b: int, min_run: int | None = None) -> list[tuple[int, int]]:
+    def runs(self, a: int, b: int, min_run: int | None = None) -> list[tuple[int, int]]:
         """Bad stretches of ``[a, b)`` inside ``fix`` at least ``min_run`` steps long
         (default: longer than :data:`SAFE_MIN_S`)."""
-        need = base_run if min_run is None else min_run
-        lo, fl = flags(a, b)
+        need = int(SAFE_MIN_S / self.p.dt) + 1 if min_run is None else min_run
+        lo, fl = self.flags(a, b)
         out, i = [], 0
         while i < len(fl):
             j = i
@@ -1106,37 +1165,71 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
             i = max(j, i + 1)
         return out
 
-    def n_bad(a: int, b: int) -> tuple[int, int]:
-        """``(hard bad steps, bad steps)`` of ``[a, b)`` inside ``fix`` (:func:`qa_bad`),
+    def n_bad(self, a: int, b: int) -> tuple[int, int]:
+        """``(hard bad steps, bad steps)`` of ``[a, b)`` inside ``fix`` (:meth:`qa_bad`),
         compared in that order: a fix never adds hard bad steps."""
-        lo, fl = flags(a, b)
-        return sum(qa_bad(i) for i in range(lo, lo + len(fl))), sum(fl)
+        lo, fl = self.flags(a, b)
+        return sum(self.qa_bad(i) for i in range(lo, lo + len(fl))), sum(fl)
 
-    def constraints(i: int) -> np.ndarray:
+    def constraints(self, i: int) -> np.ndarray:
         """``(k, 4)`` boxes :func:`_solve_step` frames whole or keeps out at step ``i``: the
         near people of the step and halfway to its neighbours, and the other people the
         QA rule counts there now."""
-        sj = subject(i)
-        sets = [near_rows(persons[i], sj)]
-        sets += [near_rows(persons_mid[j], sj) for j in (i - 1, i) if 0 <= j < len(persons_mid)]
-        hit = set(offenders(i))
+        persons, persons_mid = self.persons, self.persons_mid
+        sj = self.subject(i)
+        sets = [self.near_rows(persons[i], sj)]
+        sets += [
+            self.near_rows(persons_mid[j], sj) for j in (i - 1, i) if 0 <= j < len(persons_mid)
+        ]
+        hit = set(self.offenders(i))
         rows = persons[i]
         extra = [
-            r[:4] for r in rows[~is_self(rows)] if float(r[0]) in hit and not is_subject(r, sj)
+            r[:4]
+            for r in rows[~_row_is_self(rows)]
+            if float(r[0]) in hit and not _is_subject(r, sj)
         ]
         sets.append(np.asarray(extra, float).reshape(-1, 4))
         return np.concatenate(sets)
 
-    return SimpleNamespace(
-        offenders=offenders,
-        bad=bad,
-        runs=runs,
-        n_bad=n_bad,
-        qa_bad=qa_bad,
-        held_bad=held_bad,
-        wearer_seen=wearer_seen,
-        subject=subject,
-        constraints=constraints,
+
+def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams) -> _Framing:
+    """``offenders(i, f, y)``, ``bad(i, f, y)``, ``runs(a, b, min_run)``, ``n_bad(a, b)``,
+    ``subject(i)`` and ``constraints(i)`` on the current ``ctx`` path (see
+    :func:`_safe_area_pass`); ``runs`` and ``n_bad`` count the steps of ``fix``.
+
+    A step is bad by :func:`_include_exclude`'s rule (``ctx["persons"]``, else
+    ``near``), and also when the view halfway to a neighbouring step is
+    (``persons_mid``, the people at that time; else the earlier step's). That view is
+    the average of the two (yaw unwrapped); a pair farther apart than the re-limit
+    allows, or one across a shot's end (``ctx["cut_after"]``), is a cut, where the
+    earlier view is held. ``bad(i, f, y)`` with a view checks step ``i``'s people and
+    those halfway to its neighbours in that one view (``mids=False``: the step's only).
+    """
+    from cutpoint.pano import qa_paths as QP  # noqa: PLC0415
+    from cutpoint.pano.qa import QAThresholds  # noqa: PLC0415
+
+    th = QP.paths_thresholds(QAThresholds())  # the --paths QA's edge floor
+    yaw, pitch, fov = ctx["yaw"], ctx["pitch"], ctx["fov"]
+    subj, near, size = ctx["subj"], ctx["near"], ctx["size"]
+    target = ctx["target"]
+    persons = ctx.get("persons", near)
+    persons_mid = ctx.get("persons_mid") or persons[:-1]
+    cut_deg = SAFE_SPEED * p.max_speed * p.dt + 1e-6
+    return _Framing(
+        yaw=yaw,
+        pitch=pitch,
+        fov=fov,
+        subj=subj,
+        size=size,
+        target=target,
+        persons=persons,
+        persons_mid=persons_mid,
+        cut_after=ctx.setdefault("cut_after", set()),
+        hold=ctx.get("hold"),
+        fix=fix,
+        p=p,
+        th=th,
+        cut_deg=cut_deg,
     )
 
 
@@ -1688,6 +1781,219 @@ def planned_span(
     return t0, t1
 
 
+@dataclass(frozen=True)
+class _Lens:
+    """FOVs and output size of one orientation (16:9 or ``vertical`` 9:16)."""
+
+    wide: float
+    friend: float
+    selfie: float
+    lo: float  # fitted friend FOV range
+    hi: float
+    size: tuple[int, int]
+
+    @classmethod
+    def of(cls, p: DirectorParams, vertical: bool) -> _Lens:
+        fw, ff, fs = (
+            (p.vertical_fov_wide, p.vertical_fov_friend, p.vertical_fov_selfie)
+            if vertical
+            else (p.fov_wide, p.fov_friend, p.fov_selfie)
+        )
+        size = (1080, 1920) if vertical else (1920, 1080)
+        lo, hi = (p.vertical_fov_min, p.vertical_fov_max) if vertical else (p.fov_min, p.fov_max)
+        return cls(fw, ff, fs, lo, hi, size)
+
+
+@dataclass(frozen=True)
+class _Plan:
+    """What the steps of :func:`compute_path` share."""
+
+    p: DirectorParams
+    sg: dict[str, Any]  # score_grid of the planned range (display bins)
+    hg: dict[str, Any]  # the grid planned on: ``sg``, or held (upright clips, hold_offset)
+    states: np.ndarray  # Viterbi states, shots merged in place by _shots
+    hold: np.ndarray | None  # hold_offset (None: not held)
+    orient: G.Orientation
+    axis: np.ndarray  # the wearer's direction in the camera frame
+    pv: Any
+    segment: tuple[float, float]  # (start, end)
+    lens: _Lens
+
+
+def _plan_states(
+    sg: dict[str, Any],
+    orient: G.Orientation,
+    p: DirectorParams,
+    pv: Any,
+    grid: dict[str, Any] | None,
+) -> tuple[np.ndarray | None, dict[str, Any], np.ndarray]:
+    """``(hold, hg, states)``: the hold offset, the grid planned on and its Viterbi
+    states; fills ``grid`` (see :func:`compute_path`)."""
+    nb = p.n_bins
+    # upright: planned in the held frame (hold_offset); the keys get display yaws below
+    hold = hold_offset(orient, sg["times"], p)
+    hg = sg if hold is None else _held_grid(sg, hold, p, pv)
+    # upright: ties break as in the views' -z frame (its bin k is bin k + n_bins / 2 here)
+    states = _viterbi(hg, p, roll=nb // 2 if orient.forward_axis == G.axis_name(G.LENS_V) else 0)
+    if grid is not None:  # display bins, as the grid's
+        shift = 0 if hold is None else np.round(hold / (360.0 / nb)).astype(int)
+        grid.update(sg, states=np.where(states < nb, (states + shift) % nb, states))
+    return hold, hg, states
+
+
+def _selfie_shot(pl: _Plan, a: int, b: int) -> tuple[np.ndarray, np.ndarray]:
+    """Yaw and pitch of the selfie shot ``[a, b)``: following the wearer (fixed in the
+    camera)."""
+    p = pl.p
+    sm = p.smooth_s / p.dt
+    wy, wp = [], []
+    for t in pl.sg["times"][a:b]:
+        d = pl.orient.r_vw(t).T @ pl.axis
+        y_, p_ = G.ray_yaw_pitch(d)
+        wy.append(float(y_))
+        wp.append(float(p_))
+    y = np.degrees(np.unwrap(np.radians(wy)))
+    yaw = _limit(_gauss(y, sm), p.dt, p.max_speed, p.max_accel)
+    return yaw, _gauss(np.clip(np.asarray(wp) + p.selfie_pitch_up, -70.0, 0.0), sm)
+
+
+def _view_shot(pl: _Plan, subj: np.ndarray, a: int, b: int) -> tuple[Any, ...]:
+    """``(yaw, pitch, fov, raw_yaw, target)`` of the shot ``[a, b)`` on a yaw bin
+    (:func:`_refine_shot`; ``raw_yaw``: the tracked subject's, else the bins')."""
+    p, sg, hg, ln = pl.p, pl.sg, pl.hg, pl.lens
+    st = pl.states[a:b]
+    y = np.degrees(np.unwrap(np.radians(sg["centres"][st])))
+    pp = np.array([hg["person_pitch"][a + i, s] for i, s in enumerate(st)])
+    pe = np.array([hg["people"][a + i, s] for i, s in enumerate(st)])
+    yaw, pitch, fov = _refine_shot(
+        y, subj[a:b], pe, pp, p, (ln.friend, ln.wide, ln.lo, ln.hi), ln.size
+    )
+    has = ~np.isnan(subj[a:b]).any(1)
+    raw_yaw = y + G.wrap_deg(np.where(has, subj[a:b, 0], y) - y)
+    target = [
+        "friend"
+        if pe[i] > FRIEND_PEOPLE
+        else "forward"
+        if abs(G.wrap_deg(sg["centres"][s] - sg["forward_yaw"])) <= FORWARD_DEG
+        else "view"
+        for i, s in enumerate(st)
+    ]
+    return yaw, pitch, fov, raw_yaw, target
+
+
+def _frame_shots(pl: _Plan, shots: list[tuple[int, int]]) -> dict[str, Any]:
+    """The path per step of the planned range, shot by shot, in display yaws: ``yaw``,
+    ``pitch``, ``fov``, ``target``, ``subj`` (the tracked subject), ``raw_yaw`` and
+    ``hold`` (display yaw - held yaw per step; None: not held)."""
+    p = pl.p
+    times = pl.sg["times"]
+    yaw = np.zeros(len(times))
+    pitch = np.full(len(times), p.pitch_default)
+    fov = np.zeros(len(times))
+    target = ["forward"] * len(times)
+    raw_yaw = np.zeros(len(times))
+    subj = _track_subject(pl.pv, pl.hg.get("subject"), times, pl.states, shots)
+    for a, b in shots:
+        if pl.states[a] == p.n_bins:  # selfie shot: follow the wearer (fixed in the camera)
+            yaw[a:b], pitch[a:b] = _selfie_shot(pl, a, b)
+            fov[a:b] = pl.lens.selfie
+            target[a:b] = ["selfie"] * (b - a)
+            continue
+        yaw[a:b], pitch[a:b], fov[a:b], raw_yaw[a:b], target[a:b] = _view_shot(pl, subj, a, b)
+    off = None  # display yaw - held yaw per step (0 on selfie shots, which follow the wearer)
+    if pl.hold is not None:  # held frame -> display
+        off = np.where(np.array(target) == "selfie", 0.0, pl.hold)
+        yaw += off
+        raw_yaw += off
+        subj[:, 0] += off
+    return {
+        "yaw": yaw,
+        "pitch": pitch,
+        "fov": fov,
+        "target": target,
+        "subj": subj,
+        "raw_yaw": raw_yaw,
+        "hold": off,
+    }
+
+
+def _safe_area(
+    pl: _Plan, track: dict[str, Any], shots: list[tuple[int, int]], suspects: bool
+) -> tuple[list[tuple[int, int]], set[int]]:
+    """:func:`_safe_area_pass` over the planned range of ``track`` (in place):
+    ``(shots, vl_suspect steps)`` (none without ``suspects``)."""
+    p, sg, ln = pl.p, pl.sg, pl.lens
+    times = sg["times"]
+    start, end = pl.segment
+    ctx = {
+        "times": times,
+        "yaw": track["yaw"],
+        "pitch": track["pitch"],
+        "fov": track["fov"],
+        "target": track["target"],
+        "subj": track["subj"],
+        "near": _near_people(pl.pv, times, p.near_min_h_deg),
+        "yaw_score": sg["yaw_score"],
+        "people": sg["people"],
+        "centres": sg["centres"],
+        "forward_yaw": sg["forward_yaw"],
+        "size": ln.size,
+        "fov_hi": ln.hi,
+        "fov_lo": ln.lo,
+        "fov_wide": ln.wide,
+        "raw_yaw": track["raw_yaw"],
+        "hold": track["hold"],
+    }
+    span = (int(np.searchsorted(times, start - 1e-6)), int(np.searchsorted(times, end + 1e-6)))
+    # every confident person, at the steps and halfway between them
+    from cutpoint.pano.qa import QAThresholds  # noqa: PLC0415
+
+    floor = min(p.near_min_score, QAThresholds().person_min_score)
+    rows = _near_people(pl.pv, np.r_[times, times[:-1] + p.dt / 2], 0.0, floor)
+    ctx["persons"], ctx["persons_mid"] = rows[: len(times)], rows[len(times) :]
+    shots = _safe_area_pass(ctx, shots, span, p, (0, len(times)))
+    sus = _suspect_steps(ctx, span) if suspects else set()  # on the path as rendered
+    sus |= {a for a, _ in shots if span[0] < a < span[1]}  # cut / cut-away destinations
+    return shots, sus
+
+
+def _path_keys(
+    times: np.ndarray, track: dict[str, Any], shots: list[tuple[int, int]]
+) -> list[dict[str, Any]]:
+    """The path's ``keys``: one per step, rounded, with ``cut`` and ``subj`` where set."""
+    yaw, pitch, fov, target, subj = (
+        track["yaw"],
+        track["pitch"],
+        track["fov"],
+        track["target"],
+        track["subj"],
+    )
+    keys = []
+    cut_steps = {a for a, _ in shots if a > 0}
+    for i, t in enumerate(times):
+        keys.append(
+            {
+                "t": round(float(t), 3),
+                "yaw": round(float(yaw[i]), 2),
+                "pitch": round(float(pitch[i]), 2),
+                "fov": round(float(fov[i]), 1),
+                "target": target[i],
+                **({"cut": True} if i in cut_steps else {}),
+                **(
+                    {
+                        "subj": [
+                            round(float(subj[i, 0]) % 360.0, 1),
+                            *np.round(subj[i, 1:], 1).tolist(),
+                        ]
+                    }
+                    if not np.isnan(subj[i]).any()
+                    else {}
+                ),
+            }
+        )
+    return keys
+
+
 def compute_path(
     clip: Any,
     start: float,
@@ -1739,124 +2045,18 @@ def compute_path(
 
     axis = wearer_axis(pv) if pv is not None else orient.wearer
     sg = score_grid(clip, t0, t1, p, pv, orient=orient, vertical=vertical)
-    nb = p.n_bins
-    # upright: planned in the held frame (hold_offset); the keys get display yaws below
-    hold = hold_offset(orient, sg["times"], p)
-    hg = sg if hold is None else _held_grid(sg, hold, p, pv)
-    # upright: ties break as in the views' -z frame (its bin k is bin k + n_bins / 2 here)
-    states = _viterbi(hg, p, roll=nb // 2 if orient.forward_axis == G.axis_name(G.LENS_V) else 0)
-    if grid is not None:  # display bins, as the grid's
-        shift = 0 if hold is None else np.round(hold / (360.0 / nb)).astype(int)
-        grid.update(sg, states=np.where(states < nb, (states + shift) % nb, states))
+    hold, hg, states = _plan_states(sg, orient, p, pv, grid)
     times = sg["times"]
     # shots measured within the segment; gated selfie steps stay out
-    shots = _shots(states, sg["centres"], nb, p, times, (start, end), sg["selfie"])
-    yaw = np.zeros(len(times))
-    pitch = np.full(len(times), p.pitch_default)
-    fov = np.zeros(len(times))
-    target = ["forward"] * len(times)
-    sm = p.smooth_s / p.dt
-    fw, ff, fs = (
-        (p.vertical_fov_wide, p.vertical_fov_friend, p.vertical_fov_selfie)
-        if vertical
-        else (p.fov_wide, p.fov_friend, p.fov_selfie)
-    )
-    size = (1080, 1920) if vertical else (1920, 1080)
-    lo, hi = (p.vertical_fov_min, p.vertical_fov_max) if vertical else (p.fov_min, p.fov_max)
-    raw_yaw = np.zeros(len(times))
-    subj = _track_subject(pv, hg.get("subject"), times, states, shots)
-    for a, b in shots:
-        st = states[a:b]
-        if st[0] == nb:  # selfie shot: follow the wearer (fixed in the camera)
-            wy, wp = [], []
-            for t in times[a:b]:
-                d = orient.r_vw(t).T @ axis
-                y_, p_ = G.ray_yaw_pitch(d)
-                wy.append(float(y_))
-                wp.append(float(p_))
-            y = np.degrees(np.unwrap(np.radians(wy)))
-            yaw[a:b] = _limit(_gauss(y, sm), p.dt, p.max_speed, p.max_accel)
-            pitch[a:b] = _gauss(np.clip(np.asarray(wp) + p.selfie_pitch_up, -70.0, 0.0), sm)
-            fov[a:b] = fs
-            for i in range(a, b):
-                target[i] = "selfie"
-            continue
-        y = np.degrees(np.unwrap(np.radians(sg["centres"][st])))
-        pp = np.array([hg["person_pitch"][a + i, s] for i, s in enumerate(st)])
-        pe = np.array([hg["people"][a + i, s] for i, s in enumerate(st)])
-        yaw[a:b], pitch[a:b], fov[a:b] = _refine_shot(
-            y, subj[a:b], pe, pp, p, (ff, fw, lo, hi), size
-        )
-        has = ~np.isnan(subj[a:b]).any(1)
-        raw_yaw[a:b] = y + G.wrap_deg(np.where(has, subj[a:b, 0], y) - y)
-        for i in range(a, b):
-            target[i] = (
-                "friend"
-                if pe[i - a] > FRIEND_PEOPLE
-                else "forward"
-                if abs(G.wrap_deg(sg["centres"][st[i - a]] - sg["forward_yaw"])) <= FORWARD_DEG
-                else "view"
-            )
-    off = None  # display yaw - held yaw per step (0 on selfie shots, which follow the wearer)
-    if hold is not None:  # held frame -> display
-        off = np.where(np.array(target) == "selfie", 0.0, hold)
-        yaw += off
-        raw_yaw += off
-        subj[:, 0] += off
+    shots = _shots(states, sg["centres"], p.n_bins, p, times, (start, end), sg["selfie"])
+    lens = _Lens.of(p, vertical)
+    pl = _Plan(p, sg, hg, states, hold, orient, axis, pv, (start, end), lens)
+    track = _frame_shots(pl, shots)
     fixed = (t0, t1)
+    sus: set[int] = set()
     if pv is not None:
-        ctx = {
-            "times": times,
-            "yaw": yaw,
-            "pitch": pitch,
-            "fov": fov,
-            "target": target,
-            "subj": subj,
-            "near": _near_people(pv, times, p.near_min_h_deg),
-            "yaw_score": sg["yaw_score"],
-            "people": sg["people"],
-            "centres": sg["centres"],
-            "forward_yaw": sg["forward_yaw"],
-            "size": size,
-            "fov_hi": hi,
-            "fov_lo": lo,
-            "fov_wide": fw,
-            "raw_yaw": raw_yaw,
-            "hold": off,
-        }
-        span = (int(np.searchsorted(times, start - 1e-6)), int(np.searchsorted(times, end + 1e-6)))
-        # every confident person, at the steps and halfway between them
-        from cutpoint.pano.qa import QAThresholds  # noqa: PLC0415
-
-        floor = min(p.near_min_score, QAThresholds().person_min_score)
-        rows = _near_people(pv, np.r_[times, times[:-1] + p.dt / 2], 0.0, floor)
-        ctx["persons"], ctx["persons_mid"] = rows[: len(times)], rows[len(times) :]
-        shots = _safe_area_pass(ctx, shots, span, p, (0, len(times)))
-        sus = _suspect_steps(ctx, span) if suspects else set()  # on the path as rendered
-        sus |= {a for a, _ in shots if span[0] < a < span[1]}  # cut / cut-away destinations
-    keys = []
-    cut_steps = {a for a, _ in shots if a > 0}
-    for i, t in enumerate(times):
-        keys.append(
-            {
-                "t": round(float(t), 3),
-                "yaw": round(float(yaw[i]), 2),
-                "pitch": round(float(pitch[i]), 2),
-                "fov": round(float(fov[i]), 1),
-                "target": target[i],
-                **({"cut": True} if i in cut_steps else {}),
-                **(
-                    {
-                        "subj": [
-                            round(float(subj[i, 0]) % 360.0, 1),
-                            *np.round(subj[i, 1:], 1).tolist(),
-                        ]
-                    }
-                    if not np.isnan(subj[i]).any()
-                    else {}
-                ),
-            }
-        )
+        shots, sus = _safe_area(pl, track, shots, suspects)
+    keys = _path_keys(times, track, shots)
     summary = {}
     for tg in ("friend", "selfie", "forward", "view"):
         summary[tg] = round(sum(1 for k in keys if k["target"] == tg) * p.dt, 1)

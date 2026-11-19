@@ -44,6 +44,7 @@ import functools
 import logging
 import math
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -423,6 +424,77 @@ def _repair(
     made: list[Path],
 ) -> dict[str, Any]:
     """:func:`repair`; the folders it creates for ``out`` are added to ``made``."""
+    segs = _read_segments(segments_file, out)
+    qa, src_dir = _read_qa(qa_file)
+    crashes = (load_crashes(project) or {}).get("crashes", [])
+    impacts = [(c["source"], impact_time(c)) for c in crashes]
+    key = functools.cache(source_key)  # shared by every step: resolving reads the disk
+    new_excl, findings, skipped, bounds = plan(
+        segs.keyed, qa, src_dir, qa_file.stat().st_mtime, impacts, key
+    )
+    manifest = cache.load_json(src_dir / "manifest.json")
+    out = out or segments_file
+    same = out.resolve() == segments_file.resolve()
+    report = cache.load_json(segments_file.with_name("mix_report.json")) or {}
+    rep: dict[str, Any] = {
+        "segments": str(out),
+        "written": False,
+        "findings": findings,
+        "skipped": skipped,
+        "trimmed": [],
+        "dropped": [],
+        "added": [],
+        "capped": [],
+        "exclusions": 0,
+        "rendered_s": None,
+        "content_qa": None,
+    }
+    new = [dict(s) for s in segs.old]
+    if new_excl:
+        new, report = _exclude(
+            project, segments_file, out, same, segs, new, new_excl, key, report, sheet, rep, made
+        )
+    _bound(new, bounds)
+    if manifest is not None and not segs.picked:
+        _rendered_qa(rep, new, manifest, report)
+    _changes(rep, segs.old, new)
+    if not new_excl and new == segs.old:
+        return rep
+    _write_repaired(segments_file, out, same, segs, new, bool(new_excl), made)
+    rep["written"] = True
+    return rep
+
+
+@dataclass
+class _Segments:
+    """A segments file as :func:`repair` matches it.
+
+    Attributes:
+        old: Its segments with their ids (:func:`~cutpoint.clips.segment_ids`); the user's
+            picks with the matching sources of ``keyed``.
+        keyed: The segments with their sources as ``cutpoint clips`` records them (a
+            relative one against the file's folder): what is matched and excluded.
+        picked: The user's picks, not a file written by ``cutpoint mix``.
+        given: The ids the file itself has.
+        spelt: The picks' sources as the file spells them, by id.
+    """
+
+    old: list[dict[str, Any]]
+    keyed: list[dict[str, Any]]
+    picked: bool
+    given: set[Any]
+    spelt: dict[Any, Any]
+
+
+def _read_segments(segments_file: Path, out: Path | None) -> _Segments:
+    """The segments of ``segments_file``, checked.
+
+    Raises:
+        IsADirectoryError: If ``segments_file`` or ``out`` is a folder.
+        FileNotFoundError: If ``segments_file`` is missing.
+        ValueError: If it is no segments list, or a segment has no usable source, start
+            and end.
+    """
     old = read_json_file(segments_file)
     if out is not None and out.is_dir():
         raise IsADirectoryError(f"{out} is a folder, not a segments file")
@@ -459,116 +531,140 @@ def _repair(
     spelt = {s["id"]: s["source"] for s in old} if picked else {}
     if picked:
         old = keyed
+    return _Segments(old, keyed, picked, given, spelt)
+
+
+def _read_qa(qa_file: Path) -> tuple[dict[str, Any], Path]:
+    """The QA report and the folder of the clips or previews it checked.
+
+    Raises:
+        IsADirectoryError: If ``qa_file`` is a folder.
+        FileNotFoundError: If ``qa_file`` is missing.
+        ValueError: If it is no QA report.
+    """
     qa = read_json_file(qa_file, "QA report")
     if not isinstance(qa, dict):
         raise ValueError(f"{qa_file}: not a QA report")
     src_dir = Path(qa.get("source_dir") or "")
     if not qa.get("source_dir") or not src_dir.is_dir():
         src_dir = qa_file.parent.with_name(qa_file.parent.name.removesuffix("_qa"))
-    crashes = (load_crashes(project) or {}).get("crashes", [])
-    impacts = [(c["source"], impact_time(c)) for c in crashes]
-    key = functools.cache(source_key)  # shared by every step: resolving reads the disk
-    new_excl, findings, skipped, bounds = plan(
-        keyed, qa, src_dir, qa_file.stat().st_mtime, impacts, key
-    )
-    manifest = cache.load_json(src_dir / "manifest.json")
-    out = out or segments_file
-    same = out.resolve() == segments_file.resolve()
-    report = cache.load_json(segments_file.with_name("mix_report.json")) or {}
-    rep: dict[str, Any] = {
-        "segments": str(out),
-        "written": False,
-        "findings": findings,
-        "skipped": skipped,
-        "trimmed": [],
-        "dropped": [],
-        "added": [],
-        "capped": [],
-        "exclusions": 0,
-        "rendered_s": None,
-        "content_qa": None,
+    return qa, src_dir
+
+
+def _exclude(
+    project: Path,
+    segments_file: Path,
+    out: Path,
+    same: bool,
+    segs: _Segments,
+    new: list[dict[str, Any]],
+    new_excl: list[dict[str, Any]],
+    key: Callable[[str], str],
+    report: dict[str, Any],
+    sheet: bool,
+    rep: dict[str, Any],
+    made: list[Path],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Merge ``new_excl`` into ``mix_exclude.json`` next to ``out`` and apply it: the picks
+    are cut, a ``cutpoint mix`` selection is made anew (the original kept as a backup once
+    run_mix has written over it). Returns the new segments and the mix report."""
+    _make_parent(out, made)
+    written = out.with_name(mix.EXCLUDE_FILE)
+    have = written if written.is_file() else project / mix.EXCLUDE_FILE
+    usable, ignored = mix.read_exclusions(have)
+    excl = _merge(usable, new_excl, key)
+    kept = excl + ignored  # the file keeps the entries mix leaves out (drive-relative)
+    if segs.picked:
+        new = _cut(new, new_excl, key)
+        cache.save_json(written, kept)
+        rep["exclusions"] = len(excl)
+    else:
+        # Back up only once run_mix has written over the original: a failed selection
+        # ("Nothing selected") leaves no .bak.json and an earlier one untouched.
+        original = segments_file.read_bytes() if same else None
+        try:
+            report = mix.run_mix(
+                project,
+                target_s=report.get("target_s", 240.0),
+                quotas=report.get("quotas"),
+                out=out,
+                sheet=sheet,
+                exclude=excl,
+                previous=segs.keyed,
+            )
+        except BaseException:
+            try:  # failed after writing (the sheet): keep the old
+                if original is not None and segments_file.read_bytes() != original:
+                    _backup(segments_file, original)
+            except OSError:
+                logger.warning("%s: could not write the backup", segments_file)
+            raise
+        if original is not None:
+            _backup(segments_file, original)
+        cache.save_json(written, kept)
+        new = cache.load_json(out) or []
+        rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
+    _bound(new, _near(new, excl, key))
+    return new, report
+
+
+def _rendered_qa(
+    rep: dict[str, Any],
+    new: list[dict[str, Any]],
+    manifest: dict[str, Any],
+    report: dict[str, Any],
+) -> None:
+    """``rep``'s ``rendered_s`` and ``content_qa`` of a ``cutpoint mix`` selection from the
+    rendered clips' lengths (``manifest``)."""
+    window = _length_window(report)
+    est = _fit_budget(new, manifest, window)
+    before = sum(e["duration"] for e in manifest.get("clips", []))
+    rep["rendered_s"] = {
+        "before": round(before, 1),
+        "after": round(sum(est.values()), 1),
+        "limit": window[1],
     }
-    new = [dict(s) for s in old]
-    if new_excl:
-        _make_parent(out, made)
-        written = out.with_name(mix.EXCLUDE_FILE)
-        have = written if written.is_file() else project / mix.EXCLUDE_FILE
-        usable, ignored = mix.read_exclusions(have)
-        excl = _merge(usable, new_excl, key)
-        kept = excl + ignored  # the file keeps the entries mix leaves out (drive-relative)
-        if picked:
-            new = _cut(new, new_excl, key)
-            cache.save_json(written, kept)
-            rep["exclusions"] = len(excl)
-        else:
-            # Back up only once run_mix has written over the original: a failed selection
-            # ("Nothing selected") leaves no .bak.json and an earlier one untouched.
-            original = segments_file.read_bytes() if same else None
-            try:
-                report = mix.run_mix(
-                    project,
-                    target_s=report.get("target_s", 240.0),
-                    quotas=report.get("quotas"),
-                    out=out,
-                    sheet=sheet,
-                    exclude=excl,
-                    previous=keyed,
-                )
-            except BaseException:
-                try:  # failed after writing (the sheet): keep the old
-                    if original is not None and segments_file.read_bytes() != original:
-                        _backup(segments_file, original)
-                except OSError:
-                    logger.warning("%s: could not write the backup", segments_file)
-                raise
-            if original is not None:
-                _backup(segments_file, original)
-            cache.save_json(written, kept)
-            new = cache.load_json(out) or []
-            rep["exclusions"], rep["content_qa"] = len(excl), report["content_qa"]
-        _bound(new, _near(new, excl, key))
-    _bound(new, bounds)
-    if manifest is not None and not picked:
-        window = _length_window(report)
-        est = _fit_budget(new, manifest, window)
-        before = sum(e["duration"] for e in manifest.get("clips", []))
-        rep["rendered_s"] = {
-            "before": round(before, 1),
-            "after": round(sum(est.values()), 1),
-            "limit": window[1],
-        }
-        counts = report.get("candidates")  # an older report has none: every category
-        rep["content_qa"] = mix.content_qa(
-            order_moments(index_sources([dict(s) for s in new]), "arc"),
-            near_dups=report.get("near_dup_pairs", 0),
-            runs_covered=report.get("runs_covered", 0),
-            runs=report.get("runs", 0),
-            durations=est,
-            available=None if not counts else {k for k, n in counts.items() if n},
-            length_window_s=window,
-        )
-    _changes(rep, old, new)
-    if not new_excl and new == old:
-        return rep
-    if (picked or not new_excl) and same:
+    counts = report.get("candidates")  # an older report has none: every category
+    rep["content_qa"] = mix.content_qa(
+        order_moments(index_sources([dict(s) for s in new]), "arc"),
+        near_dups=report.get("near_dup_pairs", 0),
+        runs_covered=report.get("runs_covered", 0),
+        runs=report.get("runs", 0),
+        durations=est,
+        available=None if not counts else {k for k, n in counts.items() if n},
+        length_window_s=window,
+    )
+
+
+def _write_repaired(
+    segments_file: Path,
+    out: Path,
+    same: bool,
+    segs: _Segments,
+    new: list[dict[str, Any]],
+    excluded: bool,
+    made: list[Path],
+) -> None:
+    """Write ``new`` to ``out``; over ``segments_file``, its old content is first backed up
+    (by :func:`_exclude` for a ``cutpoint mix`` selection made anew). The picks get back
+    their own ids and source spellings."""
+    if (segs.picked or not excluded) and same:
         _backup(segments_file, segments_file.read_bytes())
-    if picked:  # the ids given here were only for matching; the sources as given
+    if segs.picked:  # the ids given here were only for matching; the sources as given
         # a relative spelling is relative to the file's folder: kept only in that folder
         here = out.resolve().parent == segments_file.resolve().parent
         new = [
             {
-                k: spelt[s["id"]]
-                if k == "source" and (here or is_absolute_any(spelt[s["id"]]))
+                k: segs.spelt[s["id"]]
+                if k == "source" and (here or is_absolute_any(segs.spelt[s["id"]]))
                 else v
                 for k, v in s.items()
-                if k != "id" or v in given
+                if k != "id" or v in segs.given
             }
             for s in new
         ]
     _make_parent(out, made)
     cache.save_json(out, new)
-    rep["written"] = True
-    return rep
 
 
 def _make_parent(out: Path, made: list[Path]) -> None:
