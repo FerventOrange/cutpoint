@@ -151,23 +151,33 @@ class ActionCamContext:
     windows: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     runs: dict[str, Any] = field(default_factory=dict)
     crashes: dict[str, list[dict[str, Any]]] = field(default_factory=dict)  # crashes.json
+    unreadable: list[str] = field(default_factory=list)  # sources whose telemetry read failed
 
 
 def _key(path: str | Path) -> str:
     return path_key(str(Path(path)))
 
 
-def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> ActionCamContext:
+def prepare(
+    sources: list[Path],
+    durations: dict[str, float],
+    project: Path,
+    *,
+    raise_if_all_failed: bool = True,
+) -> ActionCamContext:
     """Extract telemetry for every source, load events.json, write telemetry.json.
 
     A source whose telemetry fails to read is scored without it (a WARNING and a
-    ``step_failed`` warning name it); when every source fails, the last error is raised. An
-    out-of-memory error stops the run (:class:`~cutpoint.errors.LowMemoryError`).
+    ``step_failed`` warning name it, and :attr:`ActionCamContext.unreadable` lists it); when
+    every source fails, the last error is raised unless ``raise_if_all_failed`` is False (the
+    caller then decides). An out-of-memory error stops the run
+    (:class:`~cutpoint.errors.LowMemoryError`).
 
     Args:
         sources: Source videos (original paths, as recorded in highlights.json).
         durations: ``{str(source): container duration}``.
         project: Project folder.
+        raise_if_all_failed: Raise the last error when every source's telemetry failed to read.
     """
     from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
 
@@ -184,7 +194,13 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
         except Exception as err:  # noqa: BLE001 - one unreadable source, logged
             guard.skip(err, src.name, src)
             tels[str(src)] = None
-    guard.raise_if_all_failed(len(sources))  # not one bad file: the step failed
+    if raise_if_all_failed:
+        guard.raise_if_all_failed(len(sources))  # not one bad file: the step failed
+    elif guard.failed and all(t is None for t in tels.values()):
+        # no telemetry anywhere (unreadable or none): the caller falls back, no telemetry.json
+        return ActionCamContext(
+            project=project, telemetry=tels, speed_ref=np.zeros(0), unreadable=list(guard.failed)
+        )
     good = [t for t in tels.values() if t is not None]
     speeds = []
     for t in good:
@@ -194,6 +210,7 @@ def prepare(sources: list[Path], durations: dict[str, float], project: Path) -> 
     speed_ref = np.sort(np.concatenate(speeds)) if speeds else np.zeros(0)
     runs = join_runs(good) if good else {}
     ctx = ActionCamContext(project=project, telemetry=tels, speed_ref=speed_ref, runs=runs)
+    ctx.unreadable = list(guard.failed)
     ev = cache.load_json(project / "events.json")
     if ev:
         for e in ev.get("events", []):

@@ -20,7 +20,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -796,21 +796,37 @@ def _direct(
     """The body of :func:`cmd_director`, writing into the existing ``out_dir``; returns the
     stems of the paths written, in order, and whether this run saved ``vl_check.json``.
     ``checker`` (:func:`_vl_checker`) is unloaded by the caller."""
+    from cutpoint.pano.candidates import prompts_key  # noqa: PLC0415
+
+    reuse = {} if checker is not None or a.force else _reusable(out_dir)
+    prompts = prompts_key()
+    segs = _director_segments(a, project, clips, overrides, prompts)
+    stems = {stem for stem, *_ in segs}
+    # old stems whose path is reused under a new stem (known up front: an earlier segment may
+    # take over such a name; its backup is redundant once the run saved the path anew)
+    carried = {reuse[k][0] for stem, _, _, k in segs if k in reuse and reuse[k][0] != stem}
+    run = _DirectorRun(a, out_dir, overrides, checker, prompts, reuse, carried)
+    for stem, m, clip, key in segs:
+        run.segment(stem, m, clip, key)
+    run.finish(stems)
+    return [stem for stem, *_ in segs], bool(run.vl_report)
+
+
+def _director_segments(
+    a: argparse.Namespace,
+    project: Path,
+    clips: dict[str, Any],
+    overrides: dict[str, Any] | None,
+    prompts: Any,
+) -> list[tuple[str, dict[str, Any], Any, Any]]:
+    """``(stem, moment, clip, plan key)`` of each selected moment on a 360 clip, in order;
+    the others are skipped with a ``not_a_360_clip`` warning."""
     from cutpoint.pano import director as D  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano import views as VW  # noqa: PLC0415
-    from cutpoint.pano.candidates import prompts_key  # noqa: PLC0415
-    from cutpoint.pano.project import (  # noqa: PLC0415
-        RenderSource,
-        clip_for,
-        resolve_source,
-    )
-    from cutpoint.pano.render import Format360, render_segment  # noqa: PLC0415
+    from cutpoint.pano.project import clip_for  # noqa: PLC0415
     from cutpoint.utils import slugify  # noqa: PLC0415
 
-    vl_report: list[dict[str, Any]] = []
-    reuse = {} if checker is not None or a.force else _reusable(out_dir)
-    prompts = prompts_key()
     segs = []
     for i, m in enumerate(_selected_segments(project, a), 1):
         clip = clip_for(clips, m["source"])
@@ -831,134 +847,189 @@ def _direct(
             clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd, prompts, inputs
         )
         segs.append((f"{i:03d}_{slugify(m.get('label', ''), 40)}", m, clip, key))
-    stems = {stem for stem, *_ in segs}
-    # old stems whose path is reused under a new stem (known up front: an earlier segment may
-    # take over such a name; its backup is redundant once the run saved the path anew)
-    carried = {reuse[k][0] for stem, _, _, k in segs if k in reuse and reuse[k][0] != stem}
-    redundant: list[Path] = []  # backups of carried paths, dropped after the loop
-    views_ok: dict[str, bool] = {}  # upright clip source -> its view layer is current
-    for stem, m, clip, key in segs:
-        preview = out_dir / f"{stem}.mp4"
-        old_stem, path = reuse.get(key, (None, None))
+    return segs
+
+
+@dataclass
+class _DirectorRun:
+    """What the segments of one :func:`_direct` run share: the reusable paths (``reuse``,
+    :func:`_reusable`), the old stems ``carried`` to a new stem, the backups of carried paths
+    to drop at the end (``redundant``), the upright clips' view check (``views_ok``,
+    :func:`_upright_views`) and the vision check's answers (``vl_report``). ``checker`` turns
+    None once the vision model stops answering."""
+
+    a: argparse.Namespace
+    out_dir: Path
+    overrides: dict[str, Any] | None
+    checker: Any
+    prompts: Any
+    reuse: dict[Any, tuple[str, dict[str, Any]]]
+    carried: set[str]
+    redundant: list[Path] = field(default_factory=list)
+    views_ok: dict[str, bool] = field(default_factory=dict)
+    vl_report: list[dict[str, Any]] = field(default_factory=list)
+
+    def segment(self, stem: str, m: dict[str, Any], clip: Any, key: Any) -> None:
+        """Reuse, or plan (and check, save, preview) the path of one segment."""
+        a = self.a
+        preview = self.out_dir / f"{stem}.mp4"
+        old_stem, path = self.reuse.get(key, (None, None))
         fresh = (
             old_stem == stem
             and preview.is_file()
-            and preview.stat().st_mtime >= (out_dir / f"{stem}.json").stat().st_mtime
+            and preview.stat().st_mtime >= (self.out_dir / f"{stem}.json").stat().st_mtime
         )
         if path is not None and (not a.preview or fresh):
             if old_stem != stem:
-                bak = _save_path(out_dir, stem, path, rendering=False, carried=carried)
-                if bak is not None and stem in carried:
-                    redundant.append(bak)
+                self.save(stem, path, rendering=False)
             logger.info("%s  unchanged; reused %s", stem, old_stem)
-            continue
+            return
         if path is None:  # a reused path under another name only needs its preview
-            path = D.compute_path(
-                clip,
-                m["start"],
-                m["end"],
-                vertical=a.vertical,
-                kind=m.get("kind"),
-                overrides=overrides,
-                suspects=checker is not None,
-            )
-            if prompts:  # read back by _reusable
-                path["prompts"] = prompts
-            # read back by _reusable: the layers as planning left them (it may cache the
-            # orientation track first)
-            if (inputs := _layer_inputs(clip.source)) is not None:
-                path["inputs"] = inputs
-            if "forward_axis" in path and _upright_views(clip, views_ok):
-                path["wearer_model"] = G.UPRIGHT_WEARER  # planned with that model's views
-
-        def render(
-            path: Any = path, clip: Any = clip, m: dict[str, Any] = m, preview: Path = preview
-        ) -> None:
-            """Fast low-res render from the .lrv proxy (the .insv files when there is none)."""
-            src = (
-                RenderSource("proxy", (clip.lrv,), "dfisheye", False, True, "lrv proxy")
-                if clip.lrv
-                else resolve_source(clip, "dfisheye")
-            )
-            fmt = Format360(360, 640) if a.vertical else Format360(640, 360)
-            try:
-                rec = render_segment(
-                    clip,
-                    path,
-                    m["start"],
-                    m["end"],
-                    preview,
-                    fmt=fmt,
-                    src=src,
-                    cmd_every=1,
-                    work_dir=out_dir,
-                )
-            except BaseException:  # a partial preview must never be reused
-                preview.unlink(missing_ok=True)
-                raise
-            logger.info("   preview %s (%.1fs)", preview, rec["seconds"])
-
-        checked = checker is not None  # its render is the preview
-        if checker is not None:  # a failed render / check loses the check only
-            from cutpoint.errors import FFmpegError  # noqa: PLC0415
-            from cutpoint.pano.vlcheck import check_preview  # noqa: PLC0415
-
-            try:
-                render()
-                _, vl = check_preview(checker, preview, path, every=a.vl_every)
-                path["vl"] = {"model": checker.model, **vl}
-                vl_report.append({"stem": stem, "clip": clip.clip_id, **path["vl"]})
-            except (FFmpegError, OSError) as err:
-                logger.warning("   vl check of %s failed: %s", stem, err)
-            finally:
-                if not a.preview:
-                    preview.unlink(missing_ok=True)
-            if checker.dead:
-                logger.warning("--vl-check: the vision model stopped answering; skipping the rest")
-                jsonout.warn(
-                    "vl_check_unavailable",
-                    f"--vl-check: the vision model stopped answering after {stem}; the rest "
-                    "is not checked",
-                )
-                checker = None
-        bak = _save_path(out_dir, stem, path, rendering=a.preview, carried=carried)
-        if bak is not None and stem in carried:
-            redundant.append(bak)
-        logger.info(
-            "%s  clip %s %.1f-%.1f: %s", stem, clip.clip_id, m["start"], m["end"], D.describe(path)
-        )
-        if path.get("quality"):
-            logger.info("   %s", D.describe_quality(path))
-        if path.get("vl"):
-            vl = path["vl"]
-            logger.info(
-                "   vl check: %d/%d frame(s) bad%s (%.1fs)",
-                vl["bad"],
-                vl["frames"],
-                "".join(
-                    f"; {f['t'] - m['start']:.1f}s "
-                    f"{f['where'] if f['blocked'] else 'low info'} {f['what']}"
-                    for f in vl["flags"]
-                ),
-                vl["seconds"],
-            )
+            path = self.plan(m, clip)
+        checked = self.checker is not None  # its render is the preview
+        if self.checker is not None:  # a failed render / check loses the check only
+            self.vl_check(stem, m, clip, path, preview)
+        self.save(stem, path, rendering=a.preview)
+        _log_director_path(stem, m, clip, path)
         if a.preview and not checked:  # after the path JSON: a failed render keeps it
-            render()
-    for bak in redundant:  # every carried path is saved under its new stem by now
-        bak.unlink(missing_ok=True)
-    if a.out_name:  # previews of earlier selections would mislead `360 qa`
-        _drop_stale(out_dir, stems, carried)
-    if vl_report:
-        cache.save_json(out_dir / "vl_check.json", {"segments": vl_report}, indent=1)
-        secs = [r["seconds"] for r in vl_report]
-        logger.info(
-            "vl check: %d segment(s), %d with bad frames, %.1fs per segment (max %.1fs)",
-            len(secs),
-            sum(1 for r in vl_report if r["bad"]),
-            sum(secs) / len(secs),
-            max(secs),
+            _render_preview(clip, path, m, preview, a.vertical, self.out_dir)
+
+    def plan(self, m: dict[str, Any], clip: Any) -> dict[str, Any]:
+        """A new director path of ``m``, with what :func:`_reusable` reads back."""
+        from cutpoint.pano import director as D  # noqa: PLC0415
+        from cutpoint.pano import geometry as G  # noqa: PLC0415
+
+        path = D.compute_path(
+            clip,
+            m["start"],
+            m["end"],
+            vertical=self.a.vertical,
+            kind=m.get("kind"),
+            overrides=self.overrides,
+            suspects=self.checker is not None,
         )
-    return [stem for stem, *_ in segs], bool(vl_report)
+        if self.prompts:  # read back by _reusable
+            path["prompts"] = self.prompts
+        # read back by _reusable: the layers as planning left them (it may cache the
+        # orientation track first)
+        if (inputs := _layer_inputs(clip.source)) is not None:
+            path["inputs"] = inputs
+        if "forward_axis" in path and _upright_views(clip, self.views_ok):
+            path["wearer_model"] = G.UPRIGHT_WEARER  # planned with that model's views
+        return path
+
+    def vl_check(
+        self, stem: str, m: dict[str, Any], clip: Any, path: dict[str, Any], preview: Path
+    ) -> None:
+        """Render the preview and ask the vision checker about it (``path["vl"]``); the
+        preview is kept only with ``--preview``."""
+        from cutpoint.errors import FFmpegError  # noqa: PLC0415
+        from cutpoint.pano.vlcheck import check_preview  # noqa: PLC0415
+
+        a, checker = self.a, self.checker
+        try:
+            _render_preview(clip, path, m, preview, a.vertical, self.out_dir)
+            _, vl = check_preview(checker, preview, path, every=a.vl_every)
+            path["vl"] = {"model": checker.model, **vl}
+            self.vl_report.append({"stem": stem, "clip": clip.clip_id, **path["vl"]})
+        except (FFmpegError, OSError) as err:
+            logger.warning("   vl check of %s failed: %s", stem, err)
+        finally:
+            if not a.preview:
+                preview.unlink(missing_ok=True)
+        if checker.dead:
+            logger.warning("--vl-check: the vision model stopped answering; skipping the rest")
+            jsonout.warn(
+                "vl_check_unavailable",
+                f"--vl-check: the vision model stopped answering after {stem}; the rest "
+                "is not checked",
+            )
+            self.checker = None
+
+    def save(self, stem: str, path: dict[str, Any], rendering: bool) -> None:
+        """:func:`_save_path`; the backup of a carried path is dropped by :meth:`finish`."""
+        bak = _save_path(self.out_dir, stem, path, rendering=rendering, carried=self.carried)
+        if bak is not None and stem in self.carried:
+            self.redundant.append(bak)
+
+    def finish(self, stems: set[str]) -> None:
+        """Drop the redundant backups and (``--out-name``) the stale stems; save and log the
+        vision check."""
+        for bak in self.redundant:  # every carried path is saved under its new stem by now
+            bak.unlink(missing_ok=True)
+        if self.a.out_name:  # previews of earlier selections would mislead `360 qa`
+            _drop_stale(self.out_dir, stems, self.carried)
+        if self.vl_report:
+            cache.save_json(self.out_dir / "vl_check.json", {"segments": self.vl_report}, indent=1)
+            secs = [r["seconds"] for r in self.vl_report]
+            logger.info(
+                "vl check: %d segment(s), %d with bad frames, %.1fs per segment (max %.1fs)",
+                len(secs),
+                sum(1 for r in self.vl_report if r["bad"]),
+                sum(secs) / len(secs),
+                max(secs),
+            )
+
+
+def _render_preview(
+    clip: Any,
+    path: dict[str, Any],
+    m: dict[str, Any],
+    preview: Path,
+    vertical: bool,
+    out_dir: Path,
+) -> None:
+    """Fast low-res render of ``path`` into ``preview`` from the .lrv proxy (the .insv files
+    when there is none); a partial preview is removed."""
+    from cutpoint.pano.project import RenderSource, resolve_source  # noqa: PLC0415
+    from cutpoint.pano.render import Format360, render_segment  # noqa: PLC0415
+
+    src = (
+        RenderSource("proxy", (clip.lrv,), "dfisheye", False, True, "lrv proxy")
+        if clip.lrv
+        else resolve_source(clip, "dfisheye")
+    )
+    fmt = Format360(360, 640) if vertical else Format360(640, 360)
+    try:
+        rec = render_segment(
+            clip,
+            path,
+            m["start"],
+            m["end"],
+            preview,
+            fmt=fmt,
+            src=src,
+            cmd_every=1,
+            work_dir=out_dir,
+        )
+    except BaseException:  # a partial preview must never be reused
+        preview.unlink(missing_ok=True)
+        raise
+    logger.info("   preview %s (%.1fs)", preview, rec["seconds"])
+
+
+def _log_director_path(stem: str, m: dict[str, Any], clip: Any, path: dict[str, Any]) -> None:
+    """The INFO lines of a saved path: its shots, its quality and its vision check."""
+    from cutpoint.pano import director as D  # noqa: PLC0415
+
+    logger.info(
+        "%s  clip %s %.1f-%.1f: %s", stem, clip.clip_id, m["start"], m["end"], D.describe(path)
+    )
+    if path.get("quality"):
+        logger.info("   %s", D.describe_quality(path))
+    if path.get("vl"):
+        vl = path["vl"]
+        logger.info(
+            "   vl check: %d/%d frame(s) bad%s (%.1fs)",
+            vl["bad"],
+            vl["frames"],
+            "".join(
+                f"; {f['t'] - m['start']:.1f}s "
+                f"{f['where'] if f['blocked'] else 'low info'} {f['what']}"
+                for f in vl["flags"]
+            ),
+            vl["seconds"],
+        )
 
 
 def cmd_stitch(a: argparse.Namespace) -> None:

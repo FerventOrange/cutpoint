@@ -308,8 +308,8 @@ def test_default_ask_stays_local_with_hosted_vision_role(home, monkeypatch):
     )
     monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
     ask, _ = activity.default_ask()
-    rater = getattr(getattr(ask, "func", ask), "__self__", None)
-    assert rater is not None and rater.via is None and rater.provider_name == "ollama"
+    rater = ask.rater
+    assert rater.via is None and rater.provider_name == "ollama"
 
 
 def test_profile_ask_sends_the_short_read_timeout_to_ollama(home, monkeypatch):
@@ -665,31 +665,37 @@ def test_only_unusable_replies_are_remembered(same_footage, monkeypatch):
     assert not _cached_discoveries()
     activity.resolve(same_footage("b"), ask=down)
     assert _synths(down) == 4  # asked again
-    monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)  # every attempt "took" the timeout
-    rec = activity.resolve(same_footage("c"), ask=down)
-    # still the fallback and the one attempt, but nothing is remembered
-    assert _synths(down) == 5 and rec["discovery"]["timed_out"] == [True]
+    assert rec["discovery"]["timed_out"] == [False, False]  # a plain function says nothing
+    timeout = _Rater("timeout")  # the request ran out of its timeout
+    rec = activity.resolve(same_footage("c"), ask=timeout)
+    # still the fallback, but nothing is remembered
+    assert timeout.calls == 2 and rec["discovery"]["timed_out"] == [True, True]
     assert rec["source"] == "fallback" and "failed" not in rec["discovery"]
     assert not _cached_discoveries()
-    activity.resolve(same_footage("d"), ask=down)
-    assert _synths(down) == 6  # asked again
+    activity.resolve(same_footage("d"), ask=timeout)
+    assert timeout.calls == 4  # asked again
     broken = _stub({})  # an unusable reply, also a slow one: remembered
     rec = activity.resolve(same_footage("e"), ask=broken)
     assert rec["source"] == "fallback" and len(_cached_discoveries()) == 1
     activity.resolve(same_footage("f"), ask=broken)
-    assert _synths(broken) == 1  # remembered
+    assert _synths(broken) == 2  # the two attempts of the first run; remembered
 
 
 class _Rater:
-    """A stand-in for a :class:`VisionRater`: ``ask`` returns None and says why."""
+    """A stand-in for an :class:`activity.OllamaAsk`: returns None and says why
+    (``"reply"``, ``"request"`` or ``"timeout"``)."""
 
-    def __init__(self, failure: str) -> None:
-        self.failure, self.last_failure, self.calls = failure, None, 0
+    def __init__(self, why: str) -> None:
+        self.why, self.calls = why, 0
 
     def ask(self, prompt, images, schema):
         self.calls += 1
-        self.last_failure = self.failure
         return None
+
+    __call__ = ask
+
+    def failure(self) -> str:
+        return self.why
 
 
 def test_a_none_reply_the_rater_calls_unusable_is_cached_a_request_failure_is_not(
@@ -697,20 +703,45 @@ def test_a_none_reply_the_rater_calls_unusable_is_cached_a_request_failure_is_no
 ):
     """#1085: ask_json is None for a bad reply too; ``last_failure`` tells them apart."""
     bad = _Rater("reply")
-    rec = activity.resolve(same_footage("a"), ask=bad.ask)
+    rec = activity.resolve(same_footage("a"), ask=bad)
     assert rec["discovery"]["answered"] == [True, True] and bad.calls == 2
     (entry,) = _cached_discoveries()
     assert json.loads(entry.read_text(encoding="utf-8"))["failed"] == "no usable profile"
-    activity.resolve(same_footage("b"), ask=bad.ask)
+    activity.resolve(same_footage("b"), ask=bad)
     assert bad.calls == 2  # remembered
     entry.unlink()
     down = _Rater("request")
-    rec = activity.resolve(same_footage("c"), ask=down.ask)
+    rec = activity.resolve(same_footage("c"), ask=down)
     assert rec["discovery"]["answered"] == [False, False] and not _cached_discoveries()
     monkeypatch.setattr(activity, "PROFILE_TIMEOUT_S", 0)  # every attempt "took" the timeout
     stats: dict = {}
-    assert activity.synthesize("kayaking", None, _Rater("reply").ask, [], stats) is None
+    assert activity.synthesize("kayaking", None, _Rater("reply"), [], stats) is None
     assert stats["answered"] == [True] and stats["timed_out"] == [False]  # slow, but answered
+    stats = {}  # a slow request that did not run out of its timeout is no timeout (#1085)
+    assert activity.synthesize("kayaking", None, _Rater("request"), [], stats) is None
+    assert stats["timed_out"] == [False] and stats["answered"] == [False]
+
+
+def test_ollama_ask_reports_why_a_call_failed(home, monkeypatch):
+    """#1085: a real timeout, a request error and an unusable reply are told apart by the
+    rater (``timed_out``, ``last_failure``), not guessed from the clock."""
+    monkeypatch.setattr(vision.VisionRater, "available", lambda self: True)
+    ask, model = activity.default_ask()
+    assert isinstance(ask, activity.OllamaAsk) and model == ask.model
+    rater = ask.rater
+    rater.last_failure, rater.timed_out = None, False
+    assert ask.failure() is None
+    rater.last_failure, rater.timed_out = "request", True
+    assert ask.failure() == "timeout"
+    rater.last_failure, rater.timed_out = "request", False
+    assert ask.failure() == "request"
+    rater.last_failure, rater.timed_out = "reply", True
+    assert ask.failure() == "reply"
+    assert activity.ask_failure(lambda p, i, s: None) is None  # a plain function says nothing
+    unloads: list[int] = []
+    monkeypatch.setattr(vision.VisionRater, "unload", lambda self: unloads.append(1))
+    ask.unload()
+    assert unloads == [1]
 
 
 def test_the_last_attempt_decides_whether_a_failure_is_remembered(same_footage):

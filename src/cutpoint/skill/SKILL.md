@@ -30,7 +30,7 @@ give none and it picks from the footage. `cutpoint detect <video> --json` shows 
 `style_ambiguous` warning means it could not tell and used `gaming` (best guess gameplay) or `action`; the warning names the style, and `detect` shows `decided_by`. Unsure footage, and camera footage without telemetry, is shown to the vision model first (`--no-vision` skips it); `--vision-detect-all` shows it every source (about one vision call each), only when the user asks for a closer footage check. Name a style only when the user says
 what the footage is. Pick `funny`, `gaming`, `action`, `sport`, `commentary` (long talk) or
 `action-cam` (action-cam footage with GoPro or Insta360 X3 telemetry). Without any telemetry
-`action-cam` runs as `action` with an `action_cam_no_telemetry` warning: tell the user.
+`action-cam` runs as `action` (also when no telemetry could be read from any source) with an `action_cam_no_telemetry` warning: tell the user.
 
 When the user says what the footage is ("downhill mtb, chest mount, muddy lens"), pass their own
 words before the analysis: `cutpoint analyze <video> --context "<words>"` (also on `edit`). They
