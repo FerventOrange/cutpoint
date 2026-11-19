@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, runstate
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.ui.common import ANALYSIS_FILE, UI_DIR, bad
 
 
@@ -47,7 +48,7 @@ def _load(p: Path, name: str) -> Any | None:
 
 def _highlights(p: Path) -> dict[str, Any] | None:
     """The project's ``highlights.json``; None when missing, outside or not an object."""
-    hl = _load(p, "highlights.json")
+    hl = _load(p, HIGHLIGHTS)
     return hl if isinstance(hl, dict) else None
 
 
@@ -91,7 +92,7 @@ def _is_project(d: Path) -> bool:
     """``d`` holds UI metadata or an analysis of its own (not one a link points to), or the
     ``progress.json`` of a first analysis that stopped before writing one (#109; one of a run
     that finished has nothing to show or resume)."""
-    if any((d / n).is_file() and _inside(d, n) for n in (f"{UI_DIR}/meta.json", "highlights.json")):
+    if any((d / n).is_file() and _inside(d, n) for n in (f"{UI_DIR}/meta.json", HIGHLIGHTS)):
         return True
     rec = runstate.read(d) if _inside(d, runstate.FILE) else None
     return rec is not None and rec.get("status") != "done"

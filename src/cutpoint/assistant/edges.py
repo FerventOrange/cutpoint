@@ -29,11 +29,11 @@ from cutpoint.boundaries import SpeechSettings
 from cutpoint.clips import EXACT_KEYS, plan_edges
 from cutpoint.config import remap_source
 from cutpoint.events import eventtypes
-from cutpoint.events.scoring import analysis_style
 from cutpoint.events.tails import EventTailSettings, group_events
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.planning import Padding
-from cutpoint.styles import STYLES, style_name
+from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.styles import STYLES, analysis_style, style_name
 from cutpoint.tail import TailSettings
 from cutpoint.utils import file_stamp
 
@@ -105,7 +105,7 @@ class EdgePlanner:
     def _stamp(self) -> tuple[int, ...]:
         """What the plan depends on besides the rows: the analysis files' modification times."""
         out = []
-        for name in ("highlights.json", "events.json"):
+        for name in (HIGHLIGHTS, "events.json"):
             try:
                 out.append((self.project / name).stat().st_mtime_ns)
             except OSError:
@@ -235,7 +235,7 @@ class EdgePlanner:
         """``(edges, reasons, whole, dropped)``: the planned rows (those of the sources that
         can be read), why each moved, whether every source could be read and the ids the
         export leaves out (inside a longer clip)."""
-        hl = self._load("highlights.json")
+        hl = self._load(HIGHLIGHTS)
         hl = hl if isinstance(hl, dict) else {}
         try:  # a deleted user style degrades to its recorded base; none recorded: auto's
             style = analysis_style(hl)

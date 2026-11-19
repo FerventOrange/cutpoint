@@ -10,7 +10,7 @@ from typing import Any, ClassVar
 import pytest
 
 from conftest import media_info, write
-from cutpoint import activity, cache, config, extend, folders, planning, rerank
+from cutpoint import activity, cache, config, extend, folders, planning, projectfiles, rerank
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 from cutpoint.styles import get_style
@@ -138,7 +138,7 @@ def test_a_rerank_save_flushes_its_backup(home, tmp_path, fsyncs) -> None:
     project = make_project(home, tmp_path)
     fsyncs.clear()
     assert rerank.rerank(project, get_style("funny")).saved
-    assert flushed_before_replace(fsyncs, rerank.BACKUP)
+    assert flushed_before_replace(fsyncs, projectfiles.RERANK_BACKUP)
 
 
 def test_a_rerank_that_analyzes_again_flushes_its_backup(home, tmp_path, fsyncs, monkeypatch):
@@ -147,7 +147,7 @@ def test_a_rerank_that_analyzes_again_flushes_its_backup(home, tmp_path, fsyncs,
     flushed: list[bool] = []
 
     def fake_reanalyze(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
-        flushed.append(flushed_before_replace(fsyncs, rerank.BACKUP))
+        flushed.append(flushed_before_replace(fsyncs, projectfiles.RERANK_BACKUP))
         return p / "highlights.json"
 
     from cutpoint import analyze  # noqa: PLC0415
@@ -164,7 +164,7 @@ def test_a_failed_rerank_analyze_flushes_the_backup_it_puts_back(
     """A failed ``rerank --analyze`` puts the earlier backup (the Undo) back: flushed too."""
     project = make_project(home, tmp_path)
     assert rerank.rerank(project, get_style("funny")).saved  # an earlier backup to keep
-    earlier = (project / rerank.BACKUP).read_bytes()
+    earlier = (project / projectfiles.RERANK_BACKUP).read_bytes()
 
     def failing(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
         fsyncs.clear()  # only the writes that put the backup back from here on
@@ -175,8 +175,8 @@ def test_a_failed_rerank_analyze_flushes_the_backup_it_puts_back(
     monkeypatch.setattr(analyze, "reanalyze", failing)
     with pytest.raises(RuntimeError, match="analysis failed"):
         rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
-    assert (project / rerank.BACKUP).read_bytes() == earlier
-    assert flushed_before_replace(fsyncs, rerank.BACKUP)
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == earlier
+    assert flushed_before_replace(fsyncs, projectfiles.RERANK_BACKUP)
 
 
 def test_the_pre_events_copy_is_written_durably(tmp_path, durable_saves) -> None:

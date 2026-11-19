@@ -25,6 +25,7 @@ from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import get_config, projects_dir, remap_source
 from cutpoint.events import scoring
 from cutpoint.pano import x3
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.segments import MAX_SEGMENTS, check_segments, span_id
 from cutpoint.ui.common import (
     BUSY_TEXT,
@@ -259,7 +260,7 @@ class Sources:
                     self.kept[key] = self.kept.pop(key)  # recently used: evicted last
             return hit[4], None
         # Each file is stamped before it is read: a change made meanwhile shows on the next request.
-        files = [p / f"{UI_DIR}/meta.json", p / "highlights.json"]
+        files = [p / f"{UI_DIR}/meta.json", p / HIGHLIGHTS]
         at, stamps = time.monotonic(), [file_stamp(f) for f in files]
         meta = read_meta(p)
         picked = picked_inputs(meta)

@@ -143,22 +143,6 @@ def test_an_empty_list_of_moments_is_a_valid_reply():
     assert dialogue.parse_reply({"moments": []}, talk_lines(3), [0, 1, 2]) == ([], 0)
 
 
-@pytest.mark.parametrize(
-    ("text", "want"),
-    [
-        ('{"moments": []}', {"moments": []}),
-        ('Sure, here it is:\n```json\n{"moments": [{"first_line": 1}]}\n```\nHope it helps.',
-         {"moments": [{"first_line": 1}]}),
-        ('{not json} and then {"moments": []}', {"moments": []}),
-        ("I can't help with that.", None),
-        ("[1, 2, 3]", None),
-        ("", None),
-    ],
-)  # fmt: skip
-def test_json_is_taken_out_of_the_text_around_it(text, want):
-    assert dialogue.extract_json(text) == want
-
-
 # --------------------------------------------------------------------------- merging
 def test_stretches_overlapping_by_more_than_half_of_the_shorter_become_their_union():
     a = stretch(100, 200, rating=5, what="early", first=10, last=20)

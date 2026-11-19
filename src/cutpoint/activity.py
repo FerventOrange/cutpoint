@@ -98,13 +98,14 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, jsonout, paths, state
+from cutpoint import cache, jsonout, paths, projectfiles, state
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.utils import context_block, data_block, footage_context, slugify
 from cutpoint.vision import VisionRater
 
@@ -1217,7 +1218,7 @@ def default_context(
     if isinstance(old, dict) and old.get("version") == PROFILE_VERSION:
         return None
     if hl is None:
-        hl = cache.load_json(project / "highlights.json")
+        hl = projectfiles.load_highlights(project)
     settings = hl.get("settings") if isinstance(hl, dict) else None
     return footage_context(settings.get("context")) if isinstance(settings, dict) else None
 
@@ -1232,8 +1233,8 @@ def record_context(project: Path, context: str | None) -> bool:
     words = footage_context(context)
     if words is None:
         return False
-    path = project / "highlights.json"
-    hl = cache.load_json(path)
+    path = project / HIGHLIGHTS
+    hl = projectfiles.load_highlights(project)
     if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
         return False
     settings = hl.setdefault("settings", {})

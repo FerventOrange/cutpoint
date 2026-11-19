@@ -21,7 +21,18 @@ from fractions import Fraction
 from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, folders, jsonout, procs, runstate, sources, srt, tsrepair
+from cutpoint import (
+    boundaries,
+    cache,
+    folders,
+    jsonout,
+    procs,
+    projectfiles,
+    runstate,
+    sources,
+    srt,
+    tsrepair,
+)
 from cutpoint.audio_tracks import export_tracks
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import SKIP_360, SKIP_LOG, SKIP_NOT_UNDERWATER, AutoGrade, auto_grade
@@ -48,7 +59,6 @@ from cutpoint.encode import (
     warn_if_log,
 )
 from cutpoint.errors import FFmpegError
-from cutpoint.events.scoring import analysis_style
 from cutpoint.events.tails import EventTailSettings, event_tail, load_events
 from cutpoint.ffmpeg_utils import (
     STOP_GRACE_S,
@@ -72,7 +82,7 @@ from cutpoint.planning import (
     warn_kept,
     warn_pano_sources,
 )
-from cutpoint.styles import Style, recorded_name
+from cutpoint.styles import Style, analysis_style, recorded_name
 from cutpoint.tail import TailResult, TailSettings, smart_tail
 from cutpoint.utils import seconds_keys, slugify
 
@@ -1561,7 +1571,7 @@ def export_clips(
         jsonout.ArgumentError: For ``color`` with ``lut``, or ``color_strength`` outside 0-1.
     """
     _check_options(color_strength, crop)
-    highlights = cache.load_json(project / "highlights.json")
+    highlights = projectfiles.load_highlights(project)
     hl = highlights if isinstance(highlights, dict) else {}
     language = (hl.get("settings") or {}).get("language")
     known_style = recorded_name(hl) is not None

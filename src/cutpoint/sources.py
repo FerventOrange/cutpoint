@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, projectfiles
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import MediaInfo, pcm_float, read_pcm_window, wav_duration
 from cutpoint.transcribe import (
@@ -146,7 +146,7 @@ def settings_language(hl: Any) -> str | None:
 def project_language(project: Path) -> str | None:
     """Transcription language the analysis of ``project`` forced (highlights.json
     ``settings.language``), or None: detected by Whisper, or no analysis."""
-    return settings_language(cache.load_json(project / "highlights.json"))
+    return settings_language(projectfiles.load_highlights(project))
 
 
 def _transcript_file(

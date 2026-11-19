@@ -12,11 +12,11 @@ re-rank is refused (:class:`~cutpoint.errors.NeedsAnalyzeError`, ``needs_analyze
 
 The preview (``--dry-run``) is the re-rank itself, written nowhere: the save writes the same
 ranking. Saving replaces ``highlights.json`` and keeps the one before as
-:data:`BACKUP` (one Undo). Candidates whose span is unchanged keep their ids, a span only the
-backup has gets its id there (#1005: a switch of style and back restores the ids), and new
-spans get ids above ``settings.last_candidate_id``. A saved ranking is sealed
-(``settings.rerank_undo``, :func:`seal`): ``cutpoint ui`` offers its Undo while highlights.json
-is still the file the save wrote.
+:data:`~cutpoint.projectfiles.RERANK_BACKUP` (one Undo). Candidates whose span is unchanged keep
+their ids, a span only the backup has gets its id there (#1005: a switch of style and back
+restores the ids), and new spans get ids above ``settings.last_candidate_id``. A saved ranking
+is sealed (``settings.rerank_undo``, :func:`seal`): ``cutpoint ui`` offers its Undo while
+highlights.json is still the file the save wrote.
 """
 
 from __future__ import annotations
@@ -38,13 +38,12 @@ from cutpoint import analyze, cache, features, folders, progress, runstate, self
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
+from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP
 from cutpoint.styles import ACTION_CAM, Style, style_hash
 from cutpoint.utils import command_line
 
 logger = logging.getLogger("cutpoint")
 
-HIGHLIGHTS = "highlights.json"
-BACKUP = "highlights.before-rerank.json"  # the highlights.json a save replaced (one Undo)
 GENERIC = "generic"  # the style kind of every style but action-cam
 # settings key of a ranking a save (or cutpoint ui's Undo) wrote: {"seal": seal(hl), "undone": bool}
 UNDO = "rerank_undo"
@@ -97,10 +96,10 @@ class Result:
 
 
 def _backup(project: Path) -> bytes | None:
-    """The bytes of the project's :data:`BACKUP` (the ranking before the last re-rank), or
-    None without one: :func:`cutpoint.analyze.earlier_ids` uses it only when highlights.json
-    is linked to it (``settings.rerank_backup``)."""
-    return cache.load_bytes(project / BACKUP)
+    """The bytes of the project's :data:`RERANK_BACKUP` (the ranking before the last
+    re-rank), or None without one: :func:`cutpoint.analyze.earlier_ids` uses it only when
+    highlights.json is linked to it (``settings.rerank_backup``)."""
+    return cache.load_bytes(project / RERANK_BACKUP)
 
 
 def load(project: Path) -> tuple[bytes, dict[str, Any]]:
@@ -122,8 +121,8 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
 
 
 def backup_bytes(raw: bytes) -> bytes:
-    """What :data:`BACKUP` keeps of the highlights.json bytes ``raw``: ``raw`` itself (so
-    ``settings.rerank_backup`` names it byte for byte), or, when an older file kept an Ollama
+    """What :data:`RERANK_BACKUP` keeps of the highlights.json bytes ``raw``: ``raw`` itself
+    (so ``settings.rerank_backup`` names it byte for byte), or, when an older file kept an Ollama
     login in ``settings.ollama_url``, the file without it (A639)."""
     from cutpoint.backends import saved_settings, without_login  # noqa: PLC0415 (requests: off the CLI import)
 
@@ -178,16 +177,20 @@ def undo_target(project: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool
     - ``hl`` is sealed (``settings.rerank_undo``, :func:`seal`): no analysis, ``events`` run or
       hand edit rewrote highlights.json since a re-rank save or a swap wrote it (a
       re-analysis keeps ``settings.rerank_backup``, but not the seal);
-    - :data:`BACKUP` is in the project (not a link out of it) and its key is
+    - :data:`RERANK_BACKUP` is in the project (not a link out of it) and its key is
       ``settings.rerank_backup``: the very file that ranking replaced, unchanged;
     - the backup is an analysis of the same sources.
     """
     st = hl.get("settings")
     mark = st.get(UNDO) if isinstance(st, dict) else None
     link = st.get("rerank_backup") if isinstance(st, dict) else None
-    if not isinstance(mark, dict) or not isinstance(link, str) or not _inside(project, BACKUP):
+    if (
+        not isinstance(mark, dict)
+        or not isinstance(link, str)
+        or not _inside(project, RERANK_BACKUP)
+    ):
         return None
-    back_raw = cache.load_bytes(project / BACKUP)
+    back_raw = cache.load_bytes(project / RERANK_BACKUP)
     if back_raw is None or analyze.backup_digest(back_raw) != link or mark.get("seal") != seal(hl):
         return None
     try:
@@ -207,14 +210,14 @@ def undo_target(project: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool
 
 def _swap_files(project: Path, restored: bytes, kept: bytes, current: bytes) -> None:
     """Swap the project's rankings: highlights.json gets ``restored`` (made from the backup)
-    and :data:`BACKUP` ``kept`` (:func:`backup_bytes` of ``current``, highlights.json's bytes
-    now). Both are staged as temp files first, then renamed: highlights.json first, while the
+    and :data:`RERANK_BACKUP` ``kept`` (:func:`backup_bytes` of ``current``, highlights.json's
+    bytes now). Both are staged as temp files first, then renamed: highlights.json first, while the
     backup still holds the ranking it gets. A failed second rename puts ``current`` back into
     highlights.json; should that fail too, the temp file holding ``kept`` is kept (its path
     logged), as one a hard kill leaves.
     Durable as ``cache.save_bytes(..., durable=True)`` (A667): each temp file is flushed to
     disk before its rename and, on POSIX, the folder after the renames."""
-    hl_path, back_path = project / HIGHLIGHTS, project / BACKUP
+    hl_path, back_path = project / HIGHLIGHTS, project / RERANK_BACKUP
     staged: list[Path] = []
     keep = False
     try:
@@ -246,10 +249,10 @@ def _swap_files(project: Path, restored: bytes, kept: bytes, current: bytes) -> 
 
 def swap(project: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
     """Undo (or Redo) the last ranking change of ``project``, under its run lock: swap
-    highlights.json and :data:`BACKUP` (:func:`undo_target`). The ranking swapped in keeps its
-    moments and ids as they are; only its settings change: ``rerank_backup`` links it to the
-    file it replaced, ``last_candidate_id`` is the higher of the two (never down), and it is
-    sealed again (``undone`` flips, so the next swap is the other way). Returns the ranking
+    highlights.json and :data:`RERANK_BACKUP` (:func:`undo_target`). The ranking swapped in
+    keeps its moments and ids as they are; only its settings change: ``rerank_backup`` links it
+    to the file it replaced, ``last_candidate_id`` is the higher of the two (never down), and it
+    is sealed again (``undone`` flips, so the next swap is the other way). Returns the ranking
     before, the one now and whether this was an Undo; None when there is nothing to swap in
     (:func:`undo_target` is None).
 
@@ -557,8 +560,8 @@ def rerank(
     cuda: Callable[[], bool] | None = None,
 ) -> Result:
     """Re-rank ``project`` with ``style`` (:func:`ranked`) and, unless ``dry_run``, save it:
-    highlights.json replaced and the one before kept as :data:`BACKUP`, in one commit under the
-    project's run lock (``folder_busy`` while another run holds it).
+    highlights.json replaced and the one before kept as :data:`RERANK_BACKUP`, in one commit
+    under the project's run lock (``folder_busy`` while another run holds it).
 
     When :func:`readiness` refuses the fast path: with ``analyze_missing`` (not with
     ``dry_run``, not for a 360 project), :func:`cutpoint.analyze.reanalyze` with ``style``
@@ -604,19 +607,19 @@ def rerank(
             # replaces still gives ids back (#1005)
             earlier = _backup(project)
             kept = backup_bytes(raw)
-            cache.save_bytes(project / BACKUP, kept, durable=True)
+            cache.save_bytes(project / RERANK_BACKUP, kept, durable=True)
             try:
                 analyze.reanalyze(
                     project, style, backup=earlier, rerank_backup=analyze.backup_digest(kept)
                 )
             except BaseException:
                 # a failed or interrupted analysis keeps the earlier Undo, unless it already
-                # replaced highlights.json (its rerank_backup then points at the new BACKUP)
+                # replaced highlights.json (its rerank_backup then points at the new RERANK_BACKUP)
                 if cache.load_bytes(project / HIGHLIGHTS) == raw:
                     if earlier is None:
-                        (project / BACKUP).unlink(missing_ok=True)
+                        (project / RERANK_BACKUP).unlink(missing_ok=True)
                     else:
-                        cache.save_bytes(project / BACKUP, earlier, durable=True)
+                        cache.save_bytes(project / RERANK_BACKUP, earlier, durable=True)
                 raise
             _, after = load(project)
             return Result(
@@ -626,7 +629,7 @@ def rerank(
                 ready.notes,
                 saved=True,
                 analyzed=True,
-                backup=project / BACKUP,
+                backup=project / RERANK_BACKUP,
                 seconds=round(time.perf_counter() - t0, 2),
             )
         from cutpoint import backends  # noqa: PLC0415 (requests: off the CLI import)
@@ -635,16 +638,16 @@ def rerank(
         after = ranked(project, hl, style, kept)
         result = Result(project, hl, after, ready.notes)
         if not dry_run:
-            with cache.hold_outputs(project, (HIGHLIGHTS, BACKUP)) as held:
-                cache.save_bytes(project / BACKUP, kept, durable=True)
+            with cache.hold_outputs(project, (HIGHLIGHTS, RERANK_BACKUP)) as held:
+                cache.save_bytes(project / RERANK_BACKUP, kept, durable=True)
                 cache.save_json(project / HIGHLIGHTS, backends.saved_settings(after), durable=True)
                 held.commit()
-            result.saved, result.backup = True, project / BACKUP
+            result.saved, result.backup = True, project / RERANK_BACKUP
             logger.info(
                 "Re-ranked %s with the %s style; the earlier ranking is in %s",
                 project / HIGHLIGHTS,
                 style.name,
-                BACKUP,
+                RERANK_BACKUP,
             )
         result.seconds = round(time.perf_counter() - t0, 2)
         return result

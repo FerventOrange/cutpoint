@@ -15,6 +15,7 @@ from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import FolderBusyError
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
     ProjectStyle,
@@ -86,7 +87,7 @@ def list_projects():
         except OSError as err:  # one unreadable entry must not fail the whole list
             logger.debug("skipping %s: %s", d.name, err)
             continue
-        run = run_state(d, (d / "highlights.json").is_file())
+        run = run_state(d, (d / HIGHLIGHTS).is_file())
         found.append(
             {
                 "id": d.name,

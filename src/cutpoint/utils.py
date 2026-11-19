@@ -6,6 +6,7 @@ import argparse
 import errno
 import fnmatch
 import hashlib
+import json
 import logging
 import math
 import os
@@ -36,6 +37,40 @@ VIDEO_EXTS = {
 }
 # Insta360 360 files: not in VIDEO_EXTS, so find_videos never reads raw fisheye as flat video
 PANO_EXTS = frozenset({".insv", ".lrv"})
+
+
+def json_object(text: str, *, scan: bool = True) -> dict[str, Any] | None:
+    """A model reply's JSON object: the text itself, else the first complete ``{...}`` in it
+    that parses (a model that wraps the JSON in words or a code fence, or adds a second object
+    or a stray brace after it); None if there is none.
+
+    With ``scan`` False only the object at the first ``{`` counts: a broken (cut-off) one gives
+    None, never an object nested in it or a later one.
+    """
+    try:
+        whole = json.loads(text)
+    except ValueError:
+        whole = None
+    if isinstance(whole, dict):
+        return whole
+    decoder = json.JSONDecoder()
+    if not scan:
+        start = text.find("{")
+        if start < 0:
+            return None
+        try:
+            found, _ = decoder.raw_decode(text, start)
+        except ValueError:
+            return None
+        return found if isinstance(found, dict) else None
+    for m in re.finditer(r"\{", text):
+        try:
+            found, _ = decoder.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(found, dict):
+            return found
+    return None
 
 
 def slugify(text: str, max_len: int | None = 40, default: str = "moment") -> str:

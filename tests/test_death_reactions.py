@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from cutpoint import cache, sources
+from cutpoint import cache, sources, styles
 from cutpoint.events import eventtypes, scoring
 from cutpoint.events.regions import load_preset
 from cutpoint.transcribe import flat_markers, flat_words
@@ -156,46 +156,46 @@ def _learned(home: Path, name: str, base: str) -> None:
 def test_analysis_names_of_a_file_without_style_use_the_fallback(home):
     """The names the event scoring matches types with (rescore, vision windows): a file without
     `style` has its recorded base, else its detection's style, else action, never gaming (#1015)."""
-    assert scoring.analysis_names({"style": "funny"}) == ("funny",)
-    assert scoring.analysis_names({"style_base": "funny"}) == ("funny",)
-    assert scoring.analysis_names({"detection": {"style": "gaming"}}) == ("gaming",)
-    assert scoring.analysis_names({}) == ("action",)
+    assert styles.analysis_names({"style": "funny"}) == ("funny",)
+    assert styles.analysis_names({"style_base": "funny"}) == ("funny",)
+    assert styles.analysis_names({"detection": {"style": "gaming"}}) == ("gaming",)
+    assert styles.analysis_names({}) == ("action",)
 
 
 def test_style_and_base(home):
     _learned(home, "mine", "funny")
     _learned(home, "other", "gaming")
-    assert scoring.style_and_base("mine") == ("mine", "funny")
-    assert scoring.style_and_base("funny") == ("funny",)
-    assert scoring.style_and_base("other") == ("other", "gaming")
-    assert scoring.style_and_base("nope") == ("nope",)  # unknown falls back to the name
-    assert scoring.style_and_base(None) == ()
+    assert styles.style_and_base("mine") == ("mine", "funny")
+    assert styles.style_and_base("funny") == ("funny",)
+    assert styles.style_and_base("other") == ("other", "gaming")
+    assert styles.style_and_base("nope") == ("nope",)  # unknown falls back to the name
+    assert styles.style_and_base(None) == ()
 
 
 def test_style_and_base_uses_the_recorded_base_first(home):
     # a deleted user style (no file) keeps the recorded built-in base
-    assert scoring.style_and_base("gone", "sport") == ("gone", "sport")
-    assert scoring.style_and_base("sport", "sport") == ("sport",)
+    assert styles.style_and_base("gone", "sport") == ("gone", "sport")
+    assert styles.style_and_base("sport", "sport") == ("sport",)
     # the recorded base wins over the library's
     _learned(home, "mine", "funny")
-    assert scoring.style_and_base("mine", "gaming") == ("mine", "gaming")
+    assert styles.style_and_base("mine", "gaming") == ("mine", "gaming")
 
 
 def test_style_and_base_ignores_an_unusable_recorded_base(home):
     _learned(home, "mine", "funny")
     for junk in (None, "", "nope", 7, ["sport"]):
-        assert scoring.style_and_base("mine", junk) == ("mine", "funny")
-        assert scoring.style_and_base("gone", junk) == ("gone",)
-    assert scoring.style_and_base(None, "sport") == ()
+        assert styles.style_and_base("mine", junk) == ("mine", "funny")
+        assert styles.style_and_base("gone", junk) == ("gone",)
+    assert styles.style_and_base(None, "sport") == ()
 
 
 def test_deleted_style_with_a_recorded_base_still_matches_its_events(home):
     segs = [seg(12, 13)]
     got = scoring.event_boost(
-        CAND, [death()], style=scoring.style_and_base("gone", "funny"), segments=segs
+        CAND, [death()], style=styles.style_and_base("gone", "funny"), segments=segs
     )
     assert got[0] == 8.0
-    got = scoring.event_boost(CAND, [death()], style=scoring.style_and_base("gone"), segments=segs)
+    got = scoring.event_boost(CAND, [death()], style=styles.style_and_base("gone"), segments=segs)
     assert got[0] == 0.0
 
 
@@ -203,9 +203,9 @@ def test_learned_funny_style_applies(home):
     _learned(home, "mine", "funny")
     _learned(home, "other", "gaming")
     segs = [seg(12, 13)]
-    got = scoring.event_boost(CAND, [death()], style=scoring.style_and_base("mine"), segments=segs)
+    got = scoring.event_boost(CAND, [death()], style=styles.style_and_base("mine"), segments=segs)
     assert got[0] == 8.0
-    got = scoring.event_boost(CAND, [death()], style=scoring.style_and_base("other"), segments=segs)
+    got = scoring.event_boost(CAND, [death()], style=styles.style_and_base("other"), segments=segs)
     assert got[0] == 0.0
 
 

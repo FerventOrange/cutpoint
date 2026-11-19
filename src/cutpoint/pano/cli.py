@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, jsonout, progress, runstate
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.utils import file_stamp, parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
@@ -359,7 +360,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
         return
     from cutpoint.pano.project import default_style  # noqa: PLC0415
 
-    highlights = project / "highlights.json"
+    highlights = project / HIGHLIGHTS
     before = _stamp(highlights)
     try:  # once highlights.json changed, a failure must not leave an earlier run's timings
         t1 = time.perf_counter()
@@ -406,7 +407,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
             "events_not_in_highlights",
             "a source is not reachable: highlights.json lacks the events; rerun "
             f"cutpoint 360 analyze {a.project} once the footage is back",
-            [project / "highlights.json"],
+            [project / HIGHLIGHTS],
         )
         logger.info(
             "360 analysis done in %.0fs without the events in highlights.json; "

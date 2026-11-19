@@ -26,6 +26,7 @@ from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
 from cutpoint.kinds import KINDS, Kind
 from cutpoint.planning import report_clips
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
 from cutpoint.telemetry import has_telemetry
 from cutpoint.utils import file_stamp, find_videos, input_name
@@ -309,7 +310,7 @@ def _run_events(
             ollama_url=ollama_url,
             ollama_model=ollama_model,
         )
-    report_highlights(project, project / "highlights.json")  # events re-ranked it
+    report_highlights(project, project / HIGHLIGHTS)  # events re-ranked it
 
 
 def _export_and_join(

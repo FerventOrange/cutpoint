@@ -34,6 +34,7 @@ import numpy as np
 
 from cutpoint import default_fit, features
 from cutpoint.sources import settings_language
+from cutpoint.styles import analysis_names
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
@@ -258,7 +259,7 @@ def rescore_events(
         by_src.setdefault(e["source"], []).append(e)
     windows = ev.get("windows", [])
     types = resolve(project, ev)
-    style = scoring.analysis_names(hl)
+    style = analysis_names(hl)
     language = settings_language(hl)
     segments: dict[str, list[dict[str, Any]] | None] = {}
     spans = scoring.source_spans(hl)

@@ -14,10 +14,11 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from cutpoint import cache, folders
+from cutpoint import cache, folders, projectfiles
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import ChildScope, child_scope
 from cutpoint.pano import project as pano_project
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.ui.common import SOURCES_CACHE_MAX, SOURCES_CACHE_S, UI_DIR, finite_number, logger
 from cutpoint.ui.files import _inside, _own, _ui_folder
 from cutpoint.ui.lanes import Lane
@@ -195,7 +196,7 @@ class PanoPreviews:
 
         files = [i for f in (project / CACHE_DIR).glob("*.json") if (i := _file_ident(f))]
         return (
-            _file_ident(project / "highlights.json"),
+            _file_ident(project / HIGHLIGHTS),
             _file_ident(project / pano_project.PANO_FILE),
             tuple(sorted(files)),
             settings,
@@ -226,7 +227,7 @@ class PanoPreviews:
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
             logger.warning("camera paths of %s unreadable: %s", project.name, err)
             flagged, clips = {}, {}
-        hl = cache.load_json(project / "highlights.json")
+        hl = projectfiles.load_highlights(project)
         for c in hl.get("candidates") or [] if isinstance(hl, dict) else []:
             if not isinstance(c, dict) or not isinstance(c.get("source"), str):
                 continue
@@ -292,7 +293,7 @@ class PanoPreviews:
         sig = (
             rev,
             _pano_key({}, _pano_settings()),
-            file_stamp(project / "highlights.json"),
+            file_stamp(project / HIGHLIGHTS),
             file_stamp(project / pano_project.PANO_FILE),
             file_stamp(project / CACHE_DIR),
             file_stamp(project / UI_DIR / "pano"),
