@@ -36,7 +36,8 @@ and ``confidence`` (high >= 0.5 s, medium >= 0.3 s, low); crash has
 before/after and ``score``; an impact only counts when a stop follows.
 
 :func:`join_runs` orders clips by their absolute start (GPS UTC, else the
-camera's CDAT clock corrected by its TZON offset) and splits the day into runs
+camera's CDAT clock corrected by its TZON offset; an Insta360 X3's file-name time, in the
+zone of a GoPro GPS clip of the project) and splits the day into runs
 at lift rides and long gaps.
 """
 
@@ -785,8 +786,8 @@ def _x3_clock(tel: Telemetry, insv00: Path) -> None:
     """Start time of an Insta360 clip from its file name (camera clock, local time).
 
     The X3 trailer has no GPS and no GoPro CDAT/TZON, so the name
-    (``VID_YYYYMMDD_HHMMSS_..``) is the only clock; it is interpreted in this
-    computer's time zone, which only matters for ordering and run joining.
+    (``VID_YYYYMMDD_HHMMSS_..``) is the only clock. Only the wall time is stored (it is
+    cached per source); :func:`sync_filename_clocks` turns it into UTC per project.
     """
     from cutpoint.insta360 import parse_name  # noqa: PLC0415
 
@@ -797,7 +798,7 @@ def _x3_clock(tel: Telemetry, insv00: Path) -> None:
     tel.meta.update(
         {
             "start_local": local.isoformat(timespec="seconds"),
-            "start_utc": local.astimezone(UTC).isoformat(),
+            "start_utc": None,
             "clock": "filename",
         }
     )
@@ -890,16 +891,59 @@ def extract(src: Path, duration: float, params: TelemetryParams | None = None) -
 
 
 # --------------------------------------------------------------------------- runs / day
-def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]:
+def sync_filename_clocks(tels: list[Telemetry], *, quiet: bool = False) -> None:
+    """Give clips on the file-name clock (Insta360 X3, local wall time) a UTC start.
+
+    The offset comes from the GoPro GPS clip of the project nearest in wall time (its
+    ``start_local`` minus its GPS ``start_utc``, rounded to 15 minutes since ``start_local``
+    is cut to whole seconds), clock ``filename_gopro``. Without one the computer's zone is
+    used (clock ``filename``) and, when the project has clips on another clock, an INFO line
+    says their order against those is unknown (``quiet`` leaves the line out). Sets
+    ``start_utc``/``clock`` in each clip's ``meta`` (not cached).
+    """
+    named = [t for t in tels if t.meta.get("clock") in ("filename", "filename_gopro")]
+    if not named:
+        return
+    refs = []
+    for t in tels:
+        if t.meta.get("clock") == "gps" and t.meta.get("start_local") and t.meta.get("start_utc"):
+            loc = datetime.fromisoformat(t.meta["start_local"])
+            d = loc - datetime.fromisoformat(t.meta["start_utc"]).replace(tzinfo=None)
+            refs.append((loc, timedelta(minutes=15 * round(d.total_seconds() / 900))))
+    for t in named:
+        local = datetime.fromisoformat(t.meta["start_local"])
+        if refs:
+            off = min(refs, key=lambda r: abs((r[0] - local).total_seconds()))[1]
+            t.meta["start_utc"] = (local - off).replace(tzinfo=UTC).isoformat()
+            t.meta["clock"] = "filename_gopro"
+        else:
+            t.meta["start_utc"] = local.astimezone(UTC).isoformat()
+            t.meta["clock"] = "filename"
+    if not refs and any(t.meta.get("clock") in ("gps", "camera") for t in tels):
+        if not quiet:
+            logger.info(
+                "Insta360 clips are dated by their file names in this computer's time zone "
+                "and the project has no GoPro GPS clip to give their offset: their order "
+                "against the other clips is unknown"
+            )
+        for t in named:
+            t.meta["order"] = "unknown vs GPS clips"
+
+
+def join_runs(
+    tels: list[Telemetry], max_gap_s: float = 240.0, *, quiet: bool = False
+) -> dict[str, Any]:
     """Order clips by absolute start and split the day into runs.
 
     A run is a stretch of riding (not lift, not long stops) across clips. It
     ends at a lift segment inside a clip or at an unfilmed gap longer than
-    ``max_gap_s`` (typically a lift ride with the camera off).
+    ``max_gap_s`` (typically a lift ride with the camera off). ``quiet`` leaves out the
+    INFO line of :func:`sync_filename_clocks` (a second call on the same clips).
 
     Returns:
         ``{"clips": [...], "runs": [...], "day": {...}}``.
     """
+    sync_filename_clocks(tels, quiet=quiet)
     clips = []
     for tel in tels:
         start = tel.meta.get("start_utc")
@@ -911,6 +955,7 @@ def join_runs(tels: list[Telemetry], max_gap_s: float = 240.0) -> dict[str, Any]
                 "duration": tel.duration,
                 "start_local": tel.meta.get("start_local"),
                 "clock": tel.meta.get("clock"),
+                **({"order": tel.meta["order"]} if "order" in tel.meta else {}),
             }
         )
     order = sorted(

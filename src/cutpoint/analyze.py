@@ -4887,7 +4887,7 @@ def _rank_results(
 
         cam_ctx = cam.ctx
         if events_new:  # with this run's events.json and crashes.json
-            cam_ctx = actioncam.prepare(sources, cam.durations, out_dir)
+            cam_ctx = actioncam.prepare(sources, cam.durations, out_dir, quiet=True)
         # the beauty / people features on the captions of the project's activity.json
         # (written by the crash step above; action-cam without one)
         with activity.use_prompts(activity.project_prompts(out_dir)):

@@ -170,6 +170,7 @@ def prepare(
     project: Path,
     *,
     raise_if_all_failed: bool = True,
+    quiet: bool = False,
 ) -> ActionCamContext:
     """Extract telemetry for every source, load events.json, write telemetry.json.
 
@@ -184,6 +185,7 @@ def prepare(
         durations: ``{str(source): container duration}``.
         project: Project folder.
         raise_if_all_failed: Raise the last error when every source's telemetry failed to read.
+        quiet: Leave out the INFO line about the order of clips on different clocks.
     """
     from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
 
@@ -214,7 +216,7 @@ def prepare(
         moving = (g["gps_ok"] > 0) & (g["lift_mask"] == 0) & (g["still_mask"] == 0)
         speeds.append(g["speed_kmh"][moving & (g["speed_kmh"] > 5)])
     speed_ref = np.sort(np.concatenate(speeds)) if speeds else np.zeros(0)
-    runs = join_runs(good) if good else {}
+    runs = join_runs(good, quiet=quiet) if good else {}
     ctx = ActionCamContext(project=project, telemetry=tels, speed_ref=speed_ref, runs=runs)
     ctx.unreadable = list(guard.failed)
     ev = cache.load_json(project / "events.json")
