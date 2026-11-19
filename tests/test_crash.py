@@ -138,12 +138,22 @@ def test_one_source_whose_telemetry_fails_is_skipped_and_the_others_get_crashes(
         out = crash.detect_project(project, params=own_words, dense=False, sheets=0)
 
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert sorted(Path(c["source"]).name for c in data["crashes"]) == ["drift.mp4", "reef.mp4"]
-    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    # wreck (telemetry) and cave (IMU) are scored without what could not be read (A185):
+    # wreck keeps its IMU and its crash, cave has only the transcript left
+    assert sorted(Path(c["source"]).name for c in data["crashes"]) == [
+        "drift.mp4",
+        "reef.mp4",
+        "wreck.mp4",
+    ]
+    warned = [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and "telemetry not read" in r.getMessage()
+    ]
     assert warned == [
-        "wreck.mp4: crash detection skipped this source "
-        "('list' object cannot be interpreted as an integer)",
-        "cave.mp4: crash detection skipped this source (bad IMU block)",
+        "wreck.mp4: telemetry not read ('list' object cannot be interpreted as an integer); "
+        "scored without it",
+        "cave.mp4: telemetry not read (bad IMU block); scored without it",
     ]
     tracebacks = [r for r in caplog.records if r.levelname == "DEBUG" and r.exc_info]
     assert [r.exc_info[0] for r in tracebacks] == [TypeError, ValueError]

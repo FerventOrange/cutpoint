@@ -559,31 +559,57 @@ def _plateau(
 
 
 # --------------------------------------------------------------------------- telemetry probe
-def gpmd_stream_index(src: Path) -> int | None:
-    """The stream index of the GoPro GPMF track (``gpmd``) of ``src``, or None without one
-    (or when ffprobe cannot read the file); only the stream list is read, within 60 s."""
-    try:
-        info = ffprobe_json(src, entries="stream=index,codec_tag_string", timeout=60)
-    except (OSError, FFmpegError):
-        return None
+def _probe_gpmd(src: Path) -> int | None:
+    """The stream index of the GPMF track (``gpmd``) of ``src``, or None without one.
+
+    Raises:
+        OSError, FFmpegError: ffprobe cannot read the file.
+    """
+    info = ffprobe_json(src, entries="stream=index,codec_tag_string", timeout=60)
     streams = info.get("streams") or []
     return next((s.get("index") for s in streams if s.get("codec_tag_string") == "gpmd"), None)
 
 
+def gpmd_stream_index(src: Path) -> int | None:
+    """The stream index of the GoPro GPMF track (``gpmd``) of ``src``, or None without one
+    (or when ffprobe cannot read the file); only the stream list is read, within 60 s."""
+    try:
+        return _probe_gpmd(src)
+    except (OSError, FFmpegError):
+        return None
+
+
+_HAS_TELEMETRY: dict[tuple[str, int, int], bool] = {}
+
+
 def has_telemetry(src: Path) -> bool:
     """Whether ``src`` carries camera telemetry (a GoPro GPMF track or an Insta360 X3 IMU
-    trailer); only the container's stream list is read, within 60 seconds."""
+    trailer); only the container's stream list is read, within 60 seconds.
+
+    Remembered per source (path, size, modification time) for the process, so the
+    analysis, the category check and ``edit`` probe a file once."""
     from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     try:
-        if imu_source(src) is not None:
-            return True
+        st = remap_source(src).stat()
+        key = (str(src), st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = None
+    if key is not None and key in _HAS_TELEMETRY:
+        return _HAS_TELEMETRY[key]
+    try:
+        found = imu_source(src) is not None or _probe_gpmd(remap_source(src)) is not None
     except (OSError, FFmpegError):
-        return False
-    return gpmd_stream_index(remap_source(src)) is not None
+        return False  # unreadable now: not remembered
+    if key is not None:
+        _HAS_TELEMETRY[key] = found
+    return found
 
 
 # --------------------------------------------------------------------------- IMU (shared)
+_NO_TELEMETRY = "Unsupported file format"  # telemetry-parser: no telemetry in the file
+
+
 def imu_read_path(src: Path) -> tuple[Path, Path | None, Path, bool]:
     """Where the IMU of ``src`` is read: ``(io, x3_imu, read_path, unstaged)``.
 
@@ -607,8 +633,10 @@ def parse_imu(
 ) -> tuple[Any, list[Any], np.ndarray, np.ndarray, np.ndarray] | None:
     """``(parser, groups, t_s, accel m/s^2 (N, 3), gyro deg/s (N, 3))``, or None.
 
-    None (logged at ``level``) when telemetry-parser cannot read ``path``; the
-    arrays are empty when no sample has both sensors.
+    None (logged at ``level``) when telemetry-parser says ``path`` has no telemetry
+    (``Unsupported file format``); any other failure (a read error) is raised, so the
+    caller does not take it for a file without telemetry. The arrays are empty when
+    no sample has both sensors.
     """
     import telemetry_parser as tp_mod  # noqa: PLC0415
 
@@ -616,7 +644,9 @@ def parse_imu(
         parser = tp_mod.Parser(str(path))
         groups = parser.telemetry()
         imu = parser.normalized_imu()
-    except Exception as err:  # noqa: BLE001 - the Rust parser raises plain Exceptions
+    except Exception as err:
+        if str(err) != _NO_TELEMETRY:
+            raise
         logger.log(level, "%s: no readable GoPro telemetry (%s)", path.name, err)
         return None
     # A sample can lack one sensor (seen on HERO13: 1 of 79k with accl None).

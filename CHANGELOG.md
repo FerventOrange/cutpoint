@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- A telemetry read that failed (a transient read error, a file in use) is no longer cached as "no telemetry" for that file: the error is reported for the source and the next run reads it again; only a file the telemetry parser says has none is remembered. The profile discovery of `crashes` and `profile` tells a request that ran out of its timeout from other failures by what the model call reported, not by the clock, and still asks again after either (#1085, A185, A191).
 - A WAV Whisper cannot read no longer switches the rest of the run to the CPU as if CUDA had failed, and a CUDA out-of-memory error counts as a memory shortage (a later run with the GPU free transcribes that source again with the default model) instead of a CUDA failure (#1085, A119, A120).
 - Text-only turns to a `qwen*` vision model other than Qwen3 now use `/api/chat` instead of a raw ChatML turn, and an empty raw reply from a Qwen3 model is asked again through `/api/chat` (#1085, A118).
 - An Ollama that does not answer (a remote one switched off or behind a firewall) fails within 10 s instead of after the whole read timeout (up to 600 s per request) in the AI Chat, the vision rating, the `events` VLM layer and labelling, and the crash, profile and dialogue steps; a slow model's reply still gets the whole read time (#1085, A298).

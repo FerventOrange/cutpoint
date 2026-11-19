@@ -973,7 +973,7 @@ def synthesize(
     name and ``detect`` captions lose the crash words (:func:`_activity_name`); the VLM
     wording is never the LLM's (merged on the floor, :func:`full`, it is the base text).
     ``stats`` gets per attempt ``synth_s`` (seconds), ``answered`` (a reply came back, usable or not)
-    and ``timed_out`` (no reply after :data:`SLOW_SHARE` of the timeout), ``attempts`` and,
+    and ``timed_out`` (the request ran out of its timeout, as ``ask`` reports it), ``attempts`` and,
     after a failure worth remembering (an unusable reply, not a timeout or a request
     error: those are asked again on the next run), ``failed`` (why)."""
     stats = {} if stats is None else stats
@@ -1000,12 +1000,10 @@ def synthesize(
         reply = ask(prompt, [], _schema(n, w, h))
         took = time.perf_counter() - t0
         stats["synth_s"].append(round(took, 1))
-        # an unusable reply (ask_json: last_failure "reply") counts as answered, a timeout not
-        rater = getattr(getattr(ask, "func", ask), "__self__", None)
-        stats["answered"].append(
-            isinstance(reply, dict) or getattr(rater, "last_failure", None) == "reply"
-        )
-        stats["timed_out"].append(reply is None and not stats["answered"][-1] and took >= slow)
+        # an unusable reply counts as answered, a timeout not; ``ask`` says why it failed
+        why = ask_failure(ask)
+        stats["answered"].append(isinstance(reply, dict) or why == "reply")
+        stats["timed_out"].append(reply is None and why == "timeout")
         stats["attempts"] += 1
         prof = validate(reply)
         if prof["incident"]["pos"]:
@@ -1070,10 +1068,58 @@ def _named_profile(context: str, lib: dict[str, dict[str, Any]]) -> str | None:
     return named.pop() if len(named) == 1 else None
 
 
+@dataclass
+class OllamaAsk:
+    """The local Ollama vision model as an :data:`Ask` (call it), with the model's name, its
+    digest, why the last call failed and how to free it."""
+
+    rater: VisionRater
+
+    @property
+    def model(self) -> str:
+        """The model's name."""
+        return self.rater.model
+
+    @property
+    def digest(self) -> str | None:
+        """The model's digest (known once :meth:`VisionRater.available` checked it)."""
+        return self.rater.digest
+
+    def __call__(
+        self, prompt: str, images: list[bytes], schema: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        return self.rater.ask_json(
+            prompt,
+            images,
+            schema,
+            timeout=PROFILE_TIMEOUT_S,
+            temperature=DISCOVERY_TEMPERATURE,
+            seed=DISCOVERY_SEED,
+        )
+
+    def failure(self) -> str | None:
+        """Why the last call gave no reply: ``"reply"`` (unusable), ``"timeout"`` (the
+        request ran out of its timeout), ``"request"`` (any other error) or None."""
+        if self.rater.last_failure == "request" and self.rater.timed_out:
+            return "timeout"
+        return self.rater.last_failure
+
+    def unload(self) -> None:
+        """Free the model's memory (VRAM for the CLIP steps; other models stay)."""
+        self.rater.unload()
+
+
+def ask_failure(ask: Ask) -> str | None:
+    """Why the last call of ``ask`` failed (:meth:`OllamaAsk.failure`); None for an ``ask`` that
+    does not say (a plain function)."""
+    failure = getattr(ask, "failure", None)
+    return failure() if callable(failure) else None
+
+
 def default_ask(
     ollama_url: str | None = None, ollama_model: str | None = None, quiet: bool = False
-) -> tuple[Ask | None, str | None]:
-    """The local Ollama vision model as an :data:`Ask` (``(None, None)`` if unavailable, or
+) -> tuple[OllamaAsk | None, str | None]:
+    """The local Ollama vision model as an :class:`OllamaAsk` and its name (``(None, None)`` if unavailable, or
     if that Ollama is on another machine without the user's Vision consent: nothing is sent,
     and :meth:`VisionRater.warn_consent` warns once).
 
@@ -1092,13 +1138,7 @@ def default_ask(
         return None, None
     if not rater.available():
         return None, None
-    ask = functools.partial(
-        rater.ask_json,
-        timeout=PROFILE_TIMEOUT_S,
-        temperature=DISCOVERY_TEMPERATURE,
-        seed=DISCOVERY_SEED,
-    )
-    return ask, rater.model
+    return OllamaAsk(rater), rater.model
 
 
 # --------------------------------------------------------------------------- discovery cache
@@ -1119,11 +1159,9 @@ def _footage_id(project: Path) -> list[str]:
 
 
 def _model_id(ask: Ask, model: str | None) -> dict[str, str | None]:
-    """The model behind ``ask``: its name and, from a :class:`VisionRater` that checked it,
+    """The model behind ``ask``: its name and, from an :class:`OllamaAsk` that checked it,
     its digest (a model updated under the same name writes the profile again)."""
-    rater = getattr(getattr(ask, "func", ask), "__self__", None)
-    digest = rater.digest if isinstance(rater, VisionRater) else None
-    return {"model": model, "digest": digest}
+    return {"model": model, "digest": getattr(ask, "digest", None)}
 
 
 def discovery_key(
@@ -1388,9 +1426,8 @@ def resolve(
                     raise
                 logger.info("activity: %s; detecting it without the vision model", err)
             finally:
-                target = getattr(ask, "func", ask)  # default_ask() wraps it in a partial
-                if isinstance(rater := getattr(target, "__self__", None), VisionRater):
-                    rater.unload()  # done with it: VRAM for the CLIP steps, other models stay
+                if isinstance(ask, OllamaAsk):
+                    ask.unload()  # done with it: VRAM for the CLIP steps, other models stay
             if new is not None:  # LLM words add phrases, never re-weight known ones
                 known = (profile if seed else base())["incident"]["words"]
                 new["incident"]["words"] = {

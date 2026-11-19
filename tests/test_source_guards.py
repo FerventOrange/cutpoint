@@ -195,16 +195,17 @@ def sheet_fakes(monkeypatch):
     return shown
 
 
-def test_sheets_leave_out_a_source_whose_telemetry_fails(
+def test_sheets_keep_a_source_whose_telemetry_fails_unmasked(
     tmp_path, monkeypatch, caplog, sheet_fakes
 ):
+    """A185: an unreadable telemetry is no reason to leave the source's frames out."""
     srcs = [_source(tmp_path, n) for n in ("reef", "wreck", "drift")]
     monkeypatch.setattr(telemetry, "extract", _extract({"wreck"}))
     with caplog.at_level(logging.WARNING), jsonout.run("events") as result:
         written = sheets.write_visual_sheets(tmp_path, srcs, n=6)
     assert [p.stem for p in written] == ["beauty_top", "beauty_bottom", "friends_top"]
-    assert sheet_fakes["beauty_top"] == {"reef.mp4", "drift.mp4"}
-    message = f"wreck.mp4: contact sheets skipped this source ({BAD})"
+    assert sheet_fakes["beauty_top"] >= {"reef.mp4", "wreck.mp4", "drift.mp4"}
+    message = f"wreck.mp4: telemetry not read ({BAD}); its frames are not masked"
     assert _warned(caplog) == [message]
     assert _step_failed(result) == [(message, [str(srcs[1].path)])]
 
@@ -577,7 +578,11 @@ def _all_bad(site: str, tmp_path, monkeypatch, request, err: _Raised) -> None:
         actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)
     elif site == "sheets":
         request.getfixturevalue("sheet_fakes")
-        monkeypatch.setattr(telemetry, "extract", _extract(set(names), err))
+
+        def load_visual(s):  # the visual data of every source fails to read
+            raise err(s.name)
+
+        monkeypatch.setattr(visual, "load_visual", load_visual)
         sheets.write_visual_sheets(tmp_path, [_source(tmp_path, n) for n in names])
     elif site == "telemetry coverage":
         srcs = [_source(tmp_path, n) for n in names]

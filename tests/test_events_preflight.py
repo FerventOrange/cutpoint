@@ -352,7 +352,7 @@ def test_profile_unloads_only_the_model_it_used(monkeypatch, tmp_path: Path, amb
             unloads.append(self.model)
 
     rater = Rater(url="http://x:1", model="some-model")
-    monkeypatch.setattr(activity, "default_ask", lambda: (rater.ask_json, rater.model))
+    monkeypatch.setattr(activity, "default_ask", lambda: (activity.OllamaAsk(rater), rater.model))
     for verb in ("get", "post"):  # e.g. unload_ollama listing and unloading every model
         monkeypatch.setattr(common.requests, verb, lambda url, *a, **k: unloads.append(url))
     activity.resolve(tmp_path, context="packrafting trip")
