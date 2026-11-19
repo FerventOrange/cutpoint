@@ -624,7 +624,9 @@ The whole-source proxy takes over once it is ready. Moment and sequence rows say
 whether their preview is ready, encoding or queued, the trim rail hatches the parts that cannot
 play yet, and "Full preview 42%" shows the whole-source proxy's progress. Play sequence starts a
 clip as soon as a short proxy covers all of it. HDR and BT.2020 sources are previewed converted
-to SDR, as in exports.
+to SDR, as in exports. Meanwhile the page asks every 2 s for `GET /api/projects/<id>/sources`
+(`{"sources": [...]}`, the `sources` of `GET /api/projects/<id>` without the moments) and reads
+the whole project again once a source's status changes.
 The preview transport has a mute button and a volume slider next to Play. One setting covers every
 preview (moments, clips and final) and is remembered per browser; the default is unmuted at 100%.
 `M` toggles mute (unless Single-key shortcuts is off in Settings > Keyboard), and Space plays or pauses even when the volume controls have focus.

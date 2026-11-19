@@ -143,16 +143,12 @@ def create_project(body: dict[str, Any]):
     return new_project(name.strip(), full, style, kind="360", **clips)
 
 
-@owned.get("/projects/{pid}")
-def get_project(request: Request, pid: str):
+def source_views(
+    request: Request, pid: str, p: Path
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], str | None]:
+    """The project's sources as the page reads them (status, proxy, windows): the listing, its
+    view and the listing's error. The project view and the light sources poll share it."""
     app, media, sources = request.app, request.app.state.media, request.app.state.sources
-    p = project_dir(pid)
-    meta = read_meta(p)
-    hl = _highlights(p)
-    review = _load(p, f"{UI_DIR}/review.json")
-    exp = current_export(p)
-    manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
-    outputs = output_names(p)
     found = []
     listing, source_error = sources.listing(p)
     for s in listing:
@@ -196,6 +192,20 @@ def get_project(request: Request, pid: str):
                 ],
             }
         )
+    return listing, found, source_error
+
+
+@owned.get("/projects/{pid}")
+def get_project(request: Request, pid: str):
+    app = request.app
+    p = project_dir(pid)
+    meta = read_meta(p)
+    hl = _highlights(p)
+    review = _load(p, f"{UI_DIR}/review.json")
+    exp = current_export(p)
+    manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
+    outputs = output_names(p)
+    listing, found, source_error = source_views(request, pid, p)
     highlights = moments_view(hl, _load(p, "events.json"))
     last_run = run_state(p, hl is not None)
     if highlights is not None and meta.get("kind") == "360":
@@ -258,6 +268,14 @@ def get_project(request: Request, pid: str):
         "ranking_undo": ranking_undo_view(p, meta),
     }
     return PlainJSON(view)
+
+
+@owned.get("/projects/{pid}/sources")
+def get_sources(request: Request, pid: str):
+    """The ``sources`` of the project view alone, for the page's proxy poll (A754): the whole
+    view carries every moment and its transcript."""
+    _, found, _ = source_views(request, pid, project_dir(pid))
+    return PlainJSON({"sources": found})
 
 
 @owned.get("/projects/{pid}/resume")

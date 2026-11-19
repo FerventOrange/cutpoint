@@ -31,8 +31,10 @@ async function open(t) {
   const list = page.document.querySelector('#candList');
   const changes = [];
   new page.window.MutationObserver((records) => changes.push(...records)).observe(list, { childList: true });
-  const polls = () => page.requests.filter((r) => r.method === 'GET' && r.path === '/api/projects/p1').length;
-  /** One poll of the project (the page asks every 2 s while the proxy builds). */
+  // the proxy poll asks for the sources (A754), the whole project once a source's status changed
+  const polls = () => page.requests
+    .filter((r) => r.method === 'GET' && r.path === '/api/projects/p1/sources').length;
+  /** One poll of the sources (the page asks every 2 s while the proxy builds). */
   const poll = async () => {
     const before = polls();
     await page.settle();
@@ -71,9 +73,11 @@ test('a poll that changes what a tile shows redraws the tiles', async (t) => {
   await poll();
   assert.ok(changes.length > 0, 'the tiles were redrawn');
   assert.equal(tile('m45').querySelector('.prep').dataset.state, 'ready');
-  // a moment's label changes (an analysis rewrote highlights.json)
+  // a moment's label changes (an analysis rewrote highlights.json), read with the whole project
+  // the poll reads once the proxy is done
   changes.length = 0;
   state.cands = state.cands.map((c, i) => (i === 3 ? { ...c, label: 'renamed moment' } : c));
+  state.src = { ...state.src, status: 'ready', progress: null };
   await poll();
   assert.ok(changes.length > 0, 'the tiles were redrawn');
   assert.equal(tile('m3').querySelector('.cand-title').textContent, 'renamed moment');
