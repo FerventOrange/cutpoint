@@ -225,9 +225,7 @@ def test_clips_logs_why_it_re_plans(project, home, monkeypatch, caplog) -> None:
             clip, "001_v.mp4", 4.0, 12.5, "people"
         )
     assert "(9:16 not planned by 360 analyze)" in caplog.text
-    views = VW.cache_path(Path(clip.lrv))
-    st = views.stat()
-    os.utime(views, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # 360 analyze --force-views
+    _rewrite_views(Path(clip.lrv))  # 360 analyze --force-views
     monkeypatch.setattr(C, "code_id", lambda: "0123456789ab")
     assert C.cached_path(proj, clip, 14.0, 20.0, None, None) == (
         None,
@@ -235,18 +233,88 @@ def test_clips_logs_why_it_re_plans(project, home, monkeypatch, caplog) -> None:
     )
 
 
+def _rewrite_views(lrv: Path) -> None:
+    """Save the view layer of ``lrv`` again with other content (one more person row)."""
+    boxes = {f: [FRIEND[f]] for f in range(N)}
+    boxes[0] = [*boxes[0], (0.9, -60.0, -5.0, 10.0, 30.0, FWD_V)]
+    VW.save_views(lrv, helpers.make_views(boxes, str(lrv), n=N), VW.ViewParams())
+
+
+def _touch(f: Path) -> None:
+    st = f.stat()
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+
+
 def test_changed_views_layer_invalidates(project, monkeypatch) -> None:
     proj, clip = project
     C.cache_candidate_paths(proj)
     assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is not None
-    lrv = Path(clip.lrv)
-    views = VW.cache_path(lrv)
-    st = views.stat()
-    os.utime(views, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # 360 analyze --force-views
-    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is None
+    _rewrite_views(Path(clip.lrv))  # 360 analyze --force-views, other views
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None) == (None, "layers changed")
     st = C.cache_candidate_paths(proj)
     assert (st["computed"], st["cached"]) == (2, 0)
     assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is not None
+
+
+def test_touched_views_layer_keeps_the_paths(project, monkeypatch) -> None:
+    """The view layer is identified by its content hash, not its file's modification time."""
+    proj, clip = project
+    lrv = Path(clip.lrv)
+    C.cache_candidate_paths(proj)
+    before = C._inputs(lrv)
+    pair = cache.load_json(VW.cache_path(lrv).with_suffix(".json"))["pair"]
+    assert before["views"] == ["pair", pair]
+    _touch(VW.cache_path(lrv))
+    _touch(VW.cache_path(lrv).with_suffix(".json"))
+    assert C._inputs(lrv) == before
+    assert cli._layer_inputs(str(lrv)) == json.loads(json.dumps(before))  # 360 director's key
+    monkeypatch.setattr(D, "compute_path", lambda *a, **k: pytest.fail("re-planned"))
+    assert C.cached_path(proj, clip, 14.0, 20.0, None, None)[0] is not None
+    st = C.cache_candidate_paths(proj)
+    assert (st["computed"], st["cached"]) == (0, 2)
+
+
+def test_views_layer_without_its_hash_is_identified_by_its_file(tmp_path) -> None:
+    """An older view layer (no ``pair`` in its .json) or an unreadable .json: the file's
+    name, size and modification time, never equal to a hash key."""
+    lrv = tmp_path / "old.lrv"
+    lrv.write_bytes(b"x")
+    assert C._inputs(lrv)["views"] is None  # no view layer
+    helpers.write_views(lrv, {"source": str(lrv)})
+    views = VW.cache_path(lrv)
+    stamp = C._file_id(views)
+    assert stamp is not None and stamp[0] != "pair"
+    assert C._inputs(lrv)["views"] == stamp
+    _touch(views)  # an older layer still follows its file
+    assert C._inputs(lrv)["views"] == C._file_id(views) != stamp
+    views.with_suffix(".json").write_text("{not json", encoding="utf-8")
+    assert C._inputs(lrv)["views"] == C._file_id(views)
+
+
+def test_half_written_views_layer_changes_the_key_once_recomputed(project) -> None:
+    """An interrupted save_views (new .npz, old .json): load_views refuses the pair, so the
+    layer is recomputed and saved again, which writes a new hash into both files."""
+    _, clip = project
+    lrv = Path(clip.lrv)
+    before = C._inputs(lrv)["views"]
+    boxes = {f: [FRIEND[f]] for f in range(N)}
+    boxes[1] = []
+    other = helpers.make_views(boxes, str(lrv), n=N)
+    path = VW.cache_path(lrv)
+    cache.save_npz(  # the .npz half of save_views, with its own token
+        path,
+        t=other.t,
+        emb=other.emb,
+        det=other.det,
+        box_emb=other.box_emb,
+        box_idx=other.box_idx,
+        pair=np.array("0123456789abcdef"),
+    )
+    assert VW.load_views(lrv) is None  # not used: nothing is planned from these arrays
+    assert C._inputs(lrv)["views"] == before
+    VW.save_views(lrv, other, VW.ViewParams())  # the recompute
+    assert VW.load_views(lrv) is not None
+    assert C._inputs(lrv)["views"] not in (before, ["pair", "0123456789abcdef"])
 
 
 def test_changed_planning_code_invalidates(project, monkeypatch) -> None:
