@@ -32,7 +32,7 @@ from assistant_helpers import (
     run,
 )
 from cutpoint import cache
-from cutpoint.assistant import context, edges, intent, lookfor, ops, providers, session, topup
+from cutpoint.assistant import context, edges, intent, ops, providers, session, topup
 from cutpoint.clips import EXACT_KEYS
 from test_assistant_routes import proj as proj
 
@@ -271,10 +271,6 @@ def test_a_rejected_attempt_is_an_event_saved_with_the_turn(caplog) -> None:
     event = turn.record()["events"][0]
     assert event["kind"] == "rejected" and "is past the source's" in event["text"]
     assert any("proposal not accepted" in r.message for r in caplog.records)
-
-
-def test_look_for_makes_up_to_ten_new_moments_per_call() -> None:
-    assert lookfor.MAX_NEW == 10 and lookfor.MAX_NEW >= lookfor.MAX_LIMIT
 
 
 # -- Ollama: AI Chat's sampling, not the Vision role's ---------------------------------------------

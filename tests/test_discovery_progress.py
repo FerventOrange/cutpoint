@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -156,3 +157,20 @@ def test_pct_rises_within_each_source(ocr_run, monkeypatch, capsys):
     first = got.index((pipeline.DISCOVERY_PCT, "reading HUD text: source 1/2"))
     # discovery took the first half: each source a quarter, in quarters of that
     assert [p for p, _ in got[first:]] == [50, 56, 62, 75, 75, 81, 87, 100]
+
+
+def test_events_discovery_is_given_the_events_hint(ocr_run, monkeypatch):
+    """No preset matches: discovery gets ``EVENTS_DISCOVER_HINT`` (analyze passes its own)."""
+    hints = []
+    real = pipeline._discover
+    sig = inspect.signature(real)
+
+    def spy(*a, **k):
+        bound = sig.bind(*a, **k)
+        bound.apply_defaults()
+        hints.append(bound.arguments["hint"])
+        return real(*a, **k)
+
+    monkeypatch.setattr(pipeline, "_discover", spy)
+    ocr_run.run()
+    assert hints == [pipeline.EVENTS_DISCOVER_HINT]

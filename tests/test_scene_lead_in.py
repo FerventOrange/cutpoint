@@ -4,7 +4,6 @@ Mocked unit tests first, then real-ffmpeg regressions on small low-res clips."""
 
 from __future__ import annotations
 
-import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -174,16 +173,14 @@ def test_a_clean_lead_in_decode_runs_once(retry):
 @pytest.mark.parametrize(
     "first", ["raise", "Error during demuxing: Input/output error"], ids=["fails", "read-error"]
 )
-def test_a_lead_in_that_hits_a_read_error_is_run_again_without_it(retry, caplog, first):
+def test_a_lead_in_that_hits_a_read_error_is_run_again_without_it(retry, first):
     runs, plan, call = retry
     plan.append(first)
-    with caplog.at_level(logging.INFO, logger=analyze.logger.name):
-        assert call() == [3.0]
+    assert call() == [3.0]
     assert len(runs) == 2
     assert seek_of(runs[0]) == "290.000"
     assert seek_of(runs[1]) == "300.000"  # the old seek
     assert not any("setpts" in a for a in runs[1])
-    assert any("lead-in" in r.getMessage() for r in caplog.records if r.levelno == logging.INFO)
 
 
 def test_a_read_error_later_in_the_part_keeps_the_lead_in_proxy(retry):

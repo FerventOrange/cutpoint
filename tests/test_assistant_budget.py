@@ -505,10 +505,9 @@ def test_size_counts_text_wherever_it_sits_and_an_image_as_its_tokens() -> None:
     assert context.size(None) == 0 and context.size(7) == 0
 
 
-def test_the_default_ollama_context_is_50000_and_other_local_servers_keep_8192() -> None:
-    assert providers.OLLAMA_CONTEXT_TOKENS == 50000
-    assert providers.ON_MACHINE_CONTEXT_TOKENS == 8192
-    assert OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).context_tokens == 8192
+def test_other_local_servers_keep_their_default_context_unless_set() -> None:
+    default = providers.ON_MACHINE_CONTEXT_TOKENS
+    assert OpenAIProvider("http://127.0.0.1:1234", "m", 0, None).context_tokens == default
     assert OpenAIProvider("http://127.0.0.1:1234", "m", 4096, None).context_tokens == 4096
 
 

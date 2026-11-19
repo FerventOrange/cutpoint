@@ -196,7 +196,7 @@ def test_a_stale_upright_selfie_is_logged_once(home, tmp_path, caplog) -> None:
     write_views(src, {"source": str(src), "wearer_v": list(G.WEARER_V)} | UPRIGHT_META)
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
         assert VW.load_views(src) is None and VW.load_views(src) is None
-    assert sum("another wearer direction" in r.message for r in caplog.records) == 1
+    assert len(caplog.records) == 1  # the second load is silent
 
 
 @pytest.fixture

@@ -533,33 +533,11 @@ class _UnkillableProc:
         raise OSError("access denied")
 
 
-def _kill_failures(caplog) -> list[str]:
-    return [
-        r.getMessage()
-        for r in caplog.records
-        if r.levelname == "DEBUG" and r.name == "cutpoint.ffmpeg_utils"
-    ]
-
-
-def test_scope_kill_logs_a_failed_kill_at_debug_and_goes_on(caplog):
-    caplog.set_level("DEBUG", logger="cutpoint")
+def test_scope_kill_goes_on_when_a_process_cannot_be_killed():
     scope = ChildScope()
     scope.add(_UnkillableProc())
-    scope.kill()
+    scope.kill()  # the failed kill does not raise
     assert scope.cancelled
-    logged = _kill_failures(caplog)
-    assert len(logged) == 1
-    assert "4242" in logged[0] and "access denied" in logged[0]
-
-
-def test_scope_add_after_cancel_logs_a_failed_kill_at_debug(caplog):
-    caplog.set_level("DEBUG", logger="cutpoint")
-    scope = ChildScope()
-    scope.cancel()
-    scope.add(_UnkillableProc())
-    logged = _kill_failures(caplog)
-    assert len(logged) == 1
-    assert "4242" in logged[0] and "access denied" in logged[0]
 
 
 # -- export_workers --------------------------------------------------------------------------

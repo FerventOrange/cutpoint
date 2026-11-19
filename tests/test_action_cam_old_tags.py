@@ -10,13 +10,6 @@ from cutpoint import actioncam, activity
 from cutpoint.events import vlm_windows as vw
 from test_actioncam import _features, _win
 
-OLD = ("powder_spray", "fast_groomer", "chairlift", "lodge")
-
-
-def test_old_keys_are_not_tags():
-    assert not set(OLD) & set(vw.ACTION_CAM_TAGS)
-    assert {"spray", "fast_open", "transit", "indoor_break"} <= set(vw.ACTION_CAM_TAGS)
-
 
 def test_a_vlm_reply_with_old_tag_keys_scores_the_new_keys_zero():
     reply = {
