@@ -9,8 +9,15 @@ from pathlib import Path
 import pytest
 
 from conftest import run_json, warning_codes, write
-from cutpoint import analyze, cache, stylefiles
-from cutpoint.styles import STYLES, content_hash, get_style, load_learned, style_hash
+from cutpoint import analyze, cache, cli, stylefiles
+from cutpoint.styles import (
+    STYLES,
+    content_hash,
+    get_style,
+    load_learned,
+    style_hash,
+    style_names,
+)
 
 
 @pytest.fixture
@@ -379,3 +386,21 @@ def test_create_from_a_file_with_a_removed_feature_is_refused(styles_dir, tmp_pa
     assert code == 1 and doc["error"]["code"] == "bad_args"
     assert '"taste"' in doc["error"]["message"] and "delete its weight" in doc["error"]["message"]
     assert not (styles_dir / "copy.json").exists()
+
+
+# ------------------------------------------------------------------ --style on the commands
+def test_style_auto_is_offered_by_analyze_and_edit_only():
+    parser = cli.build_parser()
+    for command in (["analyze", "a.mp4"], ["edit", "a.mp4"]):
+        assert parser.parse_args([*command, "--style", "auto"]).style == "auto"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["360", "analyze", "p", "--style", "auto"])
+
+
+@pytest.mark.parametrize("command", [["analyze", "a.mp4"], ["edit", "a.mp4"]])
+def test_a_custom_style_is_accepted_by_style_arg(styles_dir, capsys, command):
+    """``--style NAME`` takes a style made by ``style create``."""
+    assert cli.main(["style", "create", "mine", "--base", "action", "--weight", "scene=0.4"]) == 0
+    capsys.readouterr()
+    assert "mine" in style_names()
+    assert cli.build_parser().parse_args([*command, "--style", "mine"]).style == "mine"

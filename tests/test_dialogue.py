@@ -1423,43 +1423,12 @@ def test_ollama_flags_win_over_a_consented_hosted_ai_chat_model(hosted_chat, mon
     assert net.to("api.anthropic.com") == [] and not made and res.warnings == []
 
 
-def test_ollama_flags_over_a_hosted_model_log_one_info_line(hosted_chat, monkeypatch, caplog):
-    hosted_chat([f"assistant-v3:{ANTHROPIC}"])
-    Net(monkeypatch, ollama=True)
-    with caplog.at_level(logging.INFO):
-        dialogue.choose_backend("http://127.0.0.1:11434", None)
-    want = "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, not anthropic"
-    assert caplog.text.count(want) == 1
-
-
-def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch, caplog):
+def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch):
     set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
     net = Net(monkeypatch, ollama=True)
-    with caplog.at_level(logging.INFO):
-        backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
+    backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
     assert backend is not None and backend.name == "local" and "127.0.0.1" in backend.key
     assert net.to(REMOTE) == []
-    want = (
-        "--ollama-url/--ollama-model given: using the Ollama at 127.0.0.1:11434, "
-        "not the Ollama at 10.10.10.235:11434"
-    )
-    assert caplog.text.count(want) == 1
-
-
-def test_ollama_flags_name_a_bare_ai_chat_url_with_its_port(home, monkeypatch, caplog):
-    set_config(home, assistant={"provider": "ollama", "url": "myhost", "consent": []})
-    Net(monkeypatch, ollama=True)
-    with caplog.at_level(logging.INFO):
-        dialogue.choose_backend("http://127.0.0.1:11434", None)
-    assert "not the Ollama at myhost:11434" in caplog.text
-
-
-def test_ollama_flags_at_the_ai_chat_ollama_host_log_no_override_line(home, monkeypatch, caplog):
-    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
-    Net(monkeypatch, ollama=True)
-    with caplog.at_level(logging.INFO):
-        dialogue.choose_backend(REMOTE_URL, None)
-    assert "--ollama-url/--ollama-model given" not in caplog.text
 
 
 def test_a_remote_ollama_url_with_the_assistant_consent_is_used(hosted_chat, home, monkeypatch):

@@ -28,7 +28,7 @@ import send2trash
 
 from cutpoint import cache, folders, planning, runstate
 
-UI_DIR = "ui"  # cutpoint.ui.UI_DIR
+UI_DIR = "ui"  # per-project state folder of cutpoint ui (imported by cutpoint.ui.common)
 OWN_FILES = frozenset(
     {
         "highlights.json",

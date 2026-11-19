@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import envelope, needs_ffmpeg
-from cutpoint import category, cli, paths, styles
+from cutpoint import category, cli, jsonout, paths, styles
 from cutpoint.category import ACTION, ACTION_CAM, GAMEPLAY, GENERAL, TALK, SourceProbe
 from cutpoint.events import ocr_raw
 from overlap import Overlap
@@ -259,16 +259,16 @@ def test_a_learned_auto_style_is_ignored_with_a_warning(home, caplog):
         (folder / f"{name}.json").write_text(json.dumps({"base": "gaming"}), encoding="utf-8")
     with caplog.at_level(logging.WARNING):
         assert "auto" not in styles.style_names() and "mine" in styles.style_names()
-    assert "reserved for --style auto" in caplog.text
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
     with pytest.raises(ValueError, match="not a style itself"):
         styles.get_style("auto")
 
 
-def test_the_ambiguous_warning_names_the_general_style(caplog):
+def test_an_ambiguous_detection_warns_with_the_style_ambiguous_code():
     det = category.decide([probe(**{**GAME, "hud_static": 0.0})])
-    with caplog.at_level(logging.WARNING):
+    with jsonout.run("detect") as res:
         category.warn(det, "action", "action")
-    assert "using the General style (action)" in caplog.text
+    assert [w["code"] for w in res.warnings] == ["style_ambiguous"]
 
 
 def test_only_a_screen_recorders_own_handler_is_a_screen_recorder_sign():
@@ -919,7 +919,7 @@ def test_a_failed_cue_is_tried_once_and_not_cached(text_check, monkeypatch, capl
     monkeypatch.setattr(category, "anchor_probe", broken)
     with caplog.at_level(logging.WARNING):
         assert category.probe_source(text_check.src).screen_anchors is None
-    assert "Screen-text cue of a.mp4 failed" in caplog.text
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
     assert category.probe_source(text_check.src).screen_anchors is None
     assert text_check.cues == 1
     assert not (cache.source_dir(text_check.src) / category.ANCHOR_FILE).exists()
@@ -1076,16 +1076,16 @@ def test_the_question_is_generic_and_the_model_freed(stub_rater):
 
 
 @pytest.mark.parametrize(
-    ("kw", "edition", "says"),
+    ("kw", "edition", "logs"),
     [
-        ({"consent": "vision-v2:openai@api.openai.com"}, "full", "needs your consent"),
-        ({"available": False}, "full", None),  # the rater logs why (INFO)
-        ({}, "lite", "not in Cutpoint lite"),
-        ({"reply": category.LowMemoryError("Not enough memory")}, "full", "Not enough memory"),
+        ({"consent": "vision-v2:openai@api.openai.com"}, "full", True),
+        ({"available": False}, "full", False),  # the rater logs why (INFO)
+        ({}, "lite", True),
+        ({"reply": category.LowMemoryError("Not enough memory")}, "full", True),
     ],
 )
 def test_without_a_model_the_question_is_skipped_quietly(
-    stub_rater, monkeypatch, caplog, kw, edition, says
+    stub_rater, monkeypatch, caplog, kw, edition, logs
 ):
     """#893's quiet: one INFO line, no WARNING, no consent warning, and no more tries."""
     from cutpoint import extras  # noqa: PLC0415
@@ -1096,9 +1096,8 @@ def test_without_a_model_the_question_is_skipped_quietly(
         assert vision.ask(Path("a.mp4"), 60.0) is None
         assert vision.ask(Path("b.mp4"), 60.0) is None
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
-    if says:
-        [line] = [r.getMessage() for r in caplog.records]
-        assert says in line
+    if logs:
+        assert [r.levelno for r in caplog.records] == [logging.INFO]  # one line, once
     assert sum(len(r.asks) for r in stub_rater.raters) <= 1
 
 

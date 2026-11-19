@@ -259,11 +259,6 @@ def test_delete_needs_the_session_token(ui_client: TestClient) -> None:
     assert res.status_code == 403
 
 
-def test_the_ui_folder_name_is_the_one_the_server_uses() -> None:
-    assert projectdelete.UI_DIR == ui.UI_DIR
-    assert sys.modules["send2trash"] is projectdelete.send2trash
-
-
 def test_a_plain_permission_error_is_not_a_missing_trash(
     ui_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

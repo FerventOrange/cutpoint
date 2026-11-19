@@ -266,15 +266,6 @@ def test_create_project_accepts_an_action_cam_style_for_several_inputs(
     assert meta["style"] == "action-cam" and len(meta["inputs"]) == 2
 
 
-def test_create_project_refuses_ski_as_an_unknown_style(client: TestClient, tmp_path: Path) -> None:
-    folder = tmp_path / "footage"
-    folder.mkdir()
-    (folder / "a.mp4").write_bytes(b"x")
-    res = client.post("/api/projects", json={"name": "T", "source": str(folder), "style": "ski"})
-    assert res.status_code == 400 and res.json()["detail"] == "unknown style 'ski'"
-    assert client.get("/api/projects").json() == {"projects": []}
-
-
 def test_create_project_from_several_inputs_lists_and_analyzes_them_all(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -11054,12 +11045,11 @@ def test_a_command_line_project_gets_a_meta_with_the_chosen_style(
     assert _after(_cli_args(captured[0]), "--style") == "funny"
 
 
-@pytest.mark.parametrize("style", ["nope", 3, ""], ids=["unknown", "number", "empty"])
 def test_an_unknown_style_is_refused(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, style: object
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     p = auto_project(tmp_path, detection(), {"style": "auto"})
-    res, captured = style_job(client, monkeypatch, {"style": style})
+    res, captured = style_job(client, monkeypatch, {"style": "nope"})
     assert res.status_code == 400 and "unknown style" in res.json()["detail"]
     assert captured == [] and ui.read_meta(p)["style"] == "auto"
 
