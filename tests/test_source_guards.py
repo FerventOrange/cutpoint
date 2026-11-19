@@ -569,6 +569,17 @@ class _Raised(list):
         return err
 
 
+def test_prepare_can_leave_the_all_failed_decision_to_the_caller(tmp_path, monkeypatch):
+    names = ("ridge", "gully")
+    srcs = [tmp_path / f"{n}.mp4" for n in names]
+    monkeypatch.setattr(actioncam, "extract", _extract(set(names), ValueError("bad")))
+    ctx = actioncam.prepare(
+        srcs, {str(s): N / 10 for s in srcs}, tmp_path, raise_if_all_failed=False
+    )
+    assert ctx.unreadable == [str(s) for s in srcs]
+    assert not (tmp_path / "telemetry.json").exists()
+
+
 def _all_bad(site: str, tmp_path, monkeypatch, request, err: _Raised) -> None:
     """Run ``site`` over two sources whose per-source step both fail with ``err``."""
     names = ("ridge", "gully")

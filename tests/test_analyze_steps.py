@@ -878,7 +878,7 @@ def test_ski_features_are_prepared_again_after_the_layers(run, monkeypatch, laye
     """F5b: ski candidates come from the feature grid; it is built again once this run's
     layers wrote events.json, and only once without layers."""
     calls = []
-    cam = SimpleNamespace(telemetry={str(run.video): object()})
+    cam = SimpleNamespace(telemetry={str(run.video): object()}, unreadable=[])
     monkeypatch.setattr(actioncam, "prepare", lambda *a, **k: calls.append(a) or cam)
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
     picked = []
@@ -1348,7 +1348,7 @@ def test_action_cam_candidates_are_picked_with_the_projects_activity_prompts(
 ):
     """F3: the ranking step scores the beauty / people features (``actioncam.layer_features``,
     ``frame_scores``) with the captions of the activity.json the crash step wrote."""
-    cam = SimpleNamespace(telemetry={str(run.video): object()})
+    cam = SimpleNamespace(telemetry={str(run.video): object()}, unreadable=[])
     monkeypatch.setattr(actioncam, "prepare", lambda *a, **k: cam)
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
     seen = []
@@ -1411,10 +1411,11 @@ def _cam_run(run, monkeypatch, telemetry: dict[str, bool], extracted: dict[str, 
     monkeypatch.setattr(analyze, "probe", lambda path: SimpleNamespace(duration=60.0))
     prepared = []
 
-    def prepare(sources, durations, project):
+    def prepare(sources, durations, project, **kw):
         prepared.append(sources)
         return SimpleNamespace(
-            telemetry={str(s): object() if extracted.get(s.name) else None for s in sources}
+            telemetry={str(s): object() if extracted.get(s.name) else None for s in sources},
+            unreadable=[],
         )
 
     monkeypatch.setattr(actioncam, "prepare", prepare)
@@ -1456,6 +1457,50 @@ def test_action_cam_without_any_telemetry_runs_as_action(run, monkeypatch, caplo
     assert "so the action style was used" in warning["message"]
     assert warning["message"] in caplog.text
     assert not (run.proj / "telemetry.json").exists()
+
+
+def test_action_cam_whose_telemetry_cannot_be_read_runs_as_action(run, monkeypatch, caplog):
+    """Every source has telemetry but every read fails: as without telemetry, with a WARNING
+    naming the files, nothing cached (no telemetry.json) and a record that says why."""
+    videos, _ = _cam_run(run, monkeypatch, {"a.mp4": True, "b.mp4": True}, {})
+    raised = []
+
+    def prepare(sources, durations, project, *, raise_if_all_failed=True):
+        raised.append(raise_if_all_failed)
+        return SimpleNamespace(
+            telemetry={str(s): None for s in sources}, unreadable=[str(s) for s in sources]
+        )
+
+    monkeypatch.setattr(actioncam, "prepare", prepare)
+    with caplog.at_level(logging.WARNING), jsonout.run("analyze") as res:
+        analyze.analyze(videos, get_style("action-cam"), run.proj, vision=False, layers=True)
+    hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
+    st = hl["settings"]
+    assert hl["style"] == "action" and st["style_requested"] == "action-cam"
+    assert st["style_fallback"] == {"from": "action-cam", "reason": "telemetry not read"}
+    assert st["scenes"] is True and raised == [False]
+    [warning] = _no_telemetry_warnings(res)
+    assert warning["files"] == [str(v) for v in videos]
+    assert "could not be read (a.mp4, b.mp4)" in warning["message"]
+    assert warning["message"] in caplog.text
+    assert not (run.proj / "telemetry.json").exists()
+
+
+def test_a_360_project_still_raises_when_every_telemetry_read_fails(run, monkeypatch):
+    """No fallback without ``telemetry_fallback`` (``360 analyze``): the read error stays."""
+    videos, _ = _cam_run(run, monkeypatch, {"a.mp4": True}, {})
+    raised = []
+
+    def prepare(sources, durations, project, *, raise_if_all_failed=True):
+        raised.append(raise_if_all_failed)
+        raise OSError("Input/output error")
+
+    monkeypatch.setattr(actioncam, "prepare", prepare)
+    with pytest.raises(OSError, match="Input/output"):
+        analyze.analyze(
+            videos, get_style("action-cam"), run.proj, vision=False, telemetry_fallback=False
+        )
+    assert raised == [True]
 
 
 def test_a_fallen_back_style_keeps_the_must_include_crash_it_was_given(run, monkeypatch):
@@ -1509,8 +1554,9 @@ def test_features_by_source_of_an_action_cam_run_follows_each_sources_telemetry(
     monkeypatch.setattr(
         actioncam,
         "prepare",
-        lambda sources, durations, project: SimpleNamespace(
-            telemetry={str(s): full if s.name == "a.mp4" else None for s in sources}
+        lambda sources, durations, project, **kw: SimpleNamespace(
+            telemetry={str(s): full if s.name == "a.mp4" else None for s in sources},
+            unreadable=[],
         ),
     )
 

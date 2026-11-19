@@ -53,7 +53,19 @@ def test_extract_does_not_cache_a_failed_read_as_no_telemetry(home, tmp_path, mo
     assert not meta.exists()  # asked again next time
     _parser(monkeypatch, OSError("Unsupported file format"))
     assert telemetry.extract(src, 10.0) is None
-    assert cache.load_json(meta) == {"none": True}  # a file without telemetry is remembered
+    assert cache.load_json(meta) == {"none": "no_track"}  # a file without telemetry is remembered
+
+
+def test_extract_reads_again_an_old_none_entry(home, tmp_path, monkeypatch):
+    """A bare ``{"none": true}`` may follow a read error of an older run: a cache miss."""
+    src, meta = _extract_env(home, tmp_path, monkeypatch)
+    cache.save_json(meta, {"none": True})
+    cache.save_npz(meta.with_suffix(".npz"))
+    _parser(monkeypatch, OSError("Unsupported file format"))
+    assert telemetry.extract(src, 10.0) is None
+    assert cache.load_json(meta) == {"none": "no_track"}  # read again, now remembered as such
+    _parser(monkeypatch, OSError("Input/output error"))
+    assert telemetry.extract(src, 10.0) is None  # the new entry is trusted: no read
 
 
 def test_imu_grids_lets_a_read_error_through_without_caching_it(home, tmp_path, monkeypatch):
@@ -65,6 +77,18 @@ def test_imu_grids_lets_a_read_error_through_without_caching_it(home, tmp_path, 
     _parser(monkeypatch, OSError("Unsupported file format"))
     assert crash.imu_grids(src, 10.0) is None
     assert crash._imu_cache(src).exists()
+
+
+def test_imu_grids_reads_again_an_old_none_cache(home, tmp_path, monkeypatch):
+    src, _ = _extract_env(home, tmp_path, monkeypatch)
+    cache.save_npz(crash._imu_cache(src), none=np.zeros(1))  # older runs: also after an error
+    _parser(monkeypatch, OSError("Input/output error"))
+    with pytest.raises(OSError, match="Input/output"):
+        crash.imu_grids(src, 10.0)
+    _parser(monkeypatch, OSError("Unsupported file format"))
+    assert crash.imu_grids(src, 10.0) is None
+    _parser(monkeypatch, OSError("Input/output error"))
+    assert crash.imu_grids(src, 10.0) is None  # the new "none" is trusted
 
 
 # ----------------------------------------------------------------- A686 / A315: one probe per file
@@ -187,9 +211,41 @@ def test_crash_inputs_without_telemetry_when_it_cannot_be_read(home, tmp_path, m
         inp = crash.load_inputs(src, 10.0, crash.CrashParams())
     assert inp.tel is None and inp.imu is None
     lines = [r.getMessage() for r in caplog.records if "telemetry not read" in r.getMessage()]
-    assert len(lines) == 2 and "ride.mp4: telemetry not read (Input/output error)" in lines[0]
-    assert [w for w in result.warnings if w["code"] == "step_failed"]
+    assert len(lines) == 1 and "ride.mp4: telemetry not read (Input/output error)" in lines[0]
+    assert len([w for w in result.warnings if w["code"] == "step_failed"]) == 1
     assert not meta.exists() and not crash._imu_cache(src).exists()
+
+
+def test_a_forced_imu_read_error_does_not_leave_the_old_grids_in_use(
+    home, tmp_path, monkeypatch, caplog
+):
+    """F3: ``crashes --force`` whose IMU read fails drops the old cache, so the source is
+    read again and warned for instead of scored from the old grids silently."""
+    import json  # noqa: PLC0415
+    from dataclasses import replace  # noqa: PLC0415
+
+    from cutpoint import mix, sources  # noqa: PLC0415
+    from cutpoint.events import visual, voice  # noqa: PLC0415
+
+    src, _ = _extract_env(home, tmp_path, monkeypatch)
+    project = tmp_path / "proj"
+    project.mkdir()
+    hl = {"sources": [{"path": str(src), "duration": 60.0}]}
+    (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
+    cache.save_npz(crash._imu_cache(src), acc_g=np.ones(5, np.float32))  # an earlier run's
+    _parser(monkeypatch, OSError("Input/output error"))
+    monkeypatch.setattr(telemetry, "extract", lambda s, d: None)
+    monkeypatch.setattr(voice, "load_voice", lambda s: None)
+    monkeypatch.setattr(visual, "load_visual", lambda s: None)
+    monkeypatch.setattr(sources, "source_words", lambda s, lang: None)
+    monkeypatch.setattr(mix, "lift_rides", lambda s, n: None)
+    monkeypatch.setattr(crash, "candidate_events", lambda inp, p: [])
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())
+    with caplog.at_level("WARNING", logger="cutpoint.crash"):
+        crash.detect_project(project, params=own_words, dense=False, sheets=0, force=True)
+    lines = [r.getMessage() for r in caplog.records if "telemetry not read" in r.getMessage()]
+    assert len(lines) == 1 and "Input/output error" in lines[0]
+    assert not crash._imu_cache(src).exists()
 
 
 def test_imu_grids_falls_back_to_the_full_file_when_the_gpmf_copy_fails(

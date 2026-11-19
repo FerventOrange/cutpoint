@@ -607,6 +607,7 @@ def has_telemetry(src: Path) -> bool:
 
 
 # --------------------------------------------------------------------------- IMU (shared)
+_NO_TRACK = "no_track"  # telemetry cache: the file has no telemetry track (a read error is not)
 _NO_TELEMETRY = "Unsupported file format"  # telemetry-parser: no telemetry in the file
 
 
@@ -840,9 +841,10 @@ def extract(src: Path, duration: float, params: TelemetryParams | None = None) -
     if npz.exists() and meta_path.exists():
         data = cache.load_json(meta_path)
         if data is not None:
-            if data.get("none"):
+            if data.get("none") == _NO_TRACK:
                 return None
-            if (grid := cache.load_npz(npz)) is not None:
+            # a bare ``{"none": true}`` (older runs: also written after a read error) is read again
+            if "none" not in data and (grid := cache.load_npz(npz)) is not None:
                 return Telemetry(
                     source=str(src),
                     duration=data["duration"],
@@ -868,7 +870,7 @@ def extract(src: Path, duration: float, params: TelemetryParams | None = None) -
     if tel is not None and x3_imu is not None:
         _x3_clock(tel, x3_imu)
     if tel is None:
-        cache.save_json(meta_path, {"none": True})
+        cache.save_json(meta_path, {"none": _NO_TRACK})
         cache.save_npz(npz)
         return None
     tel.source = str(src)

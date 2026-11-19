@@ -382,8 +382,10 @@ def imu_grids(
     path = _imu_cache(src)
     if not force and (z := cache.load_npz(path)) is not None:
         if "none" in z:
-            return None
-        return {k: v.astype(np.float64) for k, v in z.items()}
+            if z["none"][0] > 0:  # an old "none" (zeros) may follow a read error: read again
+                return None
+        else:
+            return {k: v.astype(np.float64) for k, v in z.items()}
     io, _, read_path, unstaged = imu_read_path(src)
     t0 = time.perf_counter()
     grids = None
@@ -416,7 +418,7 @@ def _imu_cache(src: Path) -> Path:
 
 def _save_imu(path: Path, grids: dict[str, np.ndarray] | None) -> None:
     if grids is None:
-        cache.save_npz(path, none=np.zeros(1))
+        cache.save_npz(path, none=np.ones(1))  # no IMU in the file (a read error raises)
     else:
         cache.save_npz(path, **{k: v.astype(np.float32) for k, v in grids.items()})
 
@@ -429,11 +431,9 @@ def cache_imu_grids(
     """Fill the :func:`imu_grids` cache of ``src`` from a parse already made (by
     :func:`cutpoint.telemetry.extract`), so the file is not parsed a second time.
 
-    A valid cache is kept as it is. A failed parse (None) caches nothing, so
-    :func:`imu_grids` tries on its own; an empty IMU result is cached as "none".
+    A valid cache is kept as it is. A file without telemetry (None) and an empty IMU result
+    are cached as "none"; a read error never gets here (it raises in the parse).
     """
-    if parsed is None:
-        return
     path = _imu_cache(src)
     if cache.load_npz(path) is None:
         _save_imu(path, _grids_of(parsed, duration))
@@ -631,9 +631,10 @@ class SourceInputs:
         return self.path.name
 
 
-def _telemetry_or_none(read: Callable[[], Any], src: Path, warn: bool = True) -> Any:
-    """``read()``, or None when the telemetry cannot be read: the source is then scored without
-    it for this run (a WARNING and a ``step_failed`` warning name it; nothing is cached).
+def _telemetry_or_none(read: Callable[[], Any], src: Path, warn: bool = True) -> tuple[Any, bool]:
+    """``(read(), False)``, or ``(None, True)`` when the telemetry cannot be read: the source
+    is then scored without it for this run (a WARNING and a ``step_failed`` warning name it,
+    unless ``warn`` is False; nothing is cached).
 
     Raises:
         LowMemoryError: Too little memory (also an out-of-memory error).
@@ -641,7 +642,7 @@ def _telemetry_or_none(read: Callable[[], Any], src: Path, warn: bool = True) ->
     from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
 
     try:
-        return read()
+        return read(), False
     except Exception as err:  # noqa: BLE001 - one unreadable source, logged
         SourceGuard(
             "crash detection",
@@ -649,7 +650,7 @@ def _telemetry_or_none(read: Callable[[], Any], src: Path, warn: bool = True) ->
             debug_what="telemetry",
             log=logger,
         ).skip(err, src.name, src, warn=warn)
-        return None
+        return None, True
 
 
 def load_inputs(
@@ -669,8 +670,11 @@ def load_inputs(
     from cutpoint.telemetry import extract  # noqa: PLC0415
 
     inp = SourceInputs(path=src, duration=duration)
-    inp.tel = _telemetry_or_none(lambda: extract(src, duration), src)
-    inp.imu = _telemetry_or_none(lambda: imu_grids(src, duration, tmp_dir=tmp_dir), src)
+    inp.tel, tel_failed = _telemetry_or_none(lambda: extract(src, duration), src)
+    # one warning per source: the IMU read of a source whose telemetry failed is DEBUG only
+    inp.imu, _ = _telemetry_or_none(
+        lambda: imu_grids(src, duration, tmp_dir=tmp_dir), src, warn=not tel_failed
+    )
     inp.voice = VO.load_voice(src)
     inp.visual = V.load_visual(src)
     inp.words = source_words(src, language)
@@ -1412,11 +1416,14 @@ def detect_project(
         for src, dur in sources:
             try:
                 if force:
-                    _telemetry_or_none(
+                    _, failed = _telemetry_or_none(
                         lambda s=src, d=dur: imu_grids(s, d, force=True, tmp_dir=tmp_dir),
                         src,
                         warn=False,
-                    )  # a read error is warned for by load_inputs below
+                    )
+                    if failed:
+                        # not the old grids: load_inputs below reads again and warns
+                        cache.remove(_imu_cache(src))
                 inp = load_inputs(src, dur, p, tmp_dir, language)
             except Exception as err:  # noqa: BLE001 - one unreadable source, logged
                 guard.skip(err, src.name, src)

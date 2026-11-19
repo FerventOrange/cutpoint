@@ -1067,7 +1067,7 @@ def test_extract_parses_a_source_once_for_its_telemetry_and_the_crash_imu_grids(
     assert all(np.allclose(grids[k], expected[k], equal_nan=True, atol=1e-3) for k in expected)
 
 
-def test_extract_keeps_valid_crash_imu_grids_and_leaves_a_failed_parse_to_imu_grids(
+def test_extract_keeps_valid_crash_imu_grids_and_caches_a_file_without_telemetry_as_none(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (s, None, s, False))
@@ -1083,7 +1083,8 @@ def test_extract_keeps_valid_crash_imu_grids_and_leaves_a_failed_parse_to_imu_gr
     calls = []
     monkeypatch.setattr(telemetry, "parse_imu", lambda path, level=20: calls.append(path))
     assert telemetry.extract(other, 60.0) is None
-    assert crash.imu_grids(other, 60.0) is None and calls == [other, other]  # imu_grids retries
+    # None is "no telemetry" (a read error raises): cached for imu_grids, which does not parse
+    assert crash.imu_grids(other, 60.0) is None and calls == [other]
 
 
 @pytest.mark.parametrize(
