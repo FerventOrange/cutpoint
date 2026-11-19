@@ -24,7 +24,7 @@ cutpoint assemble projects/trip/clips --loudnorm
   `vertical_m`, per-source summary and events);
 - writes these files, `crash_check\` and `action_cam_features\` only when it completes: a cancelled
   run leaves the previous ones as they were ([analyze](../commands.md#analyze));
-- orders clips by start time (GPS time, else the camera clock) and splits the day into runs at
+- orders clips by start time (GPS time, else the camera clock; an Insta360 X3 clip by its file name, converted to UTC with the zone offset of the nearest GoPro GPS clip of the project, else this computer's time zone, and then marked `order` `unknown vs GPS clips` in `telemetry.json` when the project has GPS or camera-clock clips; both cameras must be set to the same zone, and a GoPro whose clock was never set (UTC) gives X3 clips UTC times without a warning) and splits the day into runs at
   lift segments and gaps over 4 minutes.
 
 Action-cam needs GoPro or Insta360 X3 telemetry. When no source has any (phones, other
