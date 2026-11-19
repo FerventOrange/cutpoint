@@ -18,7 +18,7 @@ import numpy as np
 import requests
 
 from cutpoint import cache
-from cutpoint.backends import ollama_get, ollama_post, ollama_url
+from cutpoint.backends import ollama_post, ollama_ps, ollama_url
 
 logger = logging.getLogger(__name__)
 
@@ -258,12 +258,11 @@ def unload_ollama(url: str | None = None) -> list[str]:
         url = url or ollama_url()
         if not ollama_allowed(url):  # an Ollama on another machine the user did not agree to
             return []
-        loaded = ollama_get(url, "/api/ps", timeout=(1, 3)).get("models", [])
     except (requests.RequestException, ValueError):
         return []
     names = []
-    for m in loaded if isinstance(loaded, list) else []:  # another shape: none (A116)
-        name = (m.get("name") or m.get("model")) if isinstance(m, dict) else None
+    for m in ollama_ps(url):
+        name = m.get("name") or m.get("model")
         if not isinstance(name, str):
             continue
         try:
@@ -277,10 +276,7 @@ def unload_ollama(url: str | None = None) -> list[str]:
         return names
     deadline = time.time() + 15
     while time.time() < deadline:
-        try:
-            if not ollama_get(url, "/api/ps", timeout=(1, 3)).get("models"):
-                break
-        except (requests.RequestException, ValueError):
+        if not ollama_ps(url):
             break
         time.sleep(0.5)
     return names

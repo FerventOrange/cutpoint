@@ -22,9 +22,11 @@ from cutpoint import cache, memguard, paths, state
 from cutpoint.backends import (
     normalize_ollama_url,
     ollama_get,
+    ollama_loaded_entry,
     ollama_post,
     ollama_reply,
     ollama_url,
+    same_model,
 )
 from cutpoint.config import get_config
 from cutpoint.errors import FFmpegError
@@ -573,14 +575,14 @@ class VisionRater:
         # entries of another shape are left out (A116)
         models = [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
         names = {m["name"] for m in models if isinstance(m.get("name"), str)}
-        if self.model not in names and f"{self.model}:latest" not in names:
+        if not any(same_model(name, self.model) for name in names):
             logger.info(
                 "Ollama model %s not pulled (have: %s); skipping vision",
                 self.model,
                 ", ".join(sorted(names)) or "none",
             )
             return False
-        found = (m for m in models if m.get("name") in (self.model, f"{self.model}:latest"))
+        found = (m for m in models if same_model(m.get("name"), self.model))
         entry = next(found, {})
         digest, size = entry.get("digest"), entry.get("size")
         self.digest = digest if isinstance(digest, str) and digest else None
@@ -1250,16 +1252,9 @@ class VisionRater:
         Vision role, the model not loaded, no answer)."""
         if self.via or self.consent_needed:
             return None
-        try:
-            models = ollama_get(self.url, "/api/ps", timeout=(1, 3)).get("models", [])
-        except (requests.RequestException, ValueError, AttributeError):
-            return None
-        for m in models if isinstance(models, list) else []:
-            names = (self.model, f"{self.model}:latest")
-            if isinstance(m, dict) and (m.get("name") in names or m.get("model") in names):
-                vram = m.get("size_vram")
-                return vram > 0 if isinstance(vram, int) else None
-        return None
+        entry = ollama_loaded_entry(self.url, self.model)
+        vram = entry.get("size_vram") if entry else None
+        return vram > 0 if isinstance(vram, int) else None
 
     def unload(self) -> None:
         """Free the model's memory now (``keep_alive: 0``) instead of after Ollama's

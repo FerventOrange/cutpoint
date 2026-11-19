@@ -88,3 +88,110 @@ def test_the_peak_tag_probe_names_its_input_with_i(monkeypatch, tmp_path) -> Non
     assemble._peak_tagged(clip)
     (cmd,) = seen
     assert cmd[-4:] == [*WL, "-i", str(clip)]
+
+
+# --------------------------------------------------------------------------- A400
+
+
+class _Proc:
+    """A ``Popen`` stand-in: ``communicate`` answers ``outcome`` (raised when an exception)."""
+
+    def __init__(self, cmd, outcome=(b"out", b"err"), returncode=0, **kwargs) -> None:
+        self.cmd, self.kwargs, self.outcome, self.returncode = cmd, kwargs, outcome, returncode
+        self.pid, self.killed, self.calls = 7, False, 0
+
+    def communicate(self, timeout=None):
+        self.calls += 1
+        if self.calls == 1 and isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return (b"", b"") if self.calls > 1 else self.outcome
+
+    def kill(self) -> None:
+        self.killed = True
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+def test_spawn_isolates_and_registers_the_child(monkeypatch) -> None:
+    made, jobs = [], []
+
+    def popen(cmd, **kw):
+        made.append(_Proc(cmd, **kw))
+        return made[-1]
+
+    monkeypatch.setattr(fu.subprocess, "Popen", popen)
+    monkeypatch.setattr(fu.procs, "kill_with_parent", jobs.append)
+    scope = fu.ChildScope()
+    proc = fu._spawn(["ffmpeg"], scope, isolate=True, stdout=fu.subprocess.PIPE)
+    assert proc.kwargs == {"stdout": fu.subprocess.PIPE, **fu.procs.isolated_kwargs()}
+    assert jobs == [proc] and proc in scope._procs
+    plain = fu._spawn(["ffmpeg"], None, bufsize=4)
+    assert plain.kwargs == {"bufsize": 4} and jobs == [proc]
+    scope.cancel()
+    with pytest.raises(KeyboardInterrupt):
+        fu._spawn(["ffmpeg"], scope)
+    assert len(made) == 2  # a cancelled scope starts no child
+
+
+@pytest.mark.parametrize("step", ["job", "scope"])
+def test_spawn_stops_the_child_when_a_ctrl_c_hits_right_after_the_start(monkeypatch, step):
+    """Review F1: a KeyboardInterrupt in the job-object or scope step stops the child (it is
+    waited for) and leaves it out of the scope."""
+    made, stopped = [], []
+
+    def popen(cmd, **kw):
+        made.append(_Proc(cmd, **kw))
+        return made[-1]
+
+    def interrupt(*_a):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(fu.subprocess, "Popen", popen)
+    monkeypatch.setattr(fu.procs, "stop_child", lambda proc, err: stopped.append((proc, err)))
+    scope = fu.ChildScope()
+    if step == "job":
+        monkeypatch.setattr(fu.procs, "kill_with_parent", interrupt)
+    else:
+        real_add = scope.add
+
+        def add(proc):
+            real_add(proc)
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(scope, "add", add)
+    with pytest.raises(KeyboardInterrupt):
+        fu._spawn(["ffmpeg"], scope, isolate=True)
+    (proc,) = made
+    assert [p for p, _ in stopped] == [proc] and isinstance(stopped[0][1], KeyboardInterrupt)
+    assert proc not in scope._procs
+
+
+def test_communicate_times_out_with_the_callers_words() -> None:
+    scope = fu.ChildScope()
+    proc = _Proc(["ffmpeg"], outcome=fu.subprocess.TimeoutExpired("ffmpeg", 5))
+    scope.add(proc)
+    with pytest.raises(fu.FFmpegError, match=r"^ffprobe timed out after 5s on x\.mp4$"):
+        fu._communicate(proc, scope, 5, "ffprobe", " on x.mp4")
+    assert proc.killed and proc.calls == 2 and proc not in scope._procs
+
+
+def test_communicate_returns_the_output_and_leaves_the_exit_code_to_the_caller() -> None:
+    proc = _Proc(["ffmpeg"], returncode=1)
+    assert fu._communicate(proc, None, None, "ffmpeg") == (b"out", b"err")
+    scope = fu.ChildScope()
+    assert fu._communicate(_Proc(["ffmpeg"], returncode=1), scope, None, "ffmpeg")[0] == b"out"
+
+
+def test_communicate_a_failed_exit_in_a_cancelled_scope_is_a_ctrl_c(monkeypatch) -> None:
+    scope = fu.ChildScope()
+    monkeypatch.setattr(scope, "wait_cancelled", lambda t: t == fu.STOP_GRACE_S)
+    with pytest.raises(KeyboardInterrupt):
+        fu._communicate(_Proc(["ffmpeg"], returncode=1), scope, None, "ffmpeg")
+    assert fu._communicate(_Proc(["ffmpeg"]), scope, None, "ffmpeg") == (b"out", b"err")
+    scope.cancel()
+    with pytest.raises(KeyboardInterrupt):  # stopped from outside: whatever its exit
+        fu._communicate(_Proc(["ffmpeg"]), scope, None, "ffmpeg")

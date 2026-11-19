@@ -60,6 +60,7 @@ import os
 import re
 import shlex
 import signal
+import socket
 import statistics
 import subprocess
 import sys
@@ -74,7 +75,7 @@ from typing import Any
 
 import requests
 
-from cutpoint import __version__, extras, paths, procs, reset_state
+from cutpoint import __version__, extras, folders, paths, reset_state
 from cutpoint.category import CATEGORIES
 
 logger = logging.getLogger(__name__)
@@ -424,8 +425,8 @@ def machine_lock() -> Path:
 @contextlib.contextmanager
 def bench_lock(lock: Path) -> Iterator[Path]:
     """Hold ``lock`` (the pid, created exclusively) for the whole run. A lock whose process is
-    gone is replaced; :func:`cutpoint.procs.pid_alive` checks it (OpenProcess on Windows, where
-    ``os.kill`` would end the process). A lock without a pid that is younger than
+    gone is replaced; :func:`cutpoint.folders.owner_alive` checks it (OpenProcess on Windows,
+    where ``os.kill`` would end the process). A lock without a pid that is younger than
     :data:`LOCK_FRESH_S` is being written: busy."""
     lock.parent.mkdir(parents=True, exist_ok=True)
     for _ in range(2):
@@ -438,7 +439,8 @@ def bench_lock(lock: Path) -> Iterator[Path]:
             except (OSError, ValueError):
                 pid, mtime = 0, None
             fresh = mtime is not None and time.time() - mtime < LOCK_FRESH_S
-            if (pid and procs.pid_alive(pid, not_after=mtime)) or (not pid and fresh):
+            alive = pid and folders.owner_alive(pid, socket.gethostname(), lock, held=True)
+            if alive or (not pid and fresh):
                 raise BenchBusyError(
                     f"another bench run (pid {pid or '?'}) holds {lock}; wait for it, or "
                     "delete the file if no bench is running"

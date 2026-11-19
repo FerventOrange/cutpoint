@@ -637,6 +637,65 @@ def test_a_failed_text_check_keeps_the_frame_probe_and_is_not_cached(text_check,
     assert text_check.texts == 1  # one attempt per process (edit --style auto detects twice)
 
 
+def test_cached_check_reads_a_fresh_record_probes_a_stale_one_and_fails_once(tmp_path, monkeypatch):
+    """The shared cache rule of the HUD text check and the screen-text cue (A330): a fresh
+    record is used as is; else the probe runs once, its record is saved; a failure is
+    remembered for the folder and not retried."""
+    from cutpoint import cache, ffmpeg_utils  # noqa: PLC0415
+
+    info = type("Info", (), {"duration": 60.0, "width": 64, "height": 36})()
+    monkeypatch.setattr(ffmpeg_utils, "probe", lambda io: info)
+    runs: list[tuple] = []
+    answer: list[dict | None] = [{"v": 2, "anchors": []}]
+
+    def probe_fn(*args):
+        runs.append(args)
+        return answer[0]
+
+    failed: set[Path] = set()
+    io = tmp_path / "a.mp4"
+
+    def check(folder: Path) -> dict | None:
+        return category._cached_check(
+            probe(str(io)),
+            folder,
+            io,
+            file="rec.json",
+            fresh=lambda r: isinstance(r, dict) and r.get("v") == 2,
+            failed=failed,
+            probe_fn=probe_fn,
+            what="Test check",
+        )
+
+    cache.save_json(tmp_path / "rec.json", {"v": 1})  # stale: probed and replaced
+    assert check(tmp_path) == {"v": 2, "anchors": []}
+    assert runs == [(io, 60.0, 64, 36)]
+    assert cache.load_json(tmp_path / "rec.json") == {"v": 2, "anchors": []}
+    assert check(tmp_path) == {"v": 2, "anchors": []} and len(runs) == 1  # fresh: no probe
+    other = tmp_path / "other"
+    other.mkdir()
+    answer[0] = None  # too few frames: failed, not saved, not tried again
+    assert check(other) is None and check(other) is None
+    assert len(runs) == 2 and failed == {other}
+    assert not (other / "rec.json").exists()
+
+
+def test_cached_check_needing_ocr_does_nothing_without_the_engine(tmp_path, monkeypatch):
+    monkeypatch.setattr(category, "ocr_installed", lambda: False)
+    got = category._cached_check(
+        probe(str(tmp_path / "a.mp4")),
+        tmp_path,
+        tmp_path / "a.mp4",
+        file="rec.json",
+        fresh=lambda r: False,
+        failed=set(),
+        probe_fn=lambda *a: pytest.fail("no probe without the OCR engine"),
+        what="Test check",
+        needs_ocr=True,
+    )
+    assert got is None
+
+
 def test_a_text_check_short_of_memory_stops_the_detection(text_check, monkeypatch):
     """Review F2 (#109): the OCR engine short of memory is no failed check; the detection
     does not go on without it (nor mark the check failed for the resumed run)."""

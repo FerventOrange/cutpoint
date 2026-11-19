@@ -671,6 +671,51 @@ def _bare(p: SourceProbe) -> SourceProbe:
     return replace(p, hud_text=None, screen_anchors=None)
 
 
+def _cached_check(
+    found: SourceProbe,
+    cdir: Path,
+    io: Path | None,
+    *,
+    file: str,
+    fresh: Callable[[Any], bool],
+    failed: set[Path],
+    probe_fn: Callable[[Path, float, int, int], dict[str, Any] | None],
+    what: str,
+    needs_ocr: bool = False,
+) -> dict[str, Any] | None:
+    """The record of one cached check of ``found`` (the HUD text check or the screen-text
+    cue): ``file`` in ``cdir`` when ``fresh``, else ``probe_fn`` (saved there). None when it
+    failed in this process before (``failed``), now (``failed`` then has ``cdir``) or, with
+    ``needs_ocr``, there is no OCR engine (Cutpoint lite)."""
+    rec = cache.load_json(cdir / file)
+    if fresh(rec):
+        return rec
+    if cdir in failed:
+        return None
+    if needs_ocr and not ocr_installed():
+        logger.debug("%s of %s: no OCR engine, screen-text cue", what, found.path)
+        return None
+    from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
+
+    io = io or remap_source(Path(found.path))
+    t0 = time.perf_counter()
+    try:
+        info = probe(io)
+        rec = probe_fn(io, info.duration, info.width, info.height)
+    except LowMemoryError:  # the memory guard stops the run; no guess without the check
+        raise
+    except Exception as err:  # noqa: BLE001 - an OCR or decode failure: the frame probe stands
+        logger.warning("%s of %s failed: %s", what, Path(found.path).name, err)
+        failed.add(cdir)
+        return None
+    if rec is None:
+        failed.add(cdir)
+        return None
+    logger.debug("%s of %s: %.1fs", what, found.path, time.perf_counter() - t0)
+    cache.save_json(cdir / file, rec)
+    return rec
+
+
 def _with_text(
     found: SourceProbe, cdir: Path, io: Path | None = None, every_source: bool = False
 ) -> SourceProbe:
@@ -681,37 +726,25 @@ def _with_text(
         return found
     from cutpoint.events.ocr_raw import engine_version  # noqa: PLC0415
 
-    rec = cache.load_json(cdir / TEXT_FILE)
-    fresh = (
-        isinstance(rec, dict)
-        and rec.get("version") == TEXT_VERSION
-        and rec.get("engine") == engine_version()
-        and isinstance(rec.get("anchors"), list)
+    engine = engine_version()
+    rec = _cached_check(
+        found,
+        cdir,
+        io,
+        file=TEXT_FILE,
+        fresh=lambda r: (
+            isinstance(r, dict)
+            and r.get("version") == TEXT_VERSION
+            and r.get("engine") == engine
+            and isinstance(r.get("anchors"), list)
+        ),
+        failed=_TEXT_FAILED,
+        probe_fn=text_probe,
+        what="HUD text check",
+        needs_ocr=True,
     )
-    if not fresh:
-        if cdir in _TEXT_FAILED:
-            return found
-        if not ocr_installed():
-            logger.debug("HUD text check of %s: no OCR engine, screen-text cue", found.path)
-            return found
-        from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
-
-        io = io or remap_source(Path(found.path))
-        t0 = time.perf_counter()
-        try:
-            info = probe(io)
-            rec = text_probe(io, info.duration, info.width, info.height)
-        except LowMemoryError:  # the memory guard stops the run; no guess without the HUD check
-            raise
-        except Exception as err:  # noqa: BLE001 - an OCR or decode failure: the frame probe stands
-            logger.warning("HUD text check of %s failed: %s", Path(found.path).name, err)
-            _TEXT_FAILED.add(cdir)
-            return found
-        if rec is None:
-            _TEXT_FAILED.add(cdir)
-            return found
-        logger.debug("HUD text check of %s: %.1fs", found.path, time.perf_counter() - t0)
-        cache.save_json(cdir / TEXT_FILE, rec)
+    if rec is None:
+        return found
     return replace(found, hud_text=hud_anchors(rec["anchors"], found.box))
 
 
@@ -800,33 +833,22 @@ def _with_anchors(
     :func:`anchor_probe` (cached); unchanged when the cue fails (tried once per process)."""
     if found.hud_text is not None or ocr_installed() or not needs_text(found, every_source):
         return found
-    rec = cache.load_json(cdir / ANCHOR_FILE)
-    fresh = (
-        isinstance(rec, dict)
-        and rec.get("version") == ANCHOR_VERSION
-        and isinstance(rec.get("anchors"), list)
+    rec = _cached_check(
+        found,
+        cdir,
+        io,
+        file=ANCHOR_FILE,
+        fresh=lambda r: (
+            isinstance(r, dict)
+            and r.get("version") == ANCHOR_VERSION
+            and isinstance(r.get("anchors"), list)
+        ),
+        failed=_ANCHORS_FAILED,
+        probe_fn=anchor_probe,
+        what="Screen-text cue",
     )
-    if not fresh:
-        if cdir in _ANCHORS_FAILED:
-            return found
-        from cutpoint.ffmpeg_utils import probe  # noqa: PLC0415
-
-        io = io or remap_source(Path(found.path))
-        t0 = time.perf_counter()
-        try:
-            info = probe(io)
-            rec = anchor_probe(io, info.duration, info.width, info.height)
-        except LowMemoryError:  # the memory guard stops the run
-            raise
-        except Exception as err:  # noqa: BLE001 - a decode failure: the frame probe stands
-            logger.warning("Screen-text cue of %s failed: %s", Path(found.path).name, err)
-            _ANCHORS_FAILED.add(cdir)
-            return found
-        if rec is None:
-            _ANCHORS_FAILED.add(cdir)
-            return found
-        logger.debug("Screen-text cue of %s: %.1fs", found.path, time.perf_counter() - t0)
-        cache.save_json(cdir / ANCHOR_FILE, rec)
+    if rec is None:
+        return found
     return replace(found, screen_anchors=screen_anchors(rec["anchors"], found.box))
 
 

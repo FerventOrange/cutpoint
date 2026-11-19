@@ -293,7 +293,7 @@ def test_lock_contention_and_stale_pid(tmp_path, monkeypatch):
             pass
     assert not lock.exists()
     alive = {4242: True}
-    monkeypatch.setattr(bench.procs, "pid_alive", lambda pid, not_after=None: alive[pid])
+    monkeypatch.setattr(bench.folders.procs, "pid_alive", lambda pid, not_after=None: alive[pid])
     lock.write_text("4242")
     with pytest.raises(bench.BenchBusyError, match="pid 4242"), bench.bench_lock(path):
         pass

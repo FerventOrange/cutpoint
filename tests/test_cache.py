@@ -129,6 +129,34 @@ def test_save_json_always_locked_raises_and_cleans_up(tmp_path, monkeypatch):
     assert [p.name for p in tmp_path.iterdir()] == ["d.json"]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes")
+@pytest.mark.parametrize("match", [True, False])
+def test_atomic_path_renames_its_temp_file_with_the_mode_asked_for(tmp_path, match):
+    """A401: the block writes a unique temp file beside the target, renamed onto it at the
+    end; ``match`` gives it the target's mode, else it keeps the block's (a copy's)."""
+    target = tmp_path / "f.bin"
+    target.write_bytes(b"old")
+    target.chmod(0o640)
+    with cache.atomic_path(target, match=match) as tmp:
+        assert tmp.parent == tmp_path and tmp.name.startswith("f.bin.") and tmp.exists()
+        tmp.write_bytes(b"new")
+        tmp.chmod(0o604)
+        assert target.read_bytes() == b"old"  # not in place before the block ends
+    assert target.read_bytes() == b"new"
+    assert target.stat().st_mode & 0o777 == (0o640 if match else 0o604)
+    assert [p.name for p in tmp_path.iterdir()] == ["f.bin"]
+
+
+def test_atomic_path_failure_removes_the_temp_file_and_keeps_the_target(tmp_path):
+    target = tmp_path / "f.bin"
+    target.write_bytes(b"old")
+    with pytest.raises(KeyboardInterrupt), cache.atomic_path(target) as tmp:
+        tmp.write_bytes(b"half")
+        raise KeyboardInterrupt
+    assert target.read_bytes() == b"old"
+    assert [p.name for p in tmp_path.iterdir()] == ["f.bin"]
+
+
 def test_save_json_other_error_not_retried_no_tmp(tmp_path, monkeypatch):
     calls = []
 

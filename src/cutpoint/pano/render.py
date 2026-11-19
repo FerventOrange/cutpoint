@@ -585,23 +585,9 @@ def backup_path_file(f: Path) -> Path:
     (``<file>.bak``, then ``<file>.1.bak``, ``<file>.2.bak``, ...) and return it; earlier
     backups are never overwritten."""
     bak = free_backup_name(f, f.name, ".bak")
-    write_atomic(bak, lambda tmp: shutil.copy2(f, tmp))
+    with cache.atomic_path(bak, match=False) as tmp:  # the copy keeps the file's mode
+        shutil.copy2(f, tmp)
     return bak
-
-
-def write_atomic(path: Path, fill: Callable[[Path], object]) -> None:
-    """Have ``fill`` write a temp file next to ``path`` (``<name>.<random>.tmp``, which
-    the director's ``*.json`` globs do not match), then rename it onto ``path``; a
-    reader never sees a half-written ``path``. The temp file is removed on any failure."""
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
-    os.close(fd)
-    tmp = Path(name)
-    try:
-        fill(tmp)
-        tmp.replace(path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def free_backup_name(f: Path, base: str, ext: str) -> Path:
