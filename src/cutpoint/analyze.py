@@ -2537,38 +2537,85 @@ def nominate_candidates(
     return describe_candidates(out, style, ps, off)
 
 
+@dataclass(frozen=True)
+class CachedSource:
+    """What the caches of an analysis hold for one of its sources (:func:`cached_sources`):
+    its ``index`` in highlights.json's ``sources``, its cache folder ``cdir`` (None while
+    ``gap`` is ``recovered`` or ``offline``), ``span`` (0: none recorded), which of the cached
+    loudness, transcript and full scene pass (:data:`SCENES_FILE`) are there, and whether its
+    scene cuts come from edge windows instead (``windowed``, :func:`edge_windows`). ``gap``:
+    why it gets no grid, None when it gets one: ``recovered`` (read in parts), ``offline``
+    (not reachable), ``length`` (no length recorded) or ``caches`` (nothing cached to build
+    from)."""
+
+    index: int
+    source: Path
+    gap: str | None
+    cdir: Path | None = None
+    span: float = 0.0
+    loudness: bool = False
+    transcript: bool = False
+    scenes: bool = False
+    windowed: bool = False
+
+
+def cached_sources(hl: dict[str, Any], style: Style, *, create: bool = True) -> list[CachedSource]:
+    """What the caches hold for each source of the analysis ``hl`` with ``style``, and why a
+    source gets no grid of :func:`cached_grid_parts` (``CachedSource.gap``). Only looks for
+    the cache files: nothing is read or decoded. ``create``: make a missing cache folder (as
+    :func:`cache.source_dir`; False leaves none behind, ``cutpoint rerank``'s readiness)."""
+    scenes_on = bool((hl.get("settings") or {}).get("scenes", True))
+    entries = hl.get("sources") or []
+    recovered = {str(e.get("path")) for e in entries if e.get("offset") or e.get("read_errors")}
+    out: list[CachedSource] = []
+    for i, e in enumerate(entries):
+        src = Path(str(e.get("path")))  # none recorded: a path no cache folder has (offline)
+        if str(e.get("path")) in recovered:
+            out.append(CachedSource(i, src, "recovered"))
+            continue
+        try:
+            cdir = cache.source_dir(src, create=create)
+        except OSError:
+            out.append(CachedSource(i, src, "offline"))
+            continue
+        loud = (cdir / "loudness.json").is_file()
+        heard = cdir.is_dir() and any(cdir.glob("transcript-*.json"))
+        found = (cdir / SCENES_FILE).is_file()
+        span = float(e.get("analyzed_s") or e.get("duration") or 0.0)
+        windowed = bool(span) and scenes_on and not found and edge_windows(style, span)
+        if not span:
+            gap: str | None = "length"  # no source length recorded (hand-made file)
+        elif not (loud or heard or found or windowed):
+            gap = "caches"  # nothing cached to build from
+        else:
+            gap = None
+        out.append(CachedSource(i, src, gap, cdir, span, loud, heard, found, windowed))
+    return out
+
+
 def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
     """The grids of the analysis ``hl`` as its caches give them (what :func:`analyze_source`
     built: the loudness, the transcript of the analysis's model and language, the scene cuts).
-    A source with a recovered part, or offline, has none; nor has one whose caches are gone,
-    unless the style detects its scene cuts around candidate edges (:func:`edge_windows`): such
-    a source (also one without audio, so without loudness or transcript) gets its part, the
-    cuts decoded when an edge needs them. Otherwise a source without :data:`SCENES_FILE` gets no
-    scene curve or cuts (with a style that weighs the curve, an INFO line names it;
+    A source :func:`cached_sources` gives a ``gap`` has none: one with a recovered part, offline,
+    without a recorded length, or whose caches are gone, unless the style detects its scene cuts
+    around candidate edges (:func:`edge_windows`): such a source (also one without audio, so
+    without loudness or transcript) gets its part, the cuts decoded when an edge needs them.
+    Nor has one whose cache files cannot be read. Otherwise a source without :data:`SCENES_FILE`
+    gets no scene curve or cuts (with a style that weighs the curve, an INFO line names it;
     ``analyze`` detects them again)."""
     settings = hl.get("settings") or {}
-    entries = hl.get("sources", [])
-    recovered = {e["path"] for e in entries if e.get("offset") or e.get("read_errors")}
+    scenes = bool(settings.get("scenes", True))
     out: list[GridPart] = []
-    for i, e in enumerate(entries):
-        if e["path"] in recovered:
+    for c in cached_sources(hl, style):
+        if c.gap is not None or c.cdir is None:
             continue
-        src = Path(e["path"])
-        try:
-            cdir = cache.source_dir(src)
-        except OSError:
-            continue
+        src, cdir, span = c.source, c.cdir, c.span
         loud = cache.load_json(cdir / "loudness.json")
         segments = source_segments(src, settings.get("language"), settings.get("whisper_model"))
         found = cache.load_json(cdir / SCENES_FILE)
-        scenes = bool(settings.get("scenes", True))
-        span = e.get("analyzed_s") or e.get("duration")
-        if not span:
-            continue  # no source length recorded (hand-made file): no grids
-        span = float(span)
         windowed = scenes and found is None and edge_windows(style, span)  # EdgeCuts serve it
         if loud is None and segments is None and found is None and not windowed:
-            continue  # nothing cached to build from
+            continue  # the cache files there cannot be read
         if scenes and found is None and scores_scenes(style):
             logger.info(
                 "%s: no scene cuts cached; its scene score is missing until analyze runs again",
@@ -2579,7 +2626,7 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
         ps = part_signals(span, lufs, segments or [], cuts, style, src.name)
         if windowed:  # as the analysis did: cuts around edges (scenes-windows.json, else decoded)
             ps.edge_cuts = EdgeCuts(remap_source(src), cdir, span)
-        out.append(GridPart(src, i, 0.0, span, ps))
+        out.append(GridPart(src, c.index, 0.0, span, ps))
     return out
 
 

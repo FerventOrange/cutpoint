@@ -362,44 +362,32 @@ def readiness(
         )
     elif kind != style.kind:
         miss(Missing("style_kind", f"the project was analyzed with a style of the {kind} kind"))
-    settings = hl.get("settings") or {}
-    scenes = bool(settings.get("scenes", True))
+    scenes = bool((hl.get("settings") or {}).get("scenes", True))
+    entries = hl.get("sources") or []
     seen: set[str] = set()
-    for e in hl.get("sources") or []:
-        path = str(e.get("path"))
+    # the gaps (recovered, offline, length, caches) as cached_grid_parts sees them
+    for c in analyze.cached_sources(hl, style, create=False):
+        path = str(entries[c.index].get("path"))
         if path in seen:  # a recovered source's other parts
             continue
         seen.add(path)
-        src = Path(path)
-        name = src.name
-        if e.get("offset") or e.get("read_errors"):
-            miss(Missing("recovered", f"{name} was read in parts (read errors)", path))
+        name = c.source.name
+        if c.gap in ("recovered", "offline"):
+            miss(Missing(c.gap, _gap_detail(c.gap, name), path))
             continue
-        try:
-            cdir = cache.source_dir(src, create=False)
-        except OSError:
-            miss(Missing("offline", f"{name} is not reachable", path))
-            continue
-        loud = (cdir / "loudness.json").is_file()
-        heard = cdir.is_dir() and any(cdir.glob("transcript-*.json"))
-        if not (loud and heard) and _has_audio(src):
-            if not loud:
+        if not (c.loudness and c.transcript) and _has_audio(c.source):
+            if not c.loudness:
                 miss(Missing("loudness", f"{name} has no cached loudness", path))
-            if not heard:
+            if not c.transcript:
                 miss(Missing("transcript", f"{name} has no cached transcript", path))
-        span = float(e.get("analyzed_s") or e.get("duration") or 0.0)
-        if not span:
-            miss(Missing("length", _no_length(name), path))
+        if c.gap == "length":
+            miss(Missing(c.gap, _gap_detail(c.gap, name), path))
             continue
-        found = (cdir / analyze.SCENES_FILE).is_file()
-        windowed = scenes and not found and analyze.edge_windows(style, span)
-        if scenes and not found and (analyze.scores_scenes(style) or not windowed):
+        if scenes and not c.scenes and (analyze.scores_scenes(style) or not c.windowed):
             miss(Missing("scenes", f"{name} has no full scene pass", path))
             continue
-        # as cached_grid_parts: no loudness, transcript, scene cuts or edge windows to decode
-        # (scenes off) leaves the source no grid to rank
-        if not (loud or heard or found or windowed):
-            miss(Missing("caches", _nothing_cached(name), path))
+        if c.gap is not None:
+            miss(Missing(c.gap, _gap_detail(c.gap, name), path))
     ran, events = _events_layers(project)
     for layer in _missing_layers(style, ran, cuda):
         miss(Missing(f"layer:{layer}", f"the {layer} layer has not run for this project"))
@@ -433,12 +421,17 @@ def analyze_command(project: Path, style: Style) -> str:
     return "cutpoint " + command_line(["rerank", where, "--style", style.name, "--analyze"])
 
 
-def _nothing_cached(name: str) -> str:
-    return f"{name} has no cached loudness, transcript or scene cuts to build a ranking from"
-
-
-def _no_length(name: str) -> str:
-    return f"{name} records no length (duration) in highlights.json"
+def _gap_detail(gap: str, name: str) -> str:
+    """The ERROR line's words for a source of ``name`` that gets no grid for ``gap`` (a
+    :class:`~cutpoint.analyze.CachedSource` gap)."""
+    return {
+        "recovered": f"{name} was read in parts (read errors)",
+        "offline": f"{name} is not reachable",
+        "length": f"{name} records no length (duration) in highlights.json",
+        "caches": (
+            f"{name} has no cached loudness, transcript or scene cuts to build a ranking from"
+        ),
+    }[gap]
 
 
 def _refused(project: Path, style: Style, missing: list[Missing]) -> NeedsAnalyzeError:
@@ -511,12 +504,11 @@ def ranked(
     by_source: dict[str, list[str]] = {}
     for i, e in enumerate(new.get("sources") or []):
         g = grids.get(i)
-        if g is None:  # readiness refuses such a source: never drop its candidates quietly
+        if g is None:  # never drop its candidates quietly: the gap readiness names, else
+            # (cache files gone since, or there but unreadable) nothing cached to build from
             path = str(e["path"])
-            name = Path(path).name
-            if not (e.get("analyzed_s") or e.get("duration")):
-                raise _refused(project, style, [Missing("length", _no_length(name), path)])
-            raise _refused(project, style, [Missing("caches", _nothing_cached(name), path)])
+            gap = analyze.cached_sources(new, style, create=False)[i].gap or "caches"
+            raise _refused(project, style, [Missing(gap, _gap_detail(gap, Path(path).name), path)])
         picked = analyze.pick_candidates(g, style, st.get("max_candidates"), {})
         parts.append(analyze.HighlightsPart(g.source, g.offset, g.duration, picked, g.signals))
         by_source[str(g.source)] = sorted(features.available() if g.avail is None else g.avail)
