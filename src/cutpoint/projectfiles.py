@@ -41,7 +41,7 @@ def load_highlights(
         FileNotFoundError: If ``strict`` and the file is missing (``missing``).
         ValueError: If ``strict`` and it is unreadable, not valid JSON (the message of
             :func:`cutpoint.cache.read_json` with :data:`REWRITE_HINT`) or has no ``need``
-            list (``invalid``).
+            list (``invalid``) or, for ``need="candidates"``, an entry that is not an object.
     """
     from cutpoint import cache  # noqa: PLC0415  (numpy: keep this module light)
 
@@ -55,4 +55,8 @@ def load_highlights(
         raise FileNotFoundError(missing.format(path=path, project=project)) from None
     if not isinstance(data, dict) or not isinstance(data.get(need), list):  # e.g. null
         raise ValueError(invalid.format(path=path, project=project, need=need))
+    if need == "candidates":
+        for n, cand in enumerate(data[need], 1):
+            if not isinstance(cand, dict):
+                raise ValueError(f"{path}: candidate {n} is not an object" + REWRITE_HINT)
     return data
