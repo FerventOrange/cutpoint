@@ -176,3 +176,79 @@ test('namedFolders: the folders of the files a reply names, project first, each 
   assert.deepEqual(u.namedFolders('Nothing named here', files), []);
   assert.deepEqual(u.namedFolders('final.mp4', undefined), []);
 });
+
+test('spanText: seconds under a minute, minutes under an hour, then hours and minutes (#459)', () => {
+  for (const [s, text] of [[45, '45 s'], [59.5, '1 min'], [3570, '1 h'], [8040, '2 h 14 min']]) assert.equal(u.spanText(s), text, String(s));
+});
+
+test('rowInPlace: focus goes to the row now where one left the list, the last past the end, none in an empty list', () => {
+  // Add under "Not in sequence" took the card out of the list; preserveFocus (tests/js/workspace.test.mjs) uses this
+  for (const [at, n, row] of [[2, 5, 2], [4, 4, 3], [0, 0, -1]]) assert.equal(u.rowInPlace(at, n), row, `${at} of ${n}`);
+});
+
+test('video order: A-Z by file, equal starts keep their order, case variants and same-named files sort the same whatever the input order (#469)', () => {
+  const m = (id, source, start) => ({ id, source, start });
+  const ids = (list) => [...list].sort(u.positionCompare).map((x) => x.id);
+  assert.deepEqual(ids([m('c10b', '/v/clip10.mp4', 5), m('c2late', '/v/clip2.mp4', 90), m('a', '/v/Alpha.mp4', 1), m('c10a', '/v/clip10.mp4', 2), m('c2early', '/v/clip2.mp4', 3)]),
+    ['a', 'c2early', 'c2late', 'c10a', 'c10b']);
+  assert.deepEqual(ids([m('first', '/v/a.mp4', 4), m('second', '/v/a.mp4', 4), m('third', '/v/a.mp4', 4)]), ['first', 'second', 'third'], 'stable');
+  const mixed = [m('x1', '/two/clip.mp4', 1), m('y1', '/one/clip.mp4', 50), m('x2', '/two/clip.mp4', 9), m('y0', '/one/clip.mp4', 2)];
+  assert.deepEqual(ids(mixed), ['y0', 'y1', 'x1', 'x2']);
+  assert.deepEqual(ids([...mixed].reverse()), ['y0', 'y1', 'x1', 'x2']);
+  const cased = [m('up', '/v/Clip.mp4', 1), m('low', '/v/clip.mp4', 1), m('z', '/v/zed.mp4', 0)];
+  const got = ids(cased);
+  assert.deepEqual(ids([...cased].reverse()), got);
+  assert.equal(got.at(-1), 'z');
+});
+
+test('momentMatches: every quick filter and the search text must all hold; filtersOn names a set quick filter', () => {
+  const ms = [
+    { id: 'a', cli_id: 'h001', label: 'Jump', transcript: 'nice one', source: '/v/a.mp4', picked: true, ready: true, must_include: true },
+    { id: 'b', label: 'Crash', transcript: null, source: '/v/b.mp4', picked: false, ready: true },
+    { id: 'c', label: 'jump two', source: '/v/b.mp4', picked: false, ready: false, must_include: true },
+  ];
+  const cases = [
+    ['', {}, ['a', 'b', 'c']],
+    ['  JUMP ', {}, ['a', 'c']], // trimmed, case ignored
+    ['NICE', {}, ['a']], // transcript
+    ['b.mp4', {}, ['b', 'c']], // file name
+    ['H001', {}, ['a']], // the CLI id on the card (#487)
+    ['', { seq: 'in' }, ['a']],
+    ['', { seq: 'out' }, ['b', 'c']],
+    ['', { ready: true }, ['a', 'b']],
+    ['', { must: true }, ['a', 'b', 'c']], // Must include was removed: not a filter
+    ['', { source: '/v/b.mp4' }, ['b', 'c']],
+    ['jump', { seq: 'out' }, ['c']],
+    ['jump', { ready: true, source: '/v/b.mp4' }, []],
+  ];
+  for (const [q, f, want] of cases) {
+    const all = { ...u.NO_FILTERS, ...f };
+    assert.deepEqual(ms.filter((c) => u.momentMatches(c, q, all)).map((c) => c.id), want, `${JSON.stringify(q)} ${JSON.stringify(f)}`);
+    assert.equal(u.filtersOn(all), ['seq', 'ready', 'source'].some((k) => k in f), JSON.stringify(f));
+  }
+});
+
+test('colorNote groups the reasons clips were left as is, counts each when there are several, and counts Strength 0 as not graded (#461)', () => {
+  const graded = (method, skip, strength = 1) => ({ file: '001_a.mp4', color: { method, strength, skip } });
+  const auto = (...skips) => skips.map((s) => graded('auto', s));
+  const cases = [
+    [Array.from({ length: 4 }, () => graded('underwater', 'veto_clipped')), ' Color: no clips graded (too much highlight clipping).'],
+    [auto(null, 'good', null, null), ' Color: 3 of 4 clips graded; 1 left as is (already looked good).'],
+    [['veto_m3_drop', 'veto_clipped', 'veto_m3_drop', null].map((s) => graded('underwater', s)),
+      ' Color: 1 of 4 clips graded; 3 left as is (would wash out the color: 2, too much highlight clipping: 1).'],
+    [auto('360', 'log', 'no_frames', 'veto_cast', 'veto_m3', 'veto_new', 'not_underwater', 'veto_faded', 'good'),
+      ' Color: no clips graded (360 footage: 1, log footage: 1, frames could not be read: 1, would add a color cast: 1,'
+      + ' would oversaturate: 1, veto_new: 1, did not look underwater: 1, would wash out the color: 1, already looked good: 1).'],
+    [auto('veto_faded', 'veto_m3_drop', null), ' Color: 1 of 3 clips graded; 2 left as is (would wash out the color).'], // PR #495: one reason
+    [auto(null, null), ' Color: all 2 clips graded.'],
+    [auto(null), ' Color: 1 clip graded.'],
+    [[{ file: 'a.mp4', color: null }, { file: 'b.mp4' }], ''], // Color Off, or an export from before --color
+    [[{ file: 'a.mp4', lut: { file: 'x.cube' } }], ''],
+    [[], ''],
+    [[graded('auto', null, 0), graded('auto', null, 0)], ''], // Strength 0% grades nothing
+    [[graded('auto', null, 0.5), graded('auto', null, 0)], ' Color: 1 of 2 clips graded; 1 left as is (strength 0%).'],
+    [[graded('auto', 'good', 0.5), graded('auto', null, 0), graded('auto', null, 0)], ' Color: no clips graded (already looked good: 1, strength 0%: 2).'],
+    [[{ file: 'a.mp4', color: { method: 'auto' } }], ' Color: 1 clip graded.'], // no strength: full strength
+  ];
+  for (const [clips, want] of cases) assert.equal(u.colorNote(clips), want, JSON.stringify(clips));
+});

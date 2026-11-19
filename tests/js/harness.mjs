@@ -11,14 +11,18 @@
 // timers app.js starts while booting.
 // clearTimeout/clearInterval seen by app.js skip null/undefined ids: app.js clears never-set timers at
 // boot, and Node 22.1 MockTimers throws a TypeError (priorityQueuePosition) for them (see guardClears).
-import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { register } from 'node:module';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { JSDOM } from 'jsdom';
 
 export const WEB_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'src', 'cutpoint', 'web');
+
+// The web files are imported in place (no copy): web-loader.mjs loads them as ES modules and gives
+// each boot its own module graph (app.js?boot=3 imports api.js?boot=3, ...), so no module state
+// is shared between boots.
+register('./web-loader.mjs', import.meta.url, { data: { web: pathToFileURL(join(WEB_DIR, '/')).href } });
 export const ORIGIN = 'http://127.0.0.1:8765';
 export const TOKEN = 'test-token';
 
@@ -158,8 +162,11 @@ function installMediaStubs(window) {
   prop('duration', { writable: false });
   prop('readyState', { writable: false });
   prop('currentTime', { onSet: (el) => { state(el).ended = false; state(el).fire('seeking'); state(el).fire('seeked'); } });
-  prop('volume', { onSet: (el) => state(el).fire('volumechange') });
-  prop('muted', { onSet: (el) => state(el).fire('volumechange') });
+  // as in browsers, volumechange is queued, not fired inside the setter: setting volume then muted
+  // fires it after both changed (a listener never sees the volume changed and the mute not yet)
+  const queueVolumechange = (el) => queueMicrotask(() => state(el).fire('volumechange'));
+  prop('volume', { onSet: queueVolumechange });
+  prop('muted', { onSet: queueVolumechange });
   prop('playbackRate', { onSet: (el) => state(el).fire('ratechange') });
   Object.defineProperties(proto, {
     play: { configurable: true, value() {
@@ -267,7 +274,7 @@ let current = null; // the open page; boot() closes it before installing globals
  *   entry    the module to import (default 'app.js'; 'api.js' tests the client alone); its exports are ``page.mod``
  * Returns { window, document, routes, requests, unhandled, settle, assertNoUnhandled, close }.
  * close() throws if a request had no route, so a forgotten mock cannot pass silently.
- * app.js keeps module state, so each boot loads a fresh copy of the web directory; call close().
+ * app.js keeps module state, so each boot imports the web modules afresh (see web-loader.mjs); call close().
  */
 export async function boot({ routes = {}, project = makeProject(), hash = '', token = TOKEN, storage = {}, settle = true, entry = 'app.js', allowUnhandled = false, setup = null } = {}) {
   const html = readFileSync(join(WEB_DIR, 'index.html'), 'utf8');
@@ -315,10 +322,6 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   // AbortController/AbortSignal are jsdom's: addEventListener({ signal }) (keepEmptyFocus) rejects a Node signal (other realm)
   const restore = installGlobals(window, { fetch: fetchMock, AbortController: window.AbortController, AbortSignal: window.AbortSignal });
 
-  // fresh module graph per boot: a copy of the real files in a temp dir (api.js reads the token at load)
-  const dir = await mkdtemp(join(tmpdir(), 'cutpoint-web-'));
-  await cp(WEB_DIR, dir, { recursive: true });
-  await writeFile(join(dir, 'package.json'), '{"type":"module"}');
   bootN += 1;
 
   const page = {
@@ -337,7 +340,6 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
         if (current === page) current = null;
         dom.window.close();
         restore();
-        rm(dir, { recursive: true, force: true }).catch(() => {});
       }
       if (check && !allowUnhandled) page.assertNoUnhandled();
     },
@@ -345,7 +347,8 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   let closed = false;
   current = page;
   try {
-    page.mod = await import(`${pathToFileURL(join(dir, entry)).href}?boot=${bootN}`);
+    // fresh module graph per boot (api.js reads the token at load): the query reaches every relative import
+    page.mod = await import(`${pathToFileURL(join(WEB_DIR, entry)).href}?boot=${bootN}`);
     if (settle) await page.settle();
   } catch (e) {
     page.close({ check: false });
@@ -354,17 +357,8 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   return page;
 }
 
-/**
- * Import a pure web module (util.js) without booting the page: a copy of the web directory is made
- * in a temp dir, because the source tree has no package.json marking it as ES modules.
- */
+/** Import a pure web module (util.js) without booting the page; each call gets a fresh instance. */
 export async function importPure(name) {
-  const dir = await mkdtemp(join(tmpdir(), 'cutpoint-web-pure-'));
-  try {
-    await cp(WEB_DIR, dir, { recursive: true });
-    await writeFile(join(dir, 'package.json'), '{"type":"module"}');
-    return await import(pathToFileURL(join(dir, name)).href);
-  } finally {
-    rm(dir, { recursive: true, force: true }).catch(() => {});
-  }
+  bootN += 1;
+  return import(`${pathToFileURL(join(WEB_DIR, name)).href}?pure=${bootN}`);
 }
