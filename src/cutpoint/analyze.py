@@ -3145,7 +3145,7 @@ def _no_telemetry_fallback(
     if unreadable:
         names = ", ".join(s.name for s in sources)
         message = (
-            f"The camera telemetry of every source could not be read ({names}); {named} needs "
+            f"No camera telemetry could be read from any source ({names}); {named} needs "
             f"it, so the {used.name} style was used for this run (nothing was cached: a later "
             f"run reads it again). Give --style {used.name} (or auto) to choose it"
         )
@@ -4384,7 +4384,7 @@ def _prepare_action_cam(
     durations = {str(s): probe(remap_source(s)).duration for s in sources}
     cam_ctx = actioncam.prepare(sources, durations, out_dir, raise_if_all_failed=not fall_back)
     telemetry_s = round(time.perf_counter() - t0, 2)
-    if fall_back and len(cam_ctx.unreadable) == len(sources):
+    if fall_back and cam_ctx.unreadable and all(cam_ctx.telemetry[str(s)] is None for s in sources):
         return _ActionCam(cam_ctx, durations, telemetry_s, unreadable=True)
     _warn_missing_telemetry([s for s in sources if cam_ctx.telemetry[str(s)] is None])
     return _ActionCam(cam_ctx, durations, telemetry_s)

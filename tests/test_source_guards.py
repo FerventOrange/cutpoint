@@ -580,6 +580,22 @@ def test_prepare_can_leave_the_all_failed_decision_to_the_caller(tmp_path, monke
     assert not (tmp_path / "telemetry.json").exists()
 
 
+def test_prepare_with_one_no_track_and_one_failing_source_has_no_telemetry(tmp_path, monkeypatch):
+    srcs = [tmp_path / "plain.mp4", tmp_path / "bad.mp4"]
+
+    def extract(src, duration):
+        if src.name == "bad.mp4":
+            raise ValueError("bad")
+        return None  # no telemetry track
+
+    monkeypatch.setattr(actioncam, "extract", extract)
+    ctx = actioncam.prepare(
+        srcs, {str(s): N / 10 for s in srcs}, tmp_path, raise_if_all_failed=False
+    )
+    assert ctx.unreadable == [str(srcs[1])]
+    assert not (tmp_path / "telemetry.json").exists()
+
+
 def _all_bad(site: str, tmp_path, monkeypatch, request, err: _Raised) -> None:
     """Run ``site`` over two sources whose per-source step both fail with ``err``."""
     names = ("ridge", "gully")

@@ -1481,7 +1481,7 @@ def test_action_cam_whose_telemetry_cannot_be_read_runs_as_action(run, monkeypat
     assert st["scenes"] is True and raised == [False]
     [warning] = _no_telemetry_warnings(res)
     assert warning["files"] == [str(v) for v in videos]
-    assert "could not be read (a.mp4, b.mp4)" in warning["message"]
+    assert "could be read from any source (a.mp4, b.mp4)" in warning["message"]
     assert warning["message"] in caplog.text
     assert not (run.proj / "telemetry.json").exists()
 

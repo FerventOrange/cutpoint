@@ -196,7 +196,8 @@ def prepare(
             tels[str(src)] = None
     if raise_if_all_failed:
         guard.raise_if_all_failed(len(sources))  # not one bad file: the step failed
-    elif guard.all_failed(len(sources)):  # the caller falls back: no telemetry.json
+    elif guard.failed and all(t is None for t in tels.values()):
+        # no telemetry anywhere (unreadable or none): the caller falls back, no telemetry.json
         return ActionCamContext(
             project=project, telemetry=tels, speed_ref=np.zeros(0), unreadable=list(guard.failed)
         )

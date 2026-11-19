@@ -30,7 +30,7 @@ cutpoint assemble projects/trip/clips --loudnorm
 Action-cam needs GoPro or Insta360 X3 telemetry. When no source has any (phones, other
 cameras), `analyze` and `edit` use the `action` style instead, with a WARNING and an
 `action_cam_no_telemetry` warning; `highlights.json` records `style` `action`,
-`settings.style_requested` (the style you gave) and `settings.style_fallback`. The same happens when the telemetry of every source could not be read (a read error: the warning names the files, `reason` is `telemetry not read`, nothing is cached, so a later run tries again). Give
+`settings.style_requested` (the style you gave) and `settings.style_fallback`. The same happens when no telemetry could be read from any source (read errors, the rest having none: the warning names the files, `reason` is `telemetry not read`, nothing is cached, so a later run tries again). Give
 `--style action` (or `auto`, the default) to choose it yourself. A project where only some sources have
 telemetry stays action-cam: the sources without it (or whose telemetry could not be read) are
 scored from audio, speech and model features only, with no speed, airtime or masking, and the
