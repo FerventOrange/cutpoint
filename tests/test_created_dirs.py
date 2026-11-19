@@ -65,7 +65,11 @@ def make_qa_clips(root: Path) -> Path:
     write(
         clips / "001_a.json",
         json.dumps(
-            {"keys": [[0.0, 0.0, 0.0, 90.0]], "segment": {"start": 0, "end": 3}, "source": "g.lrv"}
+            {
+                "keys": [{"t": 0.0, "yaw": 0.0, "pitch": 0.0, "fov": 90.0}],  # a usable path (A215)
+                "segment": {"start": 0, "end": 3},
+                "source": "g.lrv",
+            }
         ),
     )
     return clips
