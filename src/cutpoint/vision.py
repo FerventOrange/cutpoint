@@ -165,6 +165,9 @@ _TEMPERATURES = (0.2, 0.4)  # sampling temperature per attempt
 # moments in a row whose replies were all empty or unparseable that stop the rating (#986): a
 # provider that answers nothing usable is not asked about every moment
 EMPTY_REPLY_LIMIT = 3
+MIN_RETRY_S = (
+    10.0  # seconds left of an ask_json timeout below which an empty raw reply is not asked again
+)
 FRAME_WIDTH = 640  # px of each frame sent to the model
 
 
@@ -504,7 +507,10 @@ class VisionRater:
         # True: rate() gives only cached ratings and asks the model nothing (Ollama down)
         self.cache_only = False
         self.last_prompt_tokens: int | None = None  # of the last describe() (Ollama only)
-        self.timed_out = False  # the last describe() to Ollama ran out of its timeout
+        self.last_call_s = 0.0  # seconds the last Ollama request took, without the checks before
+        self.timed_out = (
+            False  # the last Ollama request (ask_json, describe, rate) ran out of its timeout
+        )
         # moments in a row without a usable reply (empty, unparseable, cut off, failed request); at EMPTY_REPLY_LIMIT the
         # rating stops (:attr:`stopped`, #986); a usable reply resets it
         self.empty_in_row = 0
@@ -646,9 +652,10 @@ class VisionRater:
         one that is not JSON (:func:`_matching`; only the top-level object and its ``required``
         keys are checked, not the types or values inside).
         Thinking builds of Qwen3 reason even with ``think: false`` until ``num_predict``
-        runs out, so text-only turns to a Qwen model (name starting with ``qwen``) go
+        runs out, so text-only turns to a Qwen3 model (name starting with ``qwen3``) go
         through ``/api/generate`` in raw mode with the ChatML turn and an empty
-        ``<think></think>`` block already written; other models use ``/api/chat``.
+        ``<think></think>`` block already written (an empty reply is asked again through
+        ``/api/chat``); other models use ``/api/chat``.
         ``num_ctx``: the context window the turn needs; Ollama is asked for more when the model
         is loaded with more already (:meth:`_context`). ``temperature`` and ``seed`` (None: none
         sent) are Ollama's sampling options; temperature 0 and a seed make the reply repeatable
@@ -659,10 +666,8 @@ class VisionRater:
         """
         self.last_failure = None
         if self.via:
-            self.check_memory()
-            reply = self.via.ask(prompt, images or [], schema=schema)
             try:
-                data = _json_object(reply) if reply else None
+                data, reply = self._hosted_json(prompt, images or [], schema)
             except ValueError as err:
                 logger.warning("Assistant reply is not JSON: %s", err)
                 self.last_failure = "reply"
@@ -672,32 +677,34 @@ class VisionRater:
             self.warn_consent()
             self.last_failure = "request"
             return None
-        num_ctx = self._context(num_ctx)
         options = {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict}
         if seed is not None:
             options["seed"] = seed
-        payload: dict = {"model": self.model, "stream": False, "format": schema or "json"}
-        raw = not images and self.model.lower().startswith("qwen")
-        if not raw:
-            msg = {"role": "user", "content": prompt}
-            if images:
-                msg["images"] = [base64.b64encode(b).decode("ascii") for b in images]
-            payload |= {"messages": [msg], "think": False, "options": options}
-            endpoint = "chat"
-        else:
-            payload |= {
-                # "<|" in the text (a transcript can hold <|im_end|>) would end the user turn
-                "prompt": f"<|im_start|>user\n{prompt.replace('<|', '< |')}<|im_end|>\n"
-                "<|im_start|>assistant\n<think>\n\n</think>\n\n",
-                "raw": True,
-                "options": options,
-            }
-            endpoint = "generate"
-        self.check_memory(num_ctx)
-        self.used = True
+        base: dict = {"model": self.model, "stream": False, "format": schema or "json"}
         try:
-            body = ollama_post(self.url, f"/api/{endpoint}", payload, timeout=timeout)
-            data = _json_object(ollama_reply(body, generate=raw))
+            text = ""
+            if not images and self.model.lower().startswith("qwen3"):
+                payload = base | {
+                    # "<|" in the text (a transcript can hold <|im_end|>) would end the user turn
+                    "prompt": f"<|im_start|>user\n{prompt.replace('<|', '< |')}<|im_end|>\n"
+                    "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+                    "raw": True,
+                    "options": options,
+                }
+                t0 = time.perf_counter()
+                body = self._ollama_chat(payload, timeout, "generate")
+                text = ollama_reply(body, generate=True)
+                timeout -= time.perf_counter() - t0  # the retry gets what is left
+                if not text.strip() and timeout < MIN_RETRY_S:
+                    self.last_failure = "request"
+                    return None
+            if not text.strip():  # not a raw turn, or the raw one gave nothing: /api/chat
+                msg = {"role": "user", "content": prompt}
+                if images:
+                    msg["images"] = [base64.b64encode(b).decode("ascii") for b in images]
+                chat = base | {"messages": [msg], "think": False, "options": options}
+                text = ollama_reply(self._ollama_chat(chat, timeout))
+            data = _json_object(text)
         except requests.RequestException as err:
             logger.warning("Ollama request failed: %s", err)
             self.last_failure = "request"
@@ -707,6 +714,44 @@ class VisionRater:
             self.last_failure = "reply"
             return None
         return self._checked(data, schema, True)
+
+    def _hosted_json(
+        self, prompt: str, images: list[bytes], schema: dict | None
+    ) -> tuple[object, str | None]:
+        """One turn to the hosted Vision role: the reply's JSON (None when it has none) and the
+        reply text (None when no reply came back).
+
+        Raises:
+            ValueError: The reply holds malformed JSON.
+        """
+        self.check_memory()
+        reply = self.via.ask(prompt, images, schema=schema) if self.via else None
+        return (_json_object(reply) if reply else None), reply
+
+    def _ollama_chat(self, payload: dict, timeout: float, endpoint: str = "chat") -> dict:
+        """One request to Ollama's ``/api/<endpoint>``: ``payload["options"]["num_ctx"]`` is
+        raised to the context the model is loaded with already (:meth:`_context`), the memory
+        guard runs, and :attr:`used`, :attr:`timed_out` and :attr:`last_call_s` (the post's own
+        duration) are kept. The answer's body.
+
+        Raises:
+            requests.RequestException: The request failed (:attr:`timed_out` says if it ran out).
+            ValueError: The answer is no JSON.
+            LowMemoryError: If the model's memory is not free (:meth:`check_memory`).
+        """
+        num_ctx = self._context(payload["options"]["num_ctx"])
+        payload["options"] = {**payload["options"], "num_ctx": num_ctx}
+        self.check_memory(num_ctx)
+        self.used = True
+        self.timed_out = False
+        t_post = time.perf_counter()
+        try:
+            return ollama_post(self.url, f"/api/{endpoint}", payload, timeout=timeout)
+        except requests.RequestException as err:
+            self.timed_out = isinstance(err, requests.Timeout)
+            raise
+        finally:
+            self.last_call_s = time.perf_counter() - t_post
 
     def _checked(self, data: object, schema: dict | None, answered: bool) -> dict | None:
         """:func:`_matching` of an :meth:`ask_json` reply, noting in :attr:`last_failure`
@@ -743,14 +788,12 @@ class VisionRater:
         """
         self.last_prompt_tokens = None
         if self.via:
-            self.check_memory()
-            reply = self.via.ask(prompt, images, schema=schema)
-            if reply is None:
-                return None
             try:
-                data = _json_object(reply)
+                data, reply = self._hosted_json(prompt, images, schema)
             except ValueError as err:
                 logger.warning("Vision reply is not JSON: %s", err)
+                return None
+            if reply is None:
                 return None
             if not isinstance(data, dict):
                 logger.warning("Vision reply has no JSON object: %.120s", reply)
@@ -759,7 +802,6 @@ class VisionRater:
         if self.consent_needed:
             self.warn_consent()
             return None
-        num_ctx = self._context(num_ctx)
         payload = {
             "model": self.model,
             "messages": [
@@ -774,15 +816,11 @@ class VisionRater:
             "format": schema,
             "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict},
         }
-        self.check_memory(num_ctx)
-        self.used = True
-        self.timed_out = False
         try:
-            body = ollama_post(self.url, "/api/chat", payload, timeout=timeout)
+            body = self._ollama_chat(payload, timeout)
             content = ollama_reply(body)
             data = _json_object(content)
         except (requests.RequestException, ValueError) as err:
-            self.timed_out = isinstance(err, requests.Timeout)
             logger.warning("Vision request failed: %s", err)
             return None
         tokens = body.get("prompt_eval_count")
@@ -985,7 +1023,6 @@ class VisionRater:
                 if self.via.finish:  # a hosted reply may carry a finish reason (not Ollama's)
                     body = {"done_reason": self.via.finish}
             else:
-                num_ctx = self._context(num_ctx)
                 payload = {
                     "model": self.model,
                     "messages": [{"role": "user", "content": text, "images": images}],
@@ -1000,19 +1037,16 @@ class VisionRater:
                 }
                 if profile and profile.expected:
                     payload |= {"logprobs": True, "top_logprobs": _TOP_LOGPROBS}
-                self.check_memory(num_ctx)
-                self.used = True
-                t_call = time.perf_counter()
                 try:
-                    body = ollama_post(self.url, "/api/chat", payload, timeout=300)
+                    body = self._ollama_chat(payload, 300)
                     content = ollama_reply(body)
                 except (requests.RequestException, ValueError) as err:
                     logger.warning("Vision request failed: %s", err)
                     self.stats["calls"] += 1
-                    self.stats["reply_s"] += time.perf_counter() - t_call
+                    self.stats["reply_s"] += self.last_call_s
                     self._count_empty()
                     return None
-                self._note_call(where, attempt, grab_s, body, time.perf_counter() - t_call)
+                self._note_call(where, attempt, grab_s, body, self.last_call_s)
             result = _parse(content)
             if result is not None and profile and profile.expected:
                 ev = _expected_score(body.get("logprobs"))

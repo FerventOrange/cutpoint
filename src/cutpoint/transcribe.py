@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, memguard
-from cutpoint.errors import LowMemoryError
+from cutpoint.errors import LowMemoryError, is_out_of_memory
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
 from cutpoint.hub import quiet_hub_handler
@@ -398,7 +398,9 @@ class Transcriber:
         cpu = self._cpu_model(self.model_name)
         switch = "" if cpu == self.model_name else f", with Whisper {cpu}{_CPU_DEFAULT}"
         text = str(err).lower()
-        if any(k in text for k in ("cublas", "cudnn", "cudart", ".dll", ".so")):
+        # cuBLAS says "ALLOC_FAILED" for a failed allocation: a memory shortage, not missing libraries
+        oom = is_out_of_memory(err) or "alloc_failed" in text
+        if not oom and any(k in text for k in ("cublas", "cudnn", "cudart", ".dll", ".so")):
             logger.warning(
                 "CUDA libraries for whisper failed to load (%s); falling back to "
                 "CPU int8%s (much slower). Make sure the 'gpu' extra is installed (%s) "
@@ -412,7 +414,8 @@ class Transcriber:
                 "CUDA transcription failed (%s); falling back to CPU int8%s", err, switch
             )
         self.device = self._want = "cpu"  # a CUDA failure: on the CPU from now on
-        self.fallback_reason = "cuda_error"
+        # a failed allocation is a memory shortage: a later run with the GPU free tries again
+        self.fallback_reason = "memory" if oom else "cuda_error"
         if cpu == self.model_name:
             self._kept_on_cpu(cpu)
         self.model_name = cpu
@@ -423,8 +426,9 @@ class Transcriber:
     ) -> list[Segment]:
         """Transcribe ``wav`` with word timestamps; ``on_progress`` gets the share of the
         audio transcribed so far (0-1) as each segment is decoded."""
+        audio = load_wav(wav)  # a bad WAV is no CUDA failure: it raises here, not in the try
         try:
-            return self._run(wav, on_progress)
+            return self._run(wav, audio, on_progress)
         except (RuntimeError, OSError) as err:
             if isinstance(err, LowMemoryError):  # the memory guard: no CPU fallback either
                 raise
@@ -432,14 +436,16 @@ class Transcriber:
             if self.device != "cuda" or type(err).__module__.startswith("huggingface_hub"):
                 raise
             self._fallback_to_cpu(err)
-            return self._run(wav, on_progress)
+            return self._run(wav, audio, on_progress)
 
-    def _run(self, wav: Path, on_progress: Callable[[float], None] | None = None) -> list[Segment]:
+    def _run(
+        self, wav: Path, audio: Any, on_progress: Callable[[float], None] | None = None
+    ) -> list[Segment]:
         model = self._load()
         if self._suppress is None:
             self._suppress = suppressed(model)
         segments, info = model.transcribe(
-            load_wav(wav),
+            audio,
             language=self.language,
             word_timestamps=True,
             vad_filter=True,

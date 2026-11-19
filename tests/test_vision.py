@@ -1593,3 +1593,153 @@ def test_the_rater_puts_its_context_in_the_prompts_and_the_rating_key(posts, src
     assert rater.cached(src, 0, 4, "gaming") is not None
     rater.context = "other words"
     assert rater.cached(src, 0, 4, "gaming") is None
+
+
+# ------------------------------------------------------------------------------ shared requests
+def _timeout_post(url, json, timeout, **_k):
+    raise requests.Timeout("slow")
+
+
+@pytest.mark.parametrize("call", ["ask_json", "describe", "rate"])
+def test_every_ollama_request_notes_a_timeout(monkeypatch, call):
+    """A request that runs out sets ``timed_out`` and one that answers clears it, whichever
+    of the three vision calls made it."""
+    monkeypatch.setattr(vision.requests, "post", _timeout_post)
+    monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="llava")
+    calls = {
+        "ask_json": lambda: rater.ask_json("p"),
+        "describe": lambda: rater.describe("p", [b"x"], {"type": "object"}),
+        "rate": lambda: rater.rate(Path("a.mp4"), 0, 4, "action"),
+    }
+    assert calls[call]() is None
+    assert rater.timed_out is True and rater.used is True
+    monkeypatch.setattr(
+        vision.requests,
+        "post",
+        lambda *_a, **_k: Resp({"message": {"content": '{"score": 5, "label": "x"}'}}),
+    )
+    calls[call]()
+    assert rater.timed_out is False
+
+
+def test_the_ollama_request_raises_the_context_to_the_loaded_one(monkeypatch):
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        vision.requests,
+        "post",
+        lambda url, json, timeout, **_k: sent.append(json) or Resp({"message": {"content": "{}"}}),
+    )
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="llava")
+    monkeypatch.setattr(rater, "_context", lambda need: need * 2)
+    rater.describe("p", [], {"type": "object"}, num_ctx=1000)
+    assert sent[0]["options"]["num_ctx"] == 2000
+
+
+class _Via:
+    """A hosted Vision role stand-in answering with ``reply``."""
+
+    finish = None
+
+    def __init__(self, reply):
+        self.reply = reply
+
+    def ask(self, prompt, images, schema=None, accept=None):
+        return self.reply
+
+    def available(self):
+        return True
+
+
+@pytest.mark.parametrize(
+    ("reply", "ask", "describe"),
+    [
+        ('{"a": 1}', {"a": 1}, {"a": 1}),
+        ("not json {", None, None),
+        ("[1]", None, None),
+        (None, None, None),
+    ],
+)
+def test_hosted_json_serves_both_callers(monkeypatch, reply, ask, describe):
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.via = _Via(reply)
+    monkeypatch.setattr(rater, "check_memory", lambda *_a: None)
+    assert rater.ask_json("p") == ask
+    assert rater.describe("p", [], {"type": "object"}) == describe
+
+
+def test_hosted_ask_json_checks_required_keys_and_describe_does_not(monkeypatch):
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    rater.via = _Via('{"a": 1}')
+    monkeypatch.setattr(rater, "check_memory", lambda *_a: None)
+    schema = {"type": "object", "required": ["b"]}
+    assert rater.ask_json("p", schema=schema) is None and rater.last_failure == "reply"
+    assert rater.describe("p", [], schema) == {"a": 1}
+
+
+def _generate_then_chat(sent, raw_reply):
+    def post(url, json, timeout, **_k):
+        sent.append(url.rsplit("/", 1)[1])
+        if url.endswith("/api/generate"):
+            return Resp({"response": raw_reply})
+        return Resp({"message": {"content": '{"ok": true}'}})
+
+    return post
+
+
+@pytest.mark.parametrize(
+    ("model", "sent_to"),
+    [
+        ("qwen3.5:9b", ["generate"]),
+        ("qwen3:8b", ["generate"]),
+        ("qwen2.5vl:7b", ["chat"]),
+        ("llava", ["chat"]),
+    ],
+)
+def test_only_the_qwen3_family_gets_the_raw_chatml_turn(monkeypatch, model, sent_to):
+    sent: list[str] = []
+    monkeypatch.setattr(vision.requests, "post", _generate_then_chat(sent, '{"ok": true}'))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model=model)
+    assert rater.ask_json("p") == {"ok": True}
+    assert sent == sent_to
+
+
+@pytest.mark.parametrize("raw_reply", ["", "  \n"])
+def test_an_empty_raw_reply_is_asked_again_through_chat(monkeypatch, raw_reply):
+    sent: list[str] = []
+    monkeypatch.setattr(vision.requests, "post", _generate_then_chat(sent, raw_reply))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="qwen3.5:9b")
+    assert rater.ask_json("p") == {"ok": True}
+    assert sent == ["generate", "chat"]
+
+
+def test_the_chat_retry_gets_the_time_left_of_the_raw_request(monkeypatch):
+    timeouts: dict[str, float] = {}
+    clock = iter([0.0, 0.0, 0.0, 30.0])  # t0, the post, its end, now: the raw request took 30 s
+
+    def post(url, json, timeout, **_k):
+        timeouts[url.rsplit("/", 1)[1]] = timeout[1]
+        if url.endswith("/api/generate"):
+            return Resp({"response": ""})
+        return Resp({"message": {"content": '{"ok": true}'}})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision.time, "perf_counter", lambda: next(clock, 30.0))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="qwen3.5:9b")
+    assert rater.ask_json("p", timeout=100) == {"ok": True}
+    assert timeouts == {"generate": 100, "chat": 70}
+
+
+def test_no_chat_retry_when_the_raw_request_used_the_timeout_up(monkeypatch):
+    sent: list[str] = []
+    clock = iter([0.0, 0.0, 0.0, 95.0])
+
+    def post(url, json, timeout, **_k):
+        sent.append(url.rsplit("/", 1)[1])
+        return Resp({"response": ""})
+
+    monkeypatch.setattr(vision.requests, "post", post)
+    monkeypatch.setattr(vision.time, "perf_counter", lambda: next(clock, 95.0))
+    rater = vision.VisionRater(url="http://127.0.0.1:1", model="qwen3.5:9b")
+    assert rater.ask_json("p", timeout=100) is None
+    assert sent == ["generate"] and rater.last_failure == "request"
