@@ -251,7 +251,6 @@ function installGlobals(window, extra) {
 
 // ---------- boot ----------
 
-let bootN = 0;
 let current = null; // the open page; boot() closes it before installing globals again
 
 /**
@@ -319,7 +318,6 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   const dir = await mkdtemp(join(tmpdir(), 'cutpoint-web-'));
   await cp(WEB_DIR, dir, { recursive: true });
   await writeFile(join(dir, 'package.json'), '{"type":"module"}');
-  bootN += 1;
 
   const page = {
     window, document: window.document, routes: all, requests, unhandled,
@@ -345,7 +343,9 @@ export async function boot({ routes = {}, project = makeProject(), hash = '', to
   let closed = false;
   current = page;
   try {
-    page.mod = await import(`${pathToFileURL(join(dir, entry)).href}?boot=${bootN}`);
+    // no query on the URL: chat.js, models.js and prefs.js import './app.js' and must get this
+    // instance, not a second one; the temp dir already makes the URL new for each boot
+    page.mod = await import(pathToFileURL(join(dir, entry)).href);
     if (settle) await page.settle();
   } catch (e) {
     page.close({ check: false });
