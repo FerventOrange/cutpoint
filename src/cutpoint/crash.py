@@ -52,10 +52,11 @@ a discovered profile never sees less of a crash than ``--activity generic`` does
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import tempfile
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -381,8 +382,10 @@ def imu_grids(
     path = _imu_cache(src)
     if not force and (z := cache.load_npz(path)) is not None:
         if "none" in z:
-            return None
-        return {k: v.astype(np.float64) for k, v in z.items()}
+            if z["none"][0] > 0:  # an old "none" (zeros) may follow a read error: read again
+                return None
+        else:
+            return {k: v.astype(np.float64) for k, v in z.items()}
     io, _, read_path, unstaged = imu_read_path(src)
     t0 = time.perf_counter()
     grids = None
@@ -390,7 +393,11 @@ def imu_grids(
         with tempfile.TemporaryDirectory(dir=tmp_dir) as tmp:
             small = _gpmf_copy(io, Path(tmp))
             if small is not None:
-                grids = _compute_imu(small, duration, force)
+                try:
+                    grids = _compute_imu(small, duration, force)
+                except Exception as err:  # noqa: BLE001 - the parser raises plain Exceptions
+                    # the copy is unreadable: the full file below says if the source is
+                    logger.debug("%s: GPMF copy not read (%s)", src.name, err)
     if grids is None:
         grids = _compute_imu(read_path, duration, force)
     _save_imu(path, grids)
@@ -411,7 +418,7 @@ def _imu_cache(src: Path) -> Path:
 
 def _save_imu(path: Path, grids: dict[str, np.ndarray] | None) -> None:
     if grids is None:
-        cache.save_npz(path, none=np.zeros(1))
+        cache.save_npz(path, none=np.ones(1))  # no IMU in the file (a read error raises)
     else:
         cache.save_npz(path, **{k: v.astype(np.float32) for k, v in grids.items()})
 
@@ -424,11 +431,9 @@ def cache_imu_grids(
     """Fill the :func:`imu_grids` cache of ``src`` from a parse already made (by
     :func:`cutpoint.telemetry.extract`), so the file is not parsed a second time.
 
-    A valid cache is kept as it is. A failed parse (None) caches nothing, so
-    :func:`imu_grids` tries on its own; an empty IMU result is cached as "none".
+    A valid cache is kept as it is. A file without telemetry (None) and an empty IMU result
+    are cached as "none"; a read error never gets here (it raises in the parse).
     """
-    if parsed is None:
-        return
     path = _imu_cache(src)
     if cache.load_npz(path) is None:
         _save_imu(path, _grids_of(parsed, duration))
@@ -594,10 +599,58 @@ class SourceInputs:
     kf_crash: np.ndarray | None = None
     lift: np.ndarray | None = None  # telemetry lift mask | 360 CLIP lift rides
 
+    # Per-source constants the per-candidate scorers read: computed once per source.
+    @functools.cached_property
+    def offaxis_1s(self) -> np.ndarray | None:
+        """Off-axis rotation per 1 s (deg), from the IMU grid; None without one."""
+        if self.imu is None or "offaxis_deg" not in self.imu:
+            return None
+        return np.convolve(self.imu["offaxis_deg"], np.ones(10), mode="same")
+
+    @functools.cached_property
+    def visual_t(self) -> np.ndarray | None:
+        """Keyframe times as float; None without a visual layer."""
+        return None if self.visual is None else self.visual.t.astype(float)
+
+    @functools.cached_property
+    def voice_refs(self) -> tuple[np.ndarray, float, float] | None:
+        """``(yell, yell reference, laugh reference)`` of the voice layer; None without one."""
+        v = self.voice
+        if v is None:
+            return None
+        yell = np.maximum(v["raw_cheer"], v["hp_cheer"])
+        return (
+            yell,
+            max(float(np.percentile(yell, 99)), 1e-4),
+            max(float(np.percentile(v["hp_laugh"], 99)), 1e-4),
+        )
+
     @property
     def name(self) -> str:
         """File name."""
         return self.path.name
+
+
+def _telemetry_or_none(read: Callable[[], Any], src: Path, warn: bool = True) -> tuple[Any, bool]:
+    """``(read(), False)``, or ``(None, True)`` when the telemetry cannot be read: the source
+    is then scored without it for this run (a WARNING and a ``step_failed`` warning name it,
+    unless ``warn`` is False; nothing is cached).
+
+    Raises:
+        LowMemoryError: Too little memory (also an out-of-memory error).
+    """
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
+    try:
+        return read(), False
+    except Exception as err:  # noqa: BLE001 - one unreadable source, logged
+        SourceGuard(
+            "crash detection",
+            message="{name}: telemetry not read ({err}); scored without it",
+            debug_what="telemetry",
+            log=logger,
+        ).skip(err, src.name, src, warn=warn)
+        return None, True
 
 
 def load_inputs(
@@ -617,8 +670,11 @@ def load_inputs(
     from cutpoint.telemetry import extract  # noqa: PLC0415
 
     inp = SourceInputs(path=src, duration=duration)
-    inp.tel = extract(src, duration)
-    inp.imu = imu_grids(src, duration, tmp_dir=tmp_dir)
+    inp.tel, tel_failed = _telemetry_or_none(lambda: extract(src, duration), src)
+    # one warning per source: the IMU read of a source whose telemetry failed is DEBUG only
+    inp.imu, _ = _telemetry_or_none(
+        lambda: imu_grids(src, duration, tmp_dir=tmp_dir), src, warn=not tel_failed
+    )
     inp.voice = VO.load_voice(src)
     inp.visual = V.load_visual(src)
     inp.words = source_words(src, language)
@@ -694,7 +750,7 @@ def _clip01(x: float) -> float:
 def _shock_spans(inp: SourceInputs, p: CrashParams) -> list[tuple[float, float]]:
     """``(first, last)`` shock times: impacts, very fast spins, off-axis rotation."""
     g = inp.imu
-    off1 = np.convolve(g["offaxis_deg"], np.ones(10), mode="same")  # deg per 1 s
+    off1 = inp.offaxis_1s  # deg per 1 s
     shock = (g["acc_g"] >= p.impact_g) | (g["gyro_dps"] >= 900) | (off1 >= 150)
     idx = np.flatnonzero(shock)
     spans: list[list[int]] = []
@@ -710,7 +766,7 @@ def _shock_spans(inp: SourceInputs, p: CrashParams) -> list[tuple[float, float]]
 def telemetry_features(inp: SourceInputs, t0: float, t1: float, p: CrashParams) -> dict[str, Any]:
     """Telemetry evidence for an event from ``t0`` (first shock) to ``t1`` (last)."""
     g = inp.imu or {}
-    off1 = np.convolve(g["offaxis_deg"], np.ones(10), mode="same") if "offaxis_deg" in g else None
+    off1 = inp.offaxis_1s
     acc = g.get("acc_g")
     speed, vib = _grid(inp, "speed_kmh"), _grid(inp, "vibration")
     still = _grid(inp, "still_mask")
@@ -783,7 +839,7 @@ def visual_feature(inp: SourceInputs, t0: float, t1: float) -> dict[str, Any]:
     """Keyframe (~1 fps) zero-shot crash score around the event."""
     if inp.kf_crash is None:
         return {"score": 0.0, "kf_max": None}
-    t = inp.visual.t.astype(float)
+    t = inp.visual_t
     sel = (t >= t0 - 0.5) & (t <= t1 + 5.0)
     if not sel.any():
         return {"score": 0.0, "kf_max": None}
@@ -797,12 +853,11 @@ def visual_feature(inp: SourceInputs, t0: float, t1: float) -> dict[str, Any]:
 
 def audio_feature(inp: SourceInputs, t0: float, t1: float) -> dict[str, Any]:
     """Yell / scream at the event and laughter in the aftermath (voice layer)."""
-    v = inp.voice
-    if v is None:
+    refs = inp.voice_refs
+    if refs is None:
         return {"score": 0.0}
-    yell = np.maximum(v["raw_cheer"], v["hp_cheer"])
-    ref_y = max(float(np.percentile(yell, 99)), 1e-4)
-    ref_l = max(float(np.percentile(v["hp_laugh"], 99)), 1e-4)
+    v = inp.voice
+    yell, ref_y, ref_l = refs
     y = _smax(yell, t0 - 1.0, t1 + 6.0)
     lg = _smax(v["hp_laugh"], t1, t1 + 30.0)
     s_y = _clip01(np.log10(max(y, 1e-6) / ref_y) / np.log10(4.0) + 0.5)
@@ -858,7 +913,9 @@ def candidate_events(inp: SourceInputs, p: CrashParams) -> list[dict[str, Any]]:
         for c in cands:
             if c["origin"] != "telemetry" or not c["t0"] - 1 <= t <= c["t1"] + 300:
                 continue
-            s = c.setdefault("_tel", telemetry_features(inp, c["t0"], c["t1"], p)["score"])
+            if "_tel" not in c:
+                c["_tel"] = telemetry_features(inp, c["t0"], c["t1"], p)["score"]
+            s = c["_tel"]
             if s >= 0.5 or (s >= 0.15 and t <= c["t1"] + 90):
                 explained = True
                 break
@@ -867,7 +924,7 @@ def candidate_events(inp: SourceInputs, p: CrashParams) -> list[dict[str, Any]]:
         # The fall is just before the words: the strongest keyframe in 20 s.
         tc = t - 5.0
         if inp.kf_crash is not None:
-            vt = inp.visual.t.astype(float)
+            vt = inp.visual_t
             sel = (vt >= t - 20.0) & (vt <= t - 1.0)
             if sel.any():
                 tc = float(vt[sel][int(np.argmax(inp.kf_crash[sel]))])
@@ -940,7 +997,7 @@ def _normal_view(inp: SourceInputs, t0: float, t1: float) -> bool:
     rider is up: not lying on the ground looking at the sky)."""
     if inp.kf_crash is None:
         return True
-    t = inp.visual.t.astype(float)
+    t = inp.visual_t
     sel = (t >= t0) & (t <= t1)
     return bool(not sel.any() or float(np.median(inp.kf_crash[sel])) < 0.6)
 
@@ -1359,7 +1416,14 @@ def detect_project(
         for src, dur in sources:
             try:
                 if force:
-                    imu_grids(src, dur, force=True, tmp_dir=tmp_dir)
+                    _, failed = _telemetry_or_none(
+                        lambda s=src, d=dur: imu_grids(s, d, force=True, tmp_dir=tmp_dir),
+                        src,
+                        warn=False,
+                    )
+                    if failed:
+                        # not the old grids: load_inputs below reads again and warns
+                        cache.remove(_imu_cache(src))
                 inp = load_inputs(src, dur, p, tmp_dir, language)
             except Exception as err:  # noqa: BLE001 - one unreadable source, logged
                 guard.skip(err, src.name, src)

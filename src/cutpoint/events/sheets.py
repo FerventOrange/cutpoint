@@ -122,7 +122,18 @@ def _source_frames(s: Any) -> tuple[list[_Frame], list[_Frame], list[_Frame], _B
         return None
     sc = V.frame_scores(d)
     fr = V.friends_score(sc)
-    tel = extract(s.path, s.duration)
+    try:
+        tel = extract(s.path, s.duration)
+    except Exception as err:  # noqa: BLE001 - unreadable telemetry: no lift or stop masking
+        from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
+        SourceGuard(
+            "contact sheets",
+            message="{name}: telemetry not read ({err}); its frames are not masked",
+            debug_what="telemetry",
+            log=logger,
+        ).skip(err, s.name, s.path)
+        tel = None
     masked = np.zeros(len(d.t), bool)
     if tel is not None:
         g = tel.grid
@@ -147,9 +158,9 @@ def _source_frames(s: Any) -> tuple[list[_Frame], list[_Frame], list[_Frame], _B
 def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[Path]:
     """Write the contact sheets for a project's sources (visual layer must have run).
 
-    A source whose visual data or telemetry fails to read is left out of the sheets (a
-    WARNING and a ``step_failed`` warning name it); when every source with visual data
-    fails, the last error is raised. An out-of-memory error stops the run
+    A source whose visual data fails to read is left out of the sheets (a WARNING and a
+    ``step_failed`` warning name it); when every source with visual data fails, the last
+    error is raised. A source whose telemetry fails to read stays, unmasked (same warnings). An out-of-memory error stops the run
     (:class:`~cutpoint.errors.LowMemoryError`).
     """
     from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415

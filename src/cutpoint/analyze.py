@@ -3131,22 +3131,33 @@ class LayerPlan:
 NO_TELEMETRY_WARNING = "action_cam_no_telemetry"
 
 
-def _no_telemetry_fallback(style: Style, sources: Sequence[Path]) -> tuple[Style, dict[str, str]]:
+def _no_telemetry_fallback(
+    style: Style, sources: Sequence[Path], unreadable: bool = False
+) -> tuple[Style, dict[str, str]]:
     """The ``action`` style an action-cam ``style`` falls back to when no source has camera
-    telemetry (with the ``--must-include-crash`` of ``style``), and the
-    ``settings.style_fallback`` record; logs a WARNING and the ``--json`` warning
-    :data:`NO_TELEMETRY_WARNING` naming every source."""
+    telemetry, or (``unreadable``) the telemetry of every source failed to read (with the
+    ``--must-include-crash`` of ``style``), and the ``settings.style_fallback`` record; logs a
+    WARNING and the ``--json`` warning :data:`NO_TELEMETRY_WARNING` naming every source."""
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     used = replace(get_style("action"), must_include_crash=style.must_include_crash)
     named = "action-cam" if style.name == ACTION_CAM else f"{style.name} (an action-cam style)"
-    message = (
-        f"No camera telemetry in any source; {named} needs GoPro or Insta360 X3 telemetry, "
-        f"so the {used.name} style was used. Give --style {used.name} (or auto) to choose it"
-    )
+    if unreadable:
+        names = ", ".join(s.name for s in sources)
+        message = (
+            f"No camera telemetry could be read from any source ({names}); {named} needs "
+            f"it, so the {used.name} style was used for this run (nothing was cached: a later "
+            f"run reads it again). Give --style {used.name} (or auto) to choose it"
+        )
+    else:
+        message = (
+            f"No camera telemetry in any source; {named} needs GoPro or Insta360 X3 telemetry, "
+            f"so the {used.name} style was used. Give --style {used.name} (or auto) to choose it"
+        )
     logger.warning("%s", message)
     jsonout.warn(NO_TELEMETRY_WARNING, message, sources)
-    return used, {"from": style.name, "reason": "no telemetry"}
+    reason = "telemetry not read" if unreadable else "no telemetry"
+    return used, {"from": style.name, "reason": reason}
 
 
 def _warn_missing_telemetry(missing: Sequence[Path]) -> None:
@@ -4192,6 +4203,7 @@ class _ActionCam:
     ctx: Any  # cutpoint.actioncam.ActionCamContext
     durations: dict[str, float]  # per source, for actioncam.prepare again after the events
     telemetry_s: float
+    unreadable: bool = False  # every source's telemetry failed to read (see the fallback)
 
 
 def _analyze(
@@ -4233,8 +4245,15 @@ def _analyze(
         ) as prefetch,
     ):
         # ---- 1. transcribe: audio, loudness, Whisper and scene cuts per source
-        opts = replace(opts, use_scenes=opts.use_scenes and style.use_scenes)
-        cam = _prepare_action_cam(style, sources, out_dir)
+        scenes = opts.use_scenes
+        opts = replace(opts, use_scenes=scenes and style.use_scenes)
+        cam = _prepare_action_cam(style, sources, out_dir, _may_fall_back(auto, style, opts))
+        if cam is not None and cam.unreadable:
+            # every telemetry read failed: as footage without telemetry, for this run only
+            style, style_fallback = _no_telemetry_fallback(style, sources, unreadable=True)
+            start = replace(start, style=style, style_fallback=style_fallback)
+            opts = replace(opts, use_scenes=scenes and style.use_scenes)
+            cam = None
         tr = Transcriber(model=opts.model, language=opts.language)
         timings: dict[str, float] = {}
         if cam is not None:
@@ -4331,20 +4350,28 @@ def _start_style(
     # action-cam without any telemetry: the action style, decided before the OCR prefetch, the
     # scene setting and the layer plan, which all follow the style
     style_fallback: dict[str, str] | None = None
-    if (
-        auto is None
-        and (opts.detection is None or opts.reranked is not None)
-        and opts.telemetry_fallback
-        and style.kind == ACTION_CAM
-        and not any(has_telemetry(s) for s in sources)
-    ):
+    if _may_fall_back(auto, style, opts) and not any(has_telemetry(s) for s in sources):
         style, style_fallback = _no_telemetry_fallback(style, sources)
     return _StylePlan(style, cat, probes, pending, fallback, style_fallback)
 
 
-def _prepare_action_cam(style: Style, sources: Sequence[Path], out_dir: Path) -> _ActionCam | None:
+def _may_fall_back(auto: AutoRequest | None, style: Style, opts: AnalyzeOptions) -> bool:
+    """Whether an action-cam ``style`` runs as ``action`` when its footage has no usable
+    telemetry (#939): given by name, not decided by a re-run, and not a 360 project."""
+    return (
+        auto is None
+        and (opts.detection is None or opts.reranked is not None)
+        and opts.telemetry_fallback
+        and style.kind == ACTION_CAM
+    )
+
+
+def _prepare_action_cam(
+    style: Style, sources: Sequence[Path], out_dir: Path, fall_back: bool = False
+) -> _ActionCam | None:
     """An action-cam style's context (telemetry and features) before the transcription; None
-    for any other style."""
+    for any other style. ``fall_back``: when every source's telemetry fails to read, the
+    context has ``unreadable`` set (and no telemetry.json) instead of raising the error."""
     if style.kind != ACTION_CAM:
         return None
     from cutpoint import actioncam  # noqa: PLC0415
@@ -4355,8 +4382,10 @@ def _prepare_action_cam(style: Style, sources: Sequence[Path], out_dir: Path) ->
         for f in stale.glob("*.npz"):
             cache.remove(f)  # held: removed only when the run completes
     durations = {str(s): probe(remap_source(s)).duration for s in sources}
-    cam_ctx = actioncam.prepare(sources, durations, out_dir)
+    cam_ctx = actioncam.prepare(sources, durations, out_dir, raise_if_all_failed=not fall_back)
     telemetry_s = round(time.perf_counter() - t0, 2)
+    if fall_back and cam_ctx.unreadable and all(cam_ctx.telemetry[str(s)] is None for s in sources):
+        return _ActionCam(cam_ctx, durations, telemetry_s, unreadable=True)
     _warn_missing_telemetry([s for s in sources if cam_ctx.telemetry[str(s)] is None])
     return _ActionCam(cam_ctx, durations, telemetry_s)
 

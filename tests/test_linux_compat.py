@@ -311,7 +311,7 @@ def test_extract_remote_source_warns_with_the_storage_label(extract_env, monkeyp
 def test_no_readable_telemetry_is_logged_once_at_info(tmp_path, monkeypatch, caplog):
     class Parser:
         def __init__(self, _path):
-            raise RuntimeError("no GoPro MET track")
+            raise OSError("Unsupported file format")
 
     monkeypatch.setitem(sys.modules, "telemetry_parser", SimpleNamespace(Parser=Parser))
     video = tmp_path / "plain.mp4"
