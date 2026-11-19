@@ -38,7 +38,7 @@ from cutpoint import analyze, cache, features, folders, progress, runstate, self
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
-from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP
+from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP, check_candidates
 from cutpoint.styles import ACTION_CAM, Style, style_hash
 from cutpoint.utils import command_line
 
@@ -107,7 +107,8 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
 
     Raises:
         FileNotFoundError: If the project has no highlights.json.
-        ValueError: If it is not valid JSON or records no analysis.
+        ValueError: If it is not valid JSON, records no analysis or has a candidate that is
+            not an object.
     """
     path = project / HIGHLIGHTS
     try:
@@ -117,6 +118,7 @@ def load(project: Path) -> tuple[bytes, dict[str, Any]]:
     hl = cache.read_json(path, hint="; re-run `cutpoint analyze` to rewrite it")
     if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
         raise ValueError(f"{path} records no analysis; run 'cutpoint analyze' again")
+    check_candidates(hl, path)
     return raw, hl
 
 

@@ -127,6 +127,22 @@ def test_events_json_missing_project_is_not_found(home, monkeypatch, capsys):
     assert not (home / "projects" / "nosuch").exists()
 
 
+@pytest.mark.parametrize("layers", [["--layers", "audio"], []])
+def test_events_json_refuses_a_candidate_that_is_not_an_object(
+    project, monkeypatch, capsys, layers
+):
+    path = project / "highlights.json"
+    cache.save_json(path, {**cache.load_json(path), "candidates": [{"id": "h001"}, 2]})
+    monkeypatch.setattr(pipeline, "preflight", lambda layers: None)
+    code, doc = run_json(capsys, ["events", "ev", *layers])
+    assert code == 1 and doc["ok"] is False
+    assert doc["error"] == {
+        "code": "error",
+        "message": f"{path}: candidate 2 is not an object; re-run `cutpoint analyze` to rewrite it",
+    }
+    assert not (project / "events.json").exists()  # stopped at its first read
+
+
 def test_events_json_interrupted(project, monkeypatch, capsys):
     def interrupted(*a, **k):
         raise KeyboardInterrupt

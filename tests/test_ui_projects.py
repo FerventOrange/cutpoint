@@ -1114,6 +1114,21 @@ def test_a_director_preview_is_only_for_a_project_source(
     assert len(run.renders) == 1
 
 
+def test_a_candidate_that_is_not_an_object_reads_as_no_analysis(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As a highlights.json that is not valid JSON: the page shows no moments (analyze rewrites
+    the file) and the director routes render nothing, instead of a 500 from the bad entry."""
+    run = DirectorPreviews(client, tmp_path, monkeypatch)
+    hl = cache.load_json(run.p / "highlights.json")
+    cache.save_json(run.p / "highlights.json", {**hl, "candidates": [*hl["candidates"], 7]})
+    res = client.get(f"/api/projects/{run.pid}")
+    assert res.status_code == 200 and res.json()["highlights"] is None
+    assert run.ask("h001").json() == {"pano": None}
+    assert run.ask("h001", cancel=True).status_code == 200
+    assert run.renders == []
+
+
 class DirectorReads:
     """Counts what the director route reads for a request (#1029): ``highlights.json`` loads and
     candidate states built (``listings``: one per candidate of each rebuild)."""
