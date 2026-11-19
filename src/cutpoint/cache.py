@@ -16,11 +16,12 @@ import zlib
 from collections.abc import Callable, Collection, Iterator
 from functools import partial
 from pathlib import Path
-from typing import Any
-
-import numpy as np
+from typing import TYPE_CHECKING, Any
 
 from cutpoint import paths, state
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -502,6 +503,8 @@ def save_bytes(path: Path, data: bytes, *, parents: bool = False, durable: bool 
 def save_npz(path: Path, *, compressed: bool = True, parents: bool = False, **arrays: Any) -> None:
     """Atomically write ``arrays`` as an ``.npz`` (:func:`save_bytes`), so an interrupted
     write never leaves a half-written archive at ``path``."""
+    import numpy as np  # noqa: PLC0415 - not loaded by every cutpoint start
+
     buf = io.BytesIO()  # a file object: numpy adds no suffix
     (np.savez_compressed if compressed else np.savez)(buf, **arrays)
     save_bytes(path, buf.getvalue(), parents=parents)
@@ -517,6 +520,8 @@ def load_npz(path: Path) -> dict[str, np.ndarray] | None:
     data = load_bytes(path)
     if data is None:
         return None
+    import numpy as np  # noqa: PLC0415
+
     try:
         with np.load(io.BytesIO(data), allow_pickle=False) as z:
             return {k: z[k] for k in z.files}

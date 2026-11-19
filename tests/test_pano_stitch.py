@@ -448,7 +448,7 @@ def paths_(tmp_path: Path):
 @pytest.fixture(autouse=True)
 def no_ffprobe(monkeypatch: pytest.MonkeyPatch):
     """Replace the ffprobe-based verification (no ffmpeg needed in tests)."""
-    monkeypatch.setattr(stitch, "_verify", lambda clip, path: "ok")
+    monkeypatch.setattr(stitch, "_verify", lambda clip, path: [])
 
 
 def _log(out_dir: Path) -> str:
@@ -491,12 +491,17 @@ class TestStitchOne:
         assert project.equirect_flowstate(out) is False
 
     @pytest.mark.slow
-    def test_verification_notes_become_the_status(self, fake, clip, paths_, monkeypatch):
+    def test_verification_notes_are_a_warning_not_the_status(
+        self, fake, clip, paths_, monkeypatch, caplog
+    ):
+        """A209: the status stays ``ok``; the notes are ``verify`` and a WARNING."""
         out_dir, out, part = paths_
-        monkeypatch.setattr(stitch, "_verify", lambda c, p: "not 2:1 (10x10)")
+        monkeypatch.setattr(stitch, "_verify", lambda c, p: ["not 2:1 (10x10)"])
         rec = stitch._stitch_one(clip, fake("ok", part), part, out, out_dir, None)
-        assert rec["status"] == "not 2:1 (10x10)"
+        assert rec["status"] == "ok" and rec["verify"] == "not 2:1 (10x10)"
         assert out.is_file()
+        assert "failed its check: not 2:1 (10x10)" in caplog.text
+        assert "result: ok; verify: not 2:1 (10x10)" in _log(out_dir)
 
     @pytest.mark.slow
     def test_stale_partial_is_replaced(self, fake, clip, paths_):
@@ -738,6 +743,20 @@ WITH_NONE = ["-stitch_type", "optflow", None]
         ("auto_stitch", {"auto_stitch": False}, False),
         ("auto_stitch", {"auto_stitch": "false"}, "auto_stitch"),
         ("auto_stitch", {"auto_stitch": None}, "auto_stitch"),  # null is not off
+        # A214: the renderer's numbers, validated with the key in the message
+        ("level_settings", NO_PANO, (0.7, 0.5, project.MAX_FOLLOW_DEG)),
+        ("level_settings", {"level_strength": 1, "tilt_follow_s": 0}, (1.0, 0.0, 30.0)),
+        ("level_settings", {"level_strength": 5}, "level_strength' must be a number from 0"),
+        ("level_settings", {"level_strength": "x"}, "level_strength"),
+        ("level_settings", {"tilt_follow_s": None}, "tilt_follow_s"),
+        ("level_settings", {"max_follow_deg": True}, "max_follow_deg"),
+        ("cmd_every", NO_PANO, 1),
+        ("cmd_every", {"cmd_every": 2}, 2),
+        ("cmd_every", {"cmd_every": -1}, "cmd_every' must be a whole number"),
+        ("cmd_every", {"cmd_every": 1.5}, "cmd_every"),
+        ("imu_offset_s", {"imu_offset_s": -0.25}, -0.25),
+        ("imu_offset_s", {"imu_offset_s": None}, "imu_offset_s"),
+        ("equirect_yaw_offset", {"equirect_yaw_offset": "90"}, "equirect_yaw_offset"),
     ],
 )
 def test_pano_stitch_settings(read: str, pano: object, expected: object) -> None:
@@ -755,6 +774,15 @@ def test_pano_stitch_settings(read: str, pano: object, expected: object) -> None
 
 
 class TestSpaceEstimate:
+    def test_estimate_follows_the_configured_bitrate(self, clip):
+        """A218: the estimate uses pano.stitch_args' -bitrate (default 100 Mb/s)."""
+        clip.duration = 3600.0
+        assert stitch._need_gb(clip) == pytest.approx(45 * 1.2)
+        _config(stitch_args=["-bitrate", "50000000"])
+        assert stitch._need_gb(clip) == pytest.approx(22.5 * 1.2)
+        _config(stitch_args=["-stitch_type", "template"])  # invalid: the stitch says so
+        assert stitch._need_gb(clip) == pytest.approx(45 * 1.2)
+
     def test_estimate_adds_up_the_clips(self, clip):
         clip.duration = 3600.0
         assert stitch.estimate_gb([clip, clip]) == pytest.approx(2 * stitch._need_gb(clip))

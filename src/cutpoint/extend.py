@@ -353,7 +353,7 @@ def extend_clips(
                 language=language,
             )
             pano = _pano_exporter(job, clips_dir, out_dir, pano_source, pano_cmd_every)
-            _warn_dropped_peaks(job.plans, out_dir)
+            _warn_dropped_peaks(job.plans, clips_dir)
             replaced = _replace_set(job, out_dir, pano, pano_source)
             entries, reused = _render(
                 job,
@@ -636,7 +636,7 @@ def _pano_exporter(
     return pano
 
 
-def _warn_dropped_peaks(plans: list[ExtendPlan], out_dir: Path) -> None:
+def _warn_dropped_peaks(plans: list[ExtendPlan], clips_dir: Path) -> None:
     """WARNING for the clips exported with ``--compress-peaks``: re-exported without it."""
     compressed = sum(1 for p in plans if p.entry.get("compress_peaks"))
     if compressed:
@@ -648,7 +648,7 @@ def _warn_dropped_peaks(plans: list[ExtendPlan], out_dir: Path) -> None:
         jsonout.warn(
             "compress_peaks_dropped",
             message,
-            [out_dir / p.name for p in plans if p.entry.get("compress_peaks")],
+            [clips_dir / p.name for p in plans if p.entry.get("compress_peaks")],
         )
 
 

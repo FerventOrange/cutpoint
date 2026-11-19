@@ -87,6 +87,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.pano import boxes as B
 from cutpoint.utils import clip_files
 
 if TYPE_CHECKING:
@@ -217,18 +218,14 @@ def _box_rows(det: np.ndarray, i: int) -> np.ndarray:
 
 def _overlap(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Intersection of each box in ``a`` ``(N, 4)`` with each in ``b`` ``(M, 4)`` as a
-    share of the smaller one's area, ``(N, M)``.
+    share of the smaller one's area, ``(N, M)`` (:func:`cutpoint.pano.boxes.overlap`).
 
     The smaller, not ``a``'s own: the wearer's duplicate box is the larger one (a head
     and shoulders box around the self-tagged lower half, e.g. 0.21 x 0.95 around
     0.20 x 0.48), which a share of ``a`` misses. The cost: a small self box inside a
     friend's box at the edge hides that friend's edge cut too.
     """
-    lo = np.maximum(a[:, None, :2], b[None, :, :2])
-    hi = np.minimum(a[:, None, 2:], b[None, :, 2:])
-    inter = np.clip(hi - lo, 0.0, None).prod(2)
-    aa, ab = ((x[:, 2:] - x[:, :2]).prod(1) for x in (a, b))
-    return inter / np.maximum(np.minimum(aa[:, None], ab[None, :]), 1e-9)
+    return B.overlap(a, b)
 
 
 def edge_candidates(
@@ -468,20 +465,13 @@ def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.nda
     """
     from cutpoint.pano import geometry as G  # noqa: PLC0415
     from cutpoint.pano.director import evaluate  # noqa: PLC0415
-    from cutpoint.pano.project import pano_config  # noqa: PLC0415
-    from cutpoint.pano.render import MAX_FOLLOW_DEG, stabilised_r_vw  # noqa: PLC0415
+    from cutpoint.pano.project import level_settings  # noqa: PLC0415
+    from cutpoint.pano.render import stabilised_r_vw  # noqa: PLC0415
 
-    cfg = pano_config()
     fps = float(orient.meta.get("fps") or 30000 / 1001)
     yaw, pitch, _ = evaluate(path, times)
     idx = np.clip(np.round(times * fps).astype(int), 0, len(orient.q) - 1)
-    r_vw = stabilised_r_vw(
-        orient,
-        idx,
-        float(cfg.get("level_strength", 0.7)),
-        float(cfg.get("tilt_follow_s", 0.5)),
-        float(cfg.get("max_follow_deg", MAX_FOLLOW_DEG)),
-    )
+    r_vw = stabilised_r_vw(orient, idx, *level_settings())
     up = np.einsum("kji,j->ki", orient.cam_to_world(idx), [0.0, -1.0, 0.0])
     out = np.zeros(len(times))
     for i in range(len(idx)):
@@ -513,20 +503,13 @@ def render_rotations(item: dict[str, Any], orient: Any, src_times: np.ndarray) -
         r = cmd.rotation(j / cmd.fps - cmd.start + 1e-6)
         return G.SDK_EQUIRECT_FROM_CAMERA.T @ r if cmd.projection == "equirect" else r
     from cutpoint.pano.director import evaluate  # noqa: PLC0415
-    from cutpoint.pano.project import pano_config  # noqa: PLC0415
-    from cutpoint.pano.render import MAX_FOLLOW_DEG, stabilised_r_vw  # noqa: PLC0415
+    from cutpoint.pano.project import level_settings  # noqa: PLC0415
+    from cutpoint.pano.render import stabilised_r_vw  # noqa: PLC0415
 
-    cfg = pano_config()
     fps = float(orient.meta.get("fps") or 30000 / 1001)
     yaw, pitch, _ = evaluate(item["path"], t)
     idx = np.clip(np.round(t * fps).astype(int), 0, len(orient.q) - 1)
-    r_vw = stabilised_r_vw(
-        orient,
-        idx,
-        float(cfg.get("level_strength", 0.7)),
-        float(cfg.get("tilt_follow_s", 0.5)),
-        float(cfg.get("max_follow_deg", MAX_FOLLOW_DEG)),
-    )
+    r_vw = stabilised_r_vw(orient, idx, *level_settings())
     return np.stack(
         [r_vw[i] @ G.view_matrix(float(yaw[i]), float(pitch[i])) for i in range(len(t))]
     )
@@ -746,13 +729,21 @@ def aggregate_edit(clips: list[dict[str, Any]]) -> dict[str, Any]:
 
 # --------------------------------------------------------------------------- inputs
 def load_path(ref: str | None) -> dict[str, Any] | None:
+    """The camera path in the file ``ref`` (through ``source_remap``), or None when there is
+    none or it is not a usable path (a WARNING names the problem,
+    :func:`cutpoint.pano.director.validate_path`)."""
     if not ref:
         return None
     from cutpoint.config import remap_source  # noqa: PLC0415
+    from cutpoint.pano.director import validate_path  # noqa: PLC0415
 
     for p in (Path(ref), remap_source(ref)):
         if p.is_file():
-            return cache.read_json(p)
+            try:
+                return validate_path(cache.read_json(p))
+            except ValueError as err:
+                logger.warning("%s: not a usable camera path (%s)", p, err)
+                return None
     return None
 
 
@@ -826,6 +817,8 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         the parsed ``.cmd`` file of an IMU-levelled clip, or None; :func:`render_info`,
         :func:`preview_render_info`).
     """
+    from cutpoint.pano.director import validate_path  # noqa: PLC0415
+
     files = clip_files(qa_dir)
     manifest = cache.load_json(qa_dir / "manifest.json")
     out = []
@@ -866,7 +859,11 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         js = f.with_suffix(".json")
         if not js.is_file():
             continue
-        path = cache.read_json(js)
+        try:
+            path = validate_path(cache.read_json(js))
+        except ValueError as err:
+            logger.warning("%s: not a usable camera path (%s); skipped", js, err)
+            continue
         out.append(
             {
                 "file": f.name,

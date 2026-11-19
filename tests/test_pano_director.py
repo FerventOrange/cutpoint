@@ -335,6 +335,7 @@ def test_path_for_warns_on_a_stale_reused_path(
     from cutpoint.pano import render as R  # noqa: PLC0415
 
     monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "validate_path", lambda path: path)  # placeholder keys
     monkeypatch.setattr(D, "compute_path", lambda *a, **kw: pytest.fail("re-directed"))
     ex = R.PanoExporter(tmp_path, tmp_path / "clips")
     old = tmp_path / "old.json"
@@ -502,6 +503,7 @@ def test_path_for_replans_a_reused_path_of_another_forward_axis(
     from cutpoint.pano import render as R  # noqa: PLC0415
 
     monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "validate_path", lambda path: path)  # placeholder keys
     monkeypatch.setattr(G, "cached_forward_axis", lambda src: "+z")
     monkeypatch.setattr(D, "compute_path", lambda *a, **kw: {"keys": ["new"]})
     ex = R.PanoExporter(tmp_path, tmp_path / "clips")
@@ -558,6 +560,7 @@ def test_path_for_records_the_selected_moment_apart_from_the_segment(
     from cutpoint.pano import render as R  # noqa: PLC0415
 
     monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "validate_path", lambda path: path)  # placeholder keys
     planned = []
 
     def plan(clip, start, end, **kw):
@@ -897,6 +900,8 @@ def all_fine(ctx: dict, p: D.DirectorParams, span: tuple[int, int] | None = None
 
 
 def test_project_boxes_is_project_box_visible() -> None:
+    """A367: the batched projection gives each box what it gives the box alone (the
+    scalar one is a batch of one)."""
     rng = np.random.default_rng(0)
     for trial in range(60):
         vy, vp, vf = rng.uniform(-180, 180), rng.uniform(-40, 20), rng.uniform(50, 120)
@@ -909,7 +914,7 @@ def test_project_boxes_is_project_box_visible() -> None:
                 rng.uniform(0.5, 120, 12),
             ]
         )
-        for box, got in zip(boxes, D.project_boxes(vy, vp, vf, size, boxes), strict=True):
+        for box, got in zip(boxes, G.project_boxes(vy, vp, vf, size, boxes), strict=True):
             assert got == G.project_box_visible(vy, vp, vf, *size, *box)
 
 
@@ -1265,6 +1270,7 @@ def test_path_for_reuses_by_the_fixed_span(
     from cutpoint.pano import render as R  # noqa: PLC0415
 
     monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "validate_path", lambda path: path)  # placeholder keys
     monkeypatch.setattr(D, "compute_path", lambda *a, **kw: pytest.fail("re-directed"))
     ex = R.PanoExporter(tmp_path, tmp_path / "clips")
     clip = SimpleNamespace(clip_id="001", source="x.lrv")
@@ -1558,3 +1564,55 @@ def test_a_near_person_close_to_the_side_is_hard_only_with_near_soft_as_hard() -
         assert off.bad(0) and not off.qa_bad(0)
         chk = D._framing_checks(ctx, (0, n), on)
         assert chk.bad(0) and chk.qa_bad(0) == hard
+
+
+@pytest.mark.parametrize(
+    ("path", "error"),
+    [
+        ([], "not a camera path"),
+        ({"keys": []}, "non-empty list"),
+        ({"keys": [{"t": 0, "yaw": 0, "pitch": 0}]}, "key 0: fov must be numbers"),
+        ({"keys": [{"t": 0, "yaw": "x", "pitch": 0, "fov": 80}]}, "key 0: yaw"),
+        (
+            {
+                "keys": [
+                    {"t": 1, "yaw": 0, "pitch": 0, "fov": 80},
+                    {"t": 0.5, "yaw": 0, "pitch": 0, "fov": 80},
+                ]
+            },
+            "key 1: t 0.5 is before",
+        ),
+        ({"keys": [{"t": 0, "yaw": 0, "pitch": 0, "fov": 0}]}, "fov must be above 0"),
+        (
+            {"keys": [{"t": 0, "yaw": 0, "pitch": 0, "fov": 80}], "segment": {"end": "9"}},
+            "'segment'",
+        ),
+    ],
+)
+def test_validate_path_names_the_problem_of_a_hand_edited_path(path, error) -> None:
+    """A215: a clear message instead of a KeyError or numpy error mid-export."""
+    with pytest.raises(ValueError, match=error):
+        D.validate_path(path)
+
+
+def test_validate_path_returns_a_usable_path() -> None:
+    path = {"keys": [{"t": 0, "yaw": 10, "pitch": -5, "fov": 80, "cut": True}],
+            "segment": {"start": 0.0, "end": 2.0}}  # fmt: skip
+    assert D.validate_path(path) is path
+
+
+def test_a_reused_hand_edited_path_without_keys_is_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A215: extend / export reusing a broken path file names it, before any render."""
+    from cutpoint.pano import render as R  # noqa: PLC0415
+
+    monkeypatch.setattr(R, "load", lambda project: {})
+    monkeypatch.setattr(D, "compute_path", lambda *a, **kw: pytest.fail("re-directed"))
+    ex = R.PanoExporter(tmp_path, tmp_path / "clips")
+    old = tmp_path / "old.json"
+    path = {"version": D.PATH_VERSION, "planned": {"start": 0.0, "end": 9.0}, "keys": []}
+    old.write_text(json.dumps(path | {"params": asdict(D.params_for(None))}), encoding="utf-8")
+    clip = SimpleNamespace(clip_id="001", source="x.lrv")
+    with pytest.raises(ValueError, match=r"old\.json: not a usable camera path .*delete it"):
+        ex.path_for(clip, "001_a.mp4", 1.0, 5.0, None, reuse=old)

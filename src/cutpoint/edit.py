@@ -22,54 +22,15 @@ from pathlib import Path
 
 from cutpoint import cache, category, folders, jsonout, progress, runstate, tsrepair
 from cutpoint.assemble import assemble, temporary_clips
-from cutpoint.category import FUNNY, HYPE
 from cutpoint.clips import export_clips
 from cutpoint.encode import Lut
+from cutpoint.kinds import KINDS, Kind
 from cutpoint.planning import report_clips
 from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
 from cutpoint.telemetry import has_telemetry
 from cutpoint.utils import file_stamp, find_videos, input_name
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Kind:
-    """What one ``--kind`` makes.
-
-    Attributes:
-        style: Analysis style (``--style`` overrides it); :data:`~cutpoint.styles.AUTO`:
-            the style is detected from the footage; an ambiguous detection uses its best
-            guess's style if that is gameplay, else the General style
-            (:func:`~cutpoint.styles.auto_fallback`).
-        top: Clip the N best moments (``clips --top``); None = no count limit.
-        max_total: Cap the clips' total length in seconds (``clips --max-total``).
-        order: Clip numbering and playback order (``clips --order``).
-        transition: ``assemble --transition``.
-        loudnorm: ``assemble --loudnorm``.
-        captions: ``assemble --captions`` (burned in; whisper runs on the final).
-        emphasis: ``--style auto``'s emphasis (:class:`~cutpoint.styles.AutoRequest`):
-            ``funny`` for funny-moments, else ``hype``.
-    """
-
-    style: str
-    top: int | None = None
-    max_total: float | None = None
-    order: str = "score"
-    transition: str = "cut"
-    loudnorm: bool = True
-    captions: bool = False
-    emphasis: str = HYPE
-
-
-KINDS: dict[str, Kind] = {
-    "highlights": Kind(AUTO, max_total=180, order="chronological", transition="fade"),
-    "montage": Kind(AUTO, max_total=60, order="score", transition="fade"),
-    "clips": Kind(AUTO, top=10, order="score", transition="cut"),
-    "funny-moments": Kind(
-        "funny", top=8, order="chronological", transition="cut", captions=True, emphasis=FUNNY
-    ),
-}
 
 
 def resolve_kind(
@@ -318,11 +279,8 @@ def _event_layers(
     """``--layers`` of the ``cutpoint events`` run of ``run_edit --events`` (None: its
     defaults), checked (:func:`~cutpoint.events.pipeline.preflight`) before any analysis."""
     from cutpoint.analyze import LAYER_STEP  # noqa: PLC0415
-    from cutpoint.events.pipeline import (  # noqa: PLC0415
-        ACTION_CAM_LAYERS,
-        DEFAULT_LAYERS,
-        preflight,
-    )
+    from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS  # noqa: PLC0415
+    from cutpoint.events.pipeline import preflight  # noqa: PLC0415
 
     is_cam = _action_cam(style, videos, footage)
     defaults = ACTION_CAM_LAYERS if is_cam else DEFAULT_LAYERS

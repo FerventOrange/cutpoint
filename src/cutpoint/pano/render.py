@@ -79,13 +79,17 @@ from cutpoint.insta360 import imu_source
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano.project import (
+    MAX_FOLLOW_DEG,
     RenderSource,
     clip_for,
+    equirect_yaw_offset,
+    imu_offset_s,
+    level_settings,
     load,
-    pano_config,
     resolve_source,
     source_flowstate,
 )
+from cutpoint.pano.project import cmd_every as pano_cmd_every
 from cutpoint.pano.x3 import X3Clip
 
 logger = logging.getLogger(__name__)
@@ -97,7 +101,6 @@ CMD_LEAD_S = 0.005  # commands go out this long before the frame they are meant 
 # First line of a ``.cmd`` file, a sendcmd comment: ``input=``, the initial ``rorder``,
 # ``yaw``, ``pitch`` and ``roll``, the seek ``start`` and the source ``fps`` (for ``360 qa``)
 CMD_HEADER = "# cutpoint-v360"
-MAX_FOLLOW_DEG = 30.0  # default ``pano.max_follow_deg``
 PROGRESS_POLL_S = 0.1  # ``render_segment(progress=)``: ffmpeg's progress file is read this often
 PROGRESS_MIN_S = 0.1  # ... and the callback called at most once per this many seconds
 UPRIGHT = "upright"  # path ``level``: no IMU, level for the nominal mount (sky lens up)
@@ -193,7 +196,7 @@ def clip_orientation(clip: X3Clip) -> G.Orientation:
         imu_source(src),
         clip.fps,
         max(clip.frames, 1),
-        q_offset_s=float(pano_config().get("imu_offset_s", 0.0)),
+        q_offset_s=imu_offset_s(),
     )
 
 
@@ -317,7 +320,6 @@ def command_lines(
     the seek the first frame is source frame ``ceil(start * fps)``, so each
     command is timed :data:`CMD_LEAD_S` before its frame's timestamp.
     """
-    cfg = pano_config()
     fps = clip.fps or 30000 / 1001
     j0 = math.ceil(start * fps - 1e-6)
     n = math.ceil(dur * fps) + 1  # one spare: the output can end on a frame past start + dur
@@ -325,16 +327,10 @@ def command_lines(
     rel = np.maximum(idx / fps - start - CMD_LEAD_S, 0.0)
     times = idx / fps
     yaw, pitch, fov = D.evaluate(path, times)
-    yaw_off = float(cfg.get("equirect_yaw_offset", 0.0))
+    yaw_off = equirect_yaw_offset()
     r_vw = None
     if not src.levelled and orient is not None:
-        r_vw = stabilised_r_vw(
-            orient,
-            idx,
-            float(cfg.get("level_strength", 0.7)),
-            float(cfg.get("tilt_follow_s", 0.5)),
-            float(cfg.get("max_follow_deg", MAX_FOLLOW_DEG)),
-        )
+        r_vw = stabilised_r_vw(orient, idx, *level_settings())
     lines: list[str] = []
     init: dict[str, float] = {}
     cur = np.eye(3)  # rotation v360 currently applies (tracked exactly as sent)
@@ -420,7 +416,7 @@ def render_segment(
     from cutpoint.config import remap_source  # noqa: PLC0415
 
     src = src or resolve_source(clip)
-    cmd_every = int(cmd_every or pano_config().get("cmd_every", 1))
+    cmd_every = int(cmd_every or pano_cmd_every())
     # Start on a frame, so the audio seek matches the first video frame.
     fps = clip.fps or 30000 / 1001
     start = math.ceil(start * fps - 1e-6) / fps
@@ -706,7 +702,8 @@ class PanoExporter:
         if selected is not None:
             sel = {"start": round(float(selected[0]), 3), "end": round(float(selected[1]), 3)}
         if reuse is not None and reuse.is_file():
-            path = cache.load_json(reuse) or {}
+            path = cache.load_json(reuse)
+            path = path if isinstance(path, dict) else {}
             sel = sel or path.get("selected")
             version = path.get("version", 1)
             pl = path.get("fixed") or path.get("planned") or {}
@@ -729,6 +726,13 @@ class PanoExporter:
                     "  %s: planned for another forward axis (upright clip); re-directing", reuse
                 )
             elif _covers(pl, start, end):
+                try:  # a hand-edited path: a clear message, not a numpy error mid-export
+                    D.validate_path(path)
+                except ValueError as err:
+                    raise ValueError(
+                        f"{reuse}: not a usable camera path ({err}); fix it, or delete it to "
+                        "plan the path anew"
+                    ) from None
                 self._check_reused(path, reuse, kind)
                 changed = sel is not None and path.get("selected") != sel
                 if changed:

@@ -17,6 +17,7 @@ import numpy as np
 
 from cutpoint import folders, jsonout, state
 from cutpoint.audio_tracks import export_tracks
+from cutpoint.config import LUT_SUFFIXES
 from cutpoint.crop import Crop
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
@@ -326,7 +327,6 @@ def lut_filter(path: PurePath, strength: float = 1.0) -> str | None:
     )
 
 
-LUT_SUFFIXES = (".cube", ".3dl")  # lut3d's Iridas/Resolve .cube and Autodesk .3dl
 GRADE_KEYS = ("lut", "color")  # manifest.json keys of a graded clip (``color``: #290 stage 2)
 
 

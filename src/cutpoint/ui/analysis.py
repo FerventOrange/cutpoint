@@ -31,6 +31,7 @@ from cutpoint.segments import MAX_SEGMENTS
 from cutpoint.styles import (
     ACTION_CAM,
     AUTO,
+    HYPE,
     Style,
     auto_fallback,
     get_style,
@@ -548,8 +549,6 @@ def _style_crash(style: object, ps: ProjectStyle | None = None) -> float | None:
     """The ``must_include_crash`` of ``style`` (what ``--must-include-crash`` overrides), else
     None (no known style). ``auto`` picks a built-in style, all with the same value: its
     fallback's. ``ps``: the project's style (:meth:`ProjectStyle.style`)."""
-    from cutpoint.category import HYPE  # noqa: PLC0415
-
     ps = ps or ProjectStyle.of({}, None)
     s = ps.style(auto_fallback(HYPE) if style == AUTO else style)
     return s.must_include_crash if s is not None else None

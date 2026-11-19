@@ -720,11 +720,22 @@ def test_visual_data_from_frames_assembles_batches() -> None:
         V.visual_data_from_frames(FakeModels(), [], [])
 
 
+KEY = {"t": 0.0, "yaw": 0.0, "pitch": 0.0, "fov": 80.0}
+
+
 def test_load_path_accepts_a_bom(tmp_path):
     p = tmp_path / "path.json"
-    p.write_text('{"keys": []}', encoding="utf-8-sig")  # PowerShell 5.1 writes a BOM
-    assert qa.load_path(str(p)) == {"keys": []}
+    p.write_text(json.dumps({"keys": [KEY]}), encoding="utf-8-sig")  # PowerShell 5.1: a BOM
+    assert qa.load_path(str(p)) == {"keys": [KEY]}
     assert qa.load_path(None) is None
+
+
+def test_load_path_refuses_an_unusable_hand_edited_path(tmp_path, caplog):
+    """A215: a path without keys is no path (a WARNING), not a numpy error later."""
+    p = tmp_path / "path.json"
+    p.write_text('{"keys": []}', encoding="utf-8")
+    assert qa.load_path(str(p)) is None
+    assert "not a usable camera path ('keys' must be a non-empty list)" in caplog.text
 
 
 # --------------------------------------------------------------------------- wearer cone

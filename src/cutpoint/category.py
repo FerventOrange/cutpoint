@@ -63,7 +63,6 @@ GAMEPLAY = "gameplay"
 TALK = "talk"
 GENERAL = "general"
 CATEGORIES = (ACTION_CAM, ACTION, GAMEPLAY, TALK, GENERAL)
-HYPE, FUNNY = "hype", "funny"  # emphasis: analyze is hype, edit --kind funny-moments funny
 
 # ---- the frame probe
 GRID = (320, 180)  # (width, height) of every probe frame

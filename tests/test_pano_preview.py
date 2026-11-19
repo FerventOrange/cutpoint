@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import tempfile
@@ -84,6 +85,41 @@ def test_orientation_cache_is_written_atomically(imu_clip, monkeypatch) -> None:
     with pytest.raises(OSError, match="No space"):
         G.orientation(src, Path("i00.insv"), 30.0, 60)
     assert not npz.exists() and not list(npz.parent.glob("*.tmp"))  # nothing half-written
+
+
+def test_the_orientation_track_keeps_its_meta_in_one_file(imu_clip) -> None:
+    """A211: the meta is inside the ``.npz`` (no second file written after it); a track
+    cached with the meta beside it is computed anew, and that old file removed."""
+    src, reads = imu_clip
+    npz = G._orient_path(src)
+    npz.parent.mkdir(parents=True, exist_ok=True)
+    z = np.zeros(60, np.float32)
+    np.savez(npz, t=z, up=np.tile(np.float32([0, 0, -1]), (60, 1)), heading=z,
+             heading_smooth=z, q=np.zeros((60, 4), np.float32))  # fmt: skip
+    cache.save_json(npz.with_suffix(".json"), {"fps": 30.0, "q_offset_s": 0.25})
+    assert G.load_orientation(src) is None
+    o = G.orientation(src, Path("i00.insv"), 30.0, 60, q_offset_s=0.25)
+    assert len(reads) == 1 and not npz.with_suffix(".json").exists()
+    assert G.load_orientation(src).meta["q_offset_s"] == o.meta["q_offset_s"] == 0.25
+    assert G.orientation(src, Path("i00.insv"), 30.0, 60, q_offset_s=0.25) is not None
+    assert len(reads) == 1  # cached with its offset
+
+
+def test_the_cached_track_is_read_once_per_file_version(imu_clip, monkeypatch) -> None:
+    """A727: forward_yaw, wearer_view_mask and the QA load the track per use; the file is
+    read again only once it is rewritten (another size or modification time)."""
+    src, _ = imu_clip
+    G.orientation(src, Path("i00.insv"), 30.0, 60)
+    reads: list[Path] = []
+    real = G._read_orientation
+    monkeypatch.setattr(G, "_read_orientation", lambda p: reads.append(p) or real(p))
+    first = G.load_orientation(src)
+    assert G.load_orientation(src) is first and len(reads) == 1
+    G.orientation(src, Path("i00.insv"), 30.0, 60, force=True)  # rewritten
+    npz = G._orient_path(src)
+    st = npz.stat()
+    os.utime(npz, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    assert G.load_orientation(src) is not first and len(reads) == 2
 
 
 def test_a_corrupt_orientation_cache_is_computed_anew(imu_clip) -> None:

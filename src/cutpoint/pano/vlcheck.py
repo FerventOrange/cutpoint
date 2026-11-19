@@ -30,7 +30,6 @@ request used up its token budget before the answer. Replies are cached per
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import logging
@@ -43,7 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from cutpoint import cache, errors, ffmpeg_utils, memguard, state
+from cutpoint import cache, errors, ffmpeg_utils, state
 from cutpoint.pano.qa import nearest_keys
 
 if TYPE_CHECKING:
@@ -180,9 +179,6 @@ class VLChecker:
         # the frame cache's key: a hosted provider's endpoint, an Ollama's host[:port]
         self.host = self.rater.host
         self.dead = False  # set when the server stops answering: no more requests
-        # the Ollama had the model loaded before this run's first request (the AI Chat or
-        # another job): unload() leaves it loaded; None: no request to Ollama yet (#888)
-        self.preloaded: bool | None = None
 
     def available(self) -> bool:
         if not self.rater.available():
@@ -214,61 +210,33 @@ class VLChecker:
                 self.model,
             )
 
-    def _post(self, prompt: str, image: str, num_predict: int) -> dict[str, Any] | None:
-        import requests  # noqa: PLC0415
+    @property
+    def preloaded(self) -> bool | None:
+        """Whether Ollama had the model loaded before this run's first request (the AI Chat
+        or another job): :meth:`unload` then leaves it loaded; None: no request to Ollama yet
+        (#888, :attr:`VisionRater.preloaded`)."""
+        return self.rater.preloaded
 
-        from cutpoint.backends import ollama_post  # noqa: PLC0415
-
-        # a provider the user did not agree to (a hosted one, or an Ollama on another machine):
-        # no request, only the consent warning
-        if self.rater.consent_needed:
-            self.rater.warn_consent()
-            self.dead = True
-            return None
-        if self.rater.via:  # the frame is a JPEG; the prompt asks for JSON, no sampling options
-            self.rater.check_memory()  # a server on this machine: the RAM floor (#887)
-            text = self.rater.via.ask(prompt, [base64.b64decode(image)])
-            if text is None:
+    def _post(self, prompt: str, jpeg: bytes, num_predict: int) -> dict[str, Any] | None:
+        """One request (:meth:`VisionRater.ask_text`): the reply, or None; a request that
+        failed (or a provider without the user's consent) makes the checker :attr:`dead`."""
+        # no "format": the JSON grammar made this model pad with whitespace
+        msg = self.rater.ask_text(
+            prompt, [jpeg], num_ctx=CHECK_NUM_CTX, num_predict=num_predict, temperature=0.1
+        )
+        if msg is None and self.rater.last_failure == "request":
+            if not self.rater.consent_needed:
                 logger.warning("VL check request failed; no more VL checks")
-                self.dead = True
-                return None
-            return {"content": text}
-
-        # the context the model is loaded with already when larger (no reload, #732/#865)
-        num_ctx = self.rater._context(CHECK_NUM_CTX)
-        payload = {
-            "model": self.model,
-            "messages": [{"role": "user", "content": prompt, "images": [image]}],
-            "stream": False,
-            "think": False,
-            # no "format": the JSON grammar made this model pad with whitespace
-            "options": {"temperature": 0.1, "num_ctx": num_ctx, "num_predict": num_predict},
-        }
-        self.rater.check_memory(num_ctx)  # raises LowMemoryError: the run stops (resumable)
-        # after the memory guard (it may free the model) and before this run's first request
-        # may load it (#888)
-        if self.preloaded is None:
-            self.preloaded = memguard.ollama_loaded(self.rater.url, self.model)
-        self.rater.used = True  # so unload() frees it
-        try:
-            msg = ollama_post(self.rater.url, "/api/chat", payload, timeout=(3, 300)).get("message")
-            return msg if isinstance(msg, dict) else {}  # another shape: no reply (A116)
-        except requests.RequestException as err:
-            logger.warning("VL check request failed: %s; no more VL checks", err)
             self.dead = True
-            return None
-        except ValueError as err:
-            logger.warning("VL check reply is not JSON: %s", err)
-            return None
+        return msg
 
     def ask(self, jpeg: bytes) -> dict[str, Any] | None:
         """The verdict for one JPEG frame (one retry), or None when both attempts fail
         or the server is :attr:`dead`."""
         if self.dead:
             return None
-        image = base64.b64encode(jpeg).decode("ascii")
         for prompt, num_predict in self.attempts:
-            msg = self._post(prompt, image, num_predict)
+            msg = self._post(prompt, jpeg, num_predict)
             if msg is None:
                 return None
             reply = parse_reply(str(msg.get("content") or ""), str(msg.get("thinking") or ""))

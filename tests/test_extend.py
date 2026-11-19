@@ -435,10 +435,9 @@ def test_extend_dropping_compress_peaks_is_a_json_warning(tmp_path, reads):
     clips = _two_clips(tmp_path, compress_peaks="light")
     with jsonout.run("extend") as res:
         _run(clips)
-    out = extend.default_out_dir(clips, Padding(1.0, 1.0))
     assert [(w["code"], w["files"]) for w in res.warnings] == [
-        ("compress_peaks_dropped", [str(out / "001_a.mp4"), str(out / "002_b.mp4")])
-    ]
+        ("compress_peaks_dropped", [str(clips / "001_a.mp4"), str(clips / "002_b.mp4")])
+    ]  # the clips exported with it, not the new ones
 
 
 def test_extend_refuses_a_non_empty_folder_with_the_clips_hint(tmp_path, reads):

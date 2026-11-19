@@ -230,6 +230,7 @@ def test_reusable_does_not_reuse_a_path_saved_with_other_prompts(tmp_path):
         "kind": "people",
         "vertical": False,
         "params": {"a": 1},
+        "keys": [{"t": 1.0, "yaw": 0.0, "pitch": -5.0, "fov": 86.0}],  # a usable path (A215)
     }
     (tmp_path / "001_a.json").write_text(json.dumps(base), encoding="utf-8")
     key = _hop_key()

@@ -128,7 +128,7 @@ def fake_sdk(tmp_path, monkeypatch):
 
     monkeypatch.setattr(stitch, "require_sdk", lambda: exe)
     monkeypatch.setattr(stitch, "MIN_FREE_GB", 0)
-    monkeypatch.setattr(stitch, "_verify", lambda clip, path: "ok")  # no ffprobe on fake bytes
+    monkeypatch.setattr(stitch, "_verify", lambda clip, path: [])  # no ffprobe on fake bytes
     monkeypatch.setattr(stitch.subprocess, "Popen", popen)
     return lambda value: mode.update(value=value)
 

@@ -216,8 +216,10 @@ def test_cli_lut_strength_out_of_range_exits_2(capsys, command):
 
 def test_cli_passes_the_checked_lut_to_clips_and_edit(tmp_path, monkeypatch, loads):
     got = {}
-    monkeypatch.setattr(cli, "export_clips", lambda project, **kw: got.update(clips=kw["lut"]))
-    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: got.update(edit=kw["lut"]))
+    monkeypatch.setattr(
+        "cutpoint.clips.export_clips", lambda project, **kw: got.update(clips=kw["lut"])
+    )
+    monkeypatch.setattr("cutpoint.edit.run_edit", lambda *a, **kw: got.update(edit=kw["lut"]))
     lut = write(tmp_path / "look.cube")
     assert cli.main(["clips", "p", "--lut", str(lut), "--lut-strength", "0.4"]) == 0
     assert cli.main(["edit", "v.mp4", "--lut", str(lut)]) == 0
@@ -230,8 +232,10 @@ def test_cli_passes_the_checked_lut_to_clips_and_edit(tmp_path, monkeypatch, loa
 def calls(monkeypatch) -> list[str]:
     """Stub export_clips and run_edit (recording which ran, with their color arguments)."""
     got: list = []
-    monkeypatch.setattr(cli, "export_clips", lambda project, **kw: got.append(("clips", kw)))
-    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: got.append(("edit", kw)))
+    monkeypatch.setattr(
+        "cutpoint.clips.export_clips", lambda project, **kw: got.append(("clips", kw))
+    )
+    monkeypatch.setattr("cutpoint.edit.run_edit", lambda *a, **kw: got.append(("edit", kw)))
     return got
 
 

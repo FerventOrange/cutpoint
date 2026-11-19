@@ -16,15 +16,13 @@ import logging
 from pathlib import Path
 
 from cutpoint import cache, jsonout
-from cutpoint.events import pipeline
-from cutpoint.events.audio_events import DEFAULT_GROUPS, AudioParams
-from cutpoint.events.killfeed import OcrParams
-from cutpoint.events.pipeline import ACTION_CAM_LAYERS, DEFAULT_LAYERS, LAYERS
-from cutpoint.events.vlm_windows import VlmParams
+from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS, LAYERS
 from cutpoint.styles import ACTION_CAM, project_kind
 
 
 def _group_overrides(thr: list[str], floor: list[str]) -> tuple:
+    from cutpoint.events.audio_events import DEFAULT_GROUPS  # noqa: PLC0415 - torch, requests
+
     groups = {g.name.lower(): g for g in DEFAULT_GROUPS}
     for spec, field in [(s, "abs_thr") for s in thr] + [(s, "rel_floor") for s in floor]:
         name, _, val = spec.partition("=")
@@ -215,6 +213,10 @@ def run_args(
     ``ollama_url``, ``ollama_model``: the VLM layer's Ollama (``edit --events``; None: from
     config.json and the environment)."""
     from cutpoint.config import player_tags, resolve_project_path  # noqa: PLC0415
+    from cutpoint.events import pipeline  # noqa: PLC0415 - the heavy part, only when it runs
+    from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
+    from cutpoint.events.killfeed import OcrParams  # noqa: PLC0415
+    from cutpoint.events.vlm_windows import VlmParams  # noqa: PLC0415
 
     args.project = resolve_project_path(args.project)
     jsonout.set_project(args.project)

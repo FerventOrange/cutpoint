@@ -145,7 +145,7 @@ def test_a_model_the_memory_guard_freed_counts_as_loaded_by_this_run(
     resp = requests.Response()
     resp.status_code, resp._content = 200, b"{}"
     monkeypatch.setattr(requests, "post", lambda url, **kw: resp)
-    chk._post("p", "aW1n", 10)
+    chk._post("p", b"img", 10)
     assert chk.preloaded is False
 
 
@@ -262,7 +262,7 @@ def _ctx_sent(monkeypatch: pytest.MonkeyPatch, url: str, loaded: int | None) -> 
         return resp
 
     monkeypatch.setattr(requests, "post", post)
-    chk._post("p", "aW1n", 10)
+    chk._post("p", b"img", 10)
     return sent, [probed, guarded]
 
 
@@ -298,3 +298,35 @@ def test_two_recordings_with_one_clip_number_keep_apart_verdicts(home) -> None:
     old = V._cache_file(x3.clip_key("20240831", "194807", "029"), "LRV_20240831_194807_01_029.lrv")
     new = V._cache_file(x3.clip_key("20260122", "132929", "029"), "LRV_20260122_132929_11_029.lrv")
     assert old != new
+
+
+def test_the_check_goes_through_the_vision_rater_s_free_text_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A368: one ``VisionRater.ask_text`` turn per frame: the JPEG, no ``format``, no
+    thinking, the check's context and token budget; "loaded before" is asked once."""
+    chk = V.VLChecker(url="http://127.0.0.1:1", model="m")
+    probes: list[str] = []
+    monkeypatch.setattr(
+        memguard, "ollama_loaded", lambda u, m, num_ctx=None: probes.append(m) or False
+    )
+    monkeypatch.setattr(memguard, "check_vision", lambda rater: None)
+    monkeypatch.setattr(memguard, "ollama_context", lambda u, m: None)
+    sent: list[dict] = []
+
+    def post(url: str, json: dict, **kw: Any) -> Any:
+        sent.append(json)
+        resp = requests.Response()
+        resp.status_code = 200
+        resp._content = b'{"message": {"content": "", "thinking": "{\\"low_info\\": true}"}}'
+        return resp
+
+    monkeypatch.setattr(requests, "post", post)
+    assert chk.ask(b"jpeg")["low_info"] is True  # the verdict found in the thinking
+    assert chk.ask(b"jpeg")["low_info"] is True
+    [first, *_] = sent
+    assert "format" not in first and first["think"] is False
+    assert first["messages"][0]["images"] == ["anBlZw=="]  # b"jpeg"
+    assert first["options"]["num_ctx"] == V.CHECK_NUM_CTX
+    assert first["options"]["num_predict"] == V.NUM_PREDICT[0]
+    assert len(probes) == 1 and chk.preloaded is False
