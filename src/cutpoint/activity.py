@@ -19,7 +19,9 @@ A profile is a small JSON document (any sport, game or kind of video)::
              "hype": "...", "edit": "...", "idle": "...", "rate_edit": "...",
              "rate_high": "...", "rate_low": "...", "retry_high": "...",
              "retry_low": "...", "tags": {"<tag>": "..."}},
-     "exclude_base": [base entries this profile replaces], "<section>": {...}}
+     "exclude_base": [base entries this profile replaces],
+     "mix": {"categories": {"<category>": {"name": "...", "share": 0.3}},
+             "opener": ["<category>", ...]}, "<section>": {...}}
 
 Every profile inherits the shared floor ``presets/activities/base.json`` (generic
 incident captions and crash words, neutral captions of every list); ``exclude_base``
@@ -31,7 +33,11 @@ window prompt (:mod:`cutpoint.events.vlm_windows`) and of the action-cam vision 
 (:mod:`cutpoint.vision`), its ``tags`` the descriptions of the fixed window tags
 (:data:`cutpoint.events.vlm_windows.ACTION_CAM_TAGS`). A profile's ``vl`` and ``vlm``
 strings replace the floor's one by one. ``lift``
-is empty in the floor: activities without lifts never look for one. Extra object
+is empty in the floor: activities without lifts never look for one. ``mix`` (optional,
+none in the floor or ``generic``) shapes ``cutpoint mix`` for this activity: a display
+``name`` and a ``share`` (0 turns it off) per mix category (:data:`MIX_CATEGORIES`, the
+moments mix detects from the same signals for every activity) and the categories the edit
+may open with (``opener``); see :mod:`cutpoint.mix`. Discovery never writes it. Extra object
 sections (e.g. a future ``game`` HUD vocabulary) are kept.
 
 Cutpoint ships no activity profiles of its own: only the floor (``base``) and ``generic``
@@ -201,6 +207,11 @@ VLM_KEYS = (
 )
 # The prompt set outside a use_prompts block and for a project without activity.json.
 DEFAULT_ACTIVITY = "generic"
+# ``cutpoint mix`` categories a profile's ``mix`` section may name, weigh or open with
+# (:data:`cutpoint.mix.CATEGORIES`).
+MIX_CATEGORIES = ("run", "jump", "crash", "lift", "scenery", "social")
+MAX_MIX_NAME = 24
+MIX_RESERVED_NAME = "crash reaction"  # clips.REACTION_LABEL: _arc pairs a crash with it
 # ``llm`` of :func:`resolve` when discovery runs only because a local model may answer (analyze,
 # edit): the user did not ask for it, so a missing consent, a bad Ollama port and too little
 # free memory are INFO lines and the run goes on as without a model
@@ -304,6 +315,46 @@ def _vlm(raw: Any) -> dict[str, Any]:
     return out
 
 
+def _mix_name(v: Any) -> str:
+    """A mix category's display name: lowercase on one line, at most :data:`MAX_MIX_NAME`
+    characters and with a letter or digit (it names clip files), else "". The name of a crash's
+    reaction (:data:`MIX_RESERVED_NAME`) is not allowed."""
+    v = " ".join(v.lower().split()) if isinstance(v, str) else ""
+    ok = len(v) <= MAX_MIX_NAME and any(ch.isalnum() for ch in v)
+    return v if ok and v != MIX_RESERVED_NAME else ""
+
+
+def _mix_share(v: Any) -> float | None:
+    """A mix category's share (0-1), or None when not a number in that range."""
+    if isinstance(v, bool) or not isinstance(v, int | float) or not 0 <= v <= 1:
+        return None
+    return round(float(v), 3)
+
+
+def _mix(raw: Any) -> dict[str, Any]:
+    """The valid part of a ``mix`` section: per :data:`MIX_CATEGORIES` entry its ``name``
+    and ``share``, and the ``opener`` categories; {} when nothing is left."""
+    raw = raw if isinstance(raw, dict) else {}
+    cats = raw.get("categories") if isinstance(raw.get("categories"), dict) else {}
+    out: dict[str, Any] = {}
+    named: dict[str, dict[str, Any]] = {}
+    for k in MIX_CATEGORIES:
+        v = cats.get(k) if isinstance(cats.get(k), dict) else {}
+        entry: dict[str, Any] = {}
+        if name := _mix_name(v.get("name")):
+            entry["name"] = name
+        if (share := _mix_share(v.get("share"))) is not None:
+            entry["share"] = share
+        if entry:
+            named[k] = entry
+    if named:
+        out["categories"] = named
+    opener = raw.get("opener") if isinstance(raw.get("opener"), list) else []
+    if opener := [k for k in MIX_CATEGORIES if k in opener]:
+        out["opener"] = opener
+    return out
+
+
 def validate(raw: Any) -> dict[str, Any]:
     """Normalise a profile (built-in, library file or LLM output): known fields
     typed, deduplicated and capped; extra object sections kept as they are."""
@@ -330,6 +381,9 @@ def validate(raw: Any) -> dict[str, Any]:
     }
     prof["vlm"] = _vlm(sec("vlm"))
     prof.update({k: v for k, v in raw.items() if k not in prof and isinstance(v, dict)})
+    prof.pop("mix", None)
+    if mix := _mix(raw.get("mix")):
+        prof["mix"] = mix
     return prof
 
 
@@ -614,6 +668,15 @@ def record_profile(rec: dict[str, Any]) -> dict[str, Any]:
     incident negatives of ``generic`` when it has none (:func:`_neg_floor`)."""
     prof = rec.get("profile")
     return _neg_floor(prof if isinstance(prof, dict) else {})
+
+
+def project_mix(project: Path) -> dict[str, Any]:
+    """The ``mix`` section of a project's ``activity.json`` profile (:func:`_mix`), {}
+    without one (no file, an older record, or a profile without it). Reads the file only."""
+    rec = cache.load_json(project / ACTIVITY_FILE)
+    if not isinstance(rec, dict) or rec.get("version") != PROFILE_VERSION:
+        return {}
+    return _mix(record_profile(rec).get("mix"))
 
 
 def project_prompts(project: Path) -> Prompts:
@@ -1627,6 +1690,51 @@ def _check_texts(raw: dict[str, Any], problems: list[str], warnings: list[str]) 
             )
 
 
+def _check_mix(raw: Any, problems: list[str], warnings: list[str]) -> None:
+    """The ``mix`` section."""
+    if raw is None:
+        return
+    if not isinstance(raw, dict):
+        problems.append('mix must be an object with "categories" and "opener"')
+        return
+    if unknown := sorted(set(raw) - {"categories", "opener"}):
+        warnings.append(f"mix: unknown keys ignored: {', '.join(unknown)}")
+    known = ", ".join(MIX_CATEGORIES)
+    cats = raw.get("categories")
+    if cats is not None and not isinstance(cats, dict):
+        problems.append('mix.categories must be an object of {"name": ..., "share": ...}')
+    elif cats:
+        if unknown := sorted(set(cats) - set(MIX_CATEGORIES)):
+            warnings.append(
+                f"mix.categories: unknown categories ignored: {', '.join(unknown)} "
+                f"(the categories are {known})"
+            )
+        for k in (k for k in MIX_CATEGORIES if k in cats):
+            v = cats[k]
+            if not isinstance(v, dict):
+                warnings.append(f"mix.categories.{k}: not an object, ignored")
+                continue
+            if unknown := sorted(set(v) - {"name", "share"}):
+                warnings.append(f"mix.categories.{k}: unknown keys ignored: {', '.join(unknown)}")
+            if "name" in v and not _mix_name(v["name"]):
+                warnings.append(
+                    f"mix.categories.{k}.name ignored: not text with a letter or digit, or "
+                    f"longer than {MAX_MIX_NAME} characters, or the reserved name '{MIX_RESERVED_NAME}'"
+                )
+            if "share" in v and _mix_share(v["share"]) is None:
+                warnings.append(f"mix.categories.{k}.share ignored: not a number from 0 to 1")
+        given = [v for k in MIX_CATEGORIES if isinstance(v := cats.get(k), dict) and "share" in v]
+        if given and all(_mix_share(v["share"]) == 0 for v in given):
+            warnings.append("mix.categories: every share is 0, so no category is left in the mix")
+    opener = raw.get("opener")
+    if opener is not None and not isinstance(opener, list):
+        problems.append("mix.opener must be a list of categories")
+    elif opener and (bad := [str(k) for k in opener if k not in MIX_CATEGORIES]):
+        warnings.append(
+            f"mix.opener: unknown categories ignored: {', '.join(bad)} (the categories are {known})"
+        )
+
+
 def check_profile(raw: Any) -> tuple[list[str], list[str]]:
     """``(problems, warnings)`` of a profile document, in plain words: a problem makes it
     unusable; a warning names what :func:`validate` ignores, cuts or caps when it loads it."""
@@ -1654,7 +1762,18 @@ def check_profile(raw: Any) -> tuple[list[str], list[str]]:
         raw["incident"] if isinstance(raw.get("incident"), dict) else {}, problems, warnings
     )
     _check_texts(raw, problems, warnings)
-    known = {"name", "description", "source", "footage", "detect", "exclude_base", "vl", "vlm"}
+    _check_mix(raw.get("mix"), problems, warnings)
+    known = {
+        "name",
+        "description",
+        "source",
+        "footage",
+        "detect",
+        "exclude_base",
+        "vl",
+        "vlm",
+        "mix",
+    }
     known |= {*PAIR_SECTIONS, *LIST_SECTIONS}
     dropped = sorted(k for k, v in raw.items() if k not in known and not isinstance(v, dict))
     if dropped:

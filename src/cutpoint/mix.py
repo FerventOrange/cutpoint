@@ -30,6 +30,14 @@ chronological order; ``cutpoint clips --mix`` plays it in ``arc`` order),
 
 Exclusions (``mix_exclude.json``, written by ``cutpoint 360 repair``) cut source
 spans out of the candidates before selection, see :func:`apply_exclusions`.
+
+The project's activity profile (``activity.json``) may shape the mix with a ``mix``
+section (:func:`profile_mix`): a display ``name`` per category (the first word of its
+clips' labels, so their file names, and the sheet captions; the ``category`` ids stay
+these), a ``share`` replacing its default quota (0: the category is left out; ``--quotas``
+overrides a share) and the ``opener`` categories (their segments get ``"opener": true``,
+which the ``arc`` order and :func:`content_qa` open with instead of lift / scenery).
+Without one (``generic``, ``base``) the mix is as described above.
 """
 
 from __future__ import annotations
@@ -65,7 +73,8 @@ from cutpoint.telemetry import DT
 
 logger = logging.getLogger(__name__)
 
-CATEGORIES = ("run", "jump", "crash", "lift", "scenery", "social")
+CATEGORIES = activity.MIX_CATEGORIES  # run, jump, crash, lift, scenery, social
+OPENER = ("lift", "scenery")  # the categories an edit opens with, unless the profile names others
 DEFAULT_QUOTAS = {
     "run": 0.35,
     "social": 0.20,
@@ -118,6 +127,34 @@ class MixRules:
     max_share: float = 0.4  # no category past this share of the budget
 
 
+@dataclass(frozen=True)
+class ProfileMix:
+    """The ``mix`` section of the activity profile in use (:func:`profile_mix`)."""
+
+    names: dict[str, str] = field(default_factory=dict)  # category -> display name
+    shares: dict[str, float] = field(default_factory=dict)  # category -> quota (0: off)
+    opener: tuple[str, ...] = ()  # empty: :data:`OPENER`
+
+    def label(self, category: str, label: str) -> str:
+        """``label`` with its first word (the category's word: run, view, jump 1.2s, ...)
+        replaced by the category's name, if it has one; a crash reaction keeps its label."""
+        name = self.names.get(category)
+        if not name or label == REACTION_LABEL:
+            return label
+        return name + label[len(label.split(" ")[0]) :]
+
+
+def profile_mix(project: Path) -> ProfileMix:
+    """The ``mix`` section of the project's activity profile (empty without one)."""
+    raw = activity.project_mix(project)
+    cats = raw.get("categories") or {}
+    return ProfileMix(
+        names={k: v["name"] for k, v in cats.items() if "name" in v},
+        shares={k: v["share"] for k, v in cats.items() if "share" in v},
+        opener=tuple(raw.get("opener") or ()),
+    )
+
+
 @dataclass(eq=False)
 class Cand:
     """One candidate moment (source times)."""
@@ -145,13 +182,14 @@ class Cand:
 
 
 # --------------------------------------------------------------------------- quotas
-def parse_quotas(spec: str | None) -> dict[str, float]:
-    """``run=.35,social=.2`` over :data:`DEFAULT_QUOTAS`, normalised to sum 1.
+def parse_quotas(spec: str | None, base: dict[str, float] | None = None) -> dict[str, float]:
+    """``run=.35,social=.2`` over ``base`` (default :data:`DEFAULT_QUOTAS`), normalised to
+    sum 1.
 
     Raises:
         jsonout.ArgumentError: A malformed ``--quotas`` (a ValueError).
     """
-    q = dict(DEFAULT_QUOTAS)
+    q = dict(base or DEFAULT_QUOTAS)
     for item in filter(None, (s.strip() for s in (spec or "").split(","))):
         key, sep, value = item.partition("=")
         key = key.strip()
@@ -658,10 +696,15 @@ def run_mix(
     sheet: bool = True,
     exclude: list[dict[str, Any]] | None = None,
     previous: list[dict[str, Any]] | None = None,
+    quota_spec: str | None = None,
 ) -> dict[str, Any]:
     """Select, write ``mix_segments.json`` / ``mix_report.json`` / ``mix_sheet.jpg``.
 
     Args:
+        quotas: Category shares as used (an earlier report's); default ``quota_spec``
+            (``--quotas``) over the activity profile's shares (:func:`profile_mix`) over
+            :data:`DEFAULT_QUOTAS`. A category the profile gives a share of 0 is left out
+            unless the quotas give it one.
         exclude: Source spans to leave out (:func:`apply_exclusions`); default the
             project's :data:`EXCLUDE_FILE`.
         previous: An earlier selection (segments-file entries) to keep: its clips that
@@ -675,11 +718,25 @@ def run_mix(
         ``mix_report.json``).
     """
     r = rules or MixRules()
-    q = quotas or DEFAULT_QUOTAS
+    pm = profile_mix(project)
+    if quotas is None:
+        quotas = parse_quotas(quota_spec, {**DEFAULT_QUOTAS, **pm.shares} if pm.shares else None)
+    q = quotas
+    off = {k for k, v in pm.shares.items() if v == 0 and not q.get(k)}
     parts = actioncam.load_project_features(project)
     with activity.use_prompts(activity.project_prompts(project)):  # the 360 lift rides
         cands = [c for d in parts for c in part_candidates(d)]
     cands += crash_candidates((load_crashes(project) or {}).get("crashes", []))
+    had = bool(cands)
+    if off:
+        cands = [c for c in cands if c.category not in off]
+    for c in cands if pm.names else ():  # a crash's reaction keeps its label
+        c.label = pm.label(c.category, c.label)
+    if had and not cands:
+        raise ValueError(
+            f"Nothing selected in {project}: the activity profile's mix leaves out "
+            f"{', '.join(sorted(off))}; --quotas CAT=SHARE brings one back"
+        )
     if not cands:
         raise ValueError(
             f"No candidates in {project}; run `cutpoint analyze --style action-cam` first"
@@ -721,6 +778,9 @@ def run_mix(
         }
         for i, (s, c) in enumerate(flat)
     ]
+    for seg, (s, c) in zip(segs, flat, strict=True):  # the profile's opener categories
+        if s is c and c.category in pm.opener:
+            seg["opener"] = True
     out = out or project / "mix_segments.json"
     if previous is not None:
         prior = previous
@@ -741,6 +801,12 @@ def run_mix(
             s["max_end"] = max(p["max_end"], s["end"])
     cache.save_json(out, segs)
     report = mix_report(cands, chosen, q, r, target_s, len(runs))
+    if pm.names:
+        report["names"] = dict(pm.names)
+    if off:
+        report["off"] = sorted(off)
+    if pm.opener:
+        report["opener"] = list(pm.opener)
     arc = order_moments(index_sources([dict(s) for s in segs]), "arc")
     report["arc"] = [s["id"] for s in arc]
     report["content_qa"] = content_qa(
@@ -751,13 +817,16 @@ def run_mix(
         rules=r,
         available={c.category for c in cands},
         length_window_s=length_window(target_s),
+        opener=pm.opener or None,
     )
     cache.save_json(out.with_name("mix_report.json"), report)
     logger.info(
         "mix: %d segments, %.0f s; %s; %d/%d runs, %d sources -> %s",
         len(segs),
         report["total_s"],
-        ", ".join(f"{k} {v['seconds']:.0f}s" for k, v in report["categories"].items()),
+        ", ".join(
+            f"{pm.names.get(k, k)} {v['seconds']:.0f}s" for k, v in report["categories"].items()
+        ),
         report["runs_covered"],
         len(runs),
         report["sources_covered"],
@@ -765,7 +834,8 @@ def run_mix(
     )
     failed = [k for k, v in report["content_qa"]["checks"].items() if not v["ok"]]
     logger.info("mix content QA: %s", f"FAIL ({', '.join(failed)})" if failed else "pass")
-    report["sheet"] = _write_sheet(segs, out.with_name("mix_sheet.jpg")) if sheet else None
+    sheet_file = out.with_name("mix_sheet.jpg")
+    report["sheet"] = _write_sheet(segs, sheet_file, pm.names) if sheet else None
     return report
 
 
@@ -779,6 +849,7 @@ def content_qa(
     durations: dict[str, float] | None = None,
     available: Collection[str] | None = None,
     length_window_s: tuple[float, float] = QA_LENGTH_S,
+    opener: Collection[str] | None = None,
 ) -> dict[str, Any]:
     """Edit-level content acceptance of play-ordered segments.
 
@@ -797,6 +868,10 @@ def content_qa(
     make, no run cover without ``run`` candidates, no opener rule without ``lift`` or
     ``scenery`` candidates.
 
+    ``opener`` names the categories the edit may open with (the activity profile's); None:
+    the categories of the segments marked ``"opener": true`` (a profile's mix), else
+    :data:`OPENER`. The opener rule only applies when one of them had candidates.
+
     Returns:
         ``{"pass": bool, "length_window_s": [lo, hi], "checks": {name: {"value": ...,
         "ok": bool}}}``.
@@ -813,8 +888,10 @@ def content_qa(
     groups = {"scenery" if c == "lift" else c for c in secs} - {"none"}
     share = max(secs.values(), default=0.0) / total if total else 0.0
     cover = runs_covered / runs if runs and "run" in have else None
-    opener = segs[0].get("category") if segs else None
-    views = bool(have & {"lift", "scenery"})
+    if opener is None:
+        opener = {s.get("category") for s in segs if s.get("opener")} or OPENER
+    first = segs[0].get("category") if segs else None
+    views = bool(have & set(opener))
     lo, hi = length_window_s
     cap = effective_share(r, len(have))
     if cap > r.max_share:  # selection holds each category to 1/n of the budget; at the
@@ -828,7 +905,7 @@ def content_qa(
             "value": None if cover is None else round(cover, 3),
             "ok": cover is None or cover >= r.run_cover,
         },
-        "opener": {"value": opener, "ok": not views or opener in ("lift", "scenery")},
+        "opener": {"value": first, "ok": not views or first in opener},
         "length_s": {"value": round(total, 1), "ok": lo <= total <= hi},
     }
     return {
@@ -874,12 +951,16 @@ def mix_report(
     }
 
 
-def _write_sheet(segs: list[dict[str, Any]], out: Path) -> Path | None:
+def _write_sheet(
+    segs: list[dict[str, Any]], out: Path, names: dict[str, str] | None = None
+) -> Path | None:
+    names = names or {}
     items = [
         {
             "path": str(remap_source(s["source"])),
             "t": (s["start"] + s["end"]) / 2,
-            "caption": f"{s['id']} {s['category']} {source_path(s['source']).stem[-3:]}"
+            "caption": f"{s['id']} {names.get(s['category'], s['category'])} "
+            f"{source_path(s['source']).stem[-3:]}"
             f"@{s['start']:.0f} {s['end'] - s['start']:.0f}s",
         }
         for s in segs

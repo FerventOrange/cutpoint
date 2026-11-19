@@ -633,6 +633,7 @@ def _rendered_qa(
         durations=est,
         available=None if not counts else {k for k, n in counts.items() if n},
         length_window_s=window,
+        opener=report.get("opener"),
     )
 
 

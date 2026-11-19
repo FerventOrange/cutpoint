@@ -964,7 +964,7 @@ def _cmd_mix(a: argparse.Namespace) -> None:
     out, excl = Path(a.out), Path(a.exclude_file)
     out = out if out.is_absolute() else project / out
     excl = excl if excl.is_absolute() else project / excl
-    quotas = parse_quotas(a.quotas)
+    parse_quotas(a.quotas)  # a bad --quotas fails before any work
     exclude, ignored = read_exclusions(excl)
     if ignored:
         jsonout.warn(
@@ -973,7 +973,7 @@ def _cmd_mix(a: argparse.Namespace) -> None:
             "current folder of a drive",
             [excl],
         )
-    report = run_mix(project, target_s=a.target, quotas=quotas, out=out, exclude=exclude)
+    report = run_mix(project, target_s=a.target, out=out, exclude=exclude, quota_spec=a.quotas)
     if jsonout.active():
         _report_mix(out, report)
 
@@ -2453,7 +2453,8 @@ def _add_mix_parser(sub: argparse._SubParsersAction) -> None:
         "--quotas",
         metavar="CAT=SHARE,...",
         help="category shares over the defaults run=.35,social=.2,crash=.12,"
-        "scenery=.1,lift=.1,jump=.06,flex=.07 (normalised)",
+        "scenery=.1,lift=.1,jump=.06,flex=.07 and the activity profile's mix shares "
+        "(normalised)",
     )
     mx.add_argument(
         "--out",

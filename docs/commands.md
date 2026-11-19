@@ -2426,7 +2426,7 @@ Profile library verbs (they read no project):
 | `validate NAME\|FILE` | Check a profile by name or a `.json` file by path and list every problem; exit 1 if invalid |
 | `delete NAME` | Delete one of your profiles. `base` and `generic` cannot be deleted. There is no confirmation |
 
-The JSON block of `cutpoint profile show generic` (with `--json`: `outputs.profile`) is the format. The rest of the output is not part of the profile.
+The JSON block of `cutpoint profile show generic` (with `--json`: `outputs.profile`) is the format. The rest of the output is not part of the profile. A profile may also have an optional `mix` section for `cutpoint mix`: per category (`run`, `jump`, `crash`, `lift`, `scenery`, `social`) a `name` and a `share` (0 leaves it out), and an `opener` list of categories (see [Action cam](workflows/action-cam.md#a-varied-mix)). `validate` names what it ignores in it.
 
 ## style
 
@@ -2497,6 +2497,10 @@ categories that have candidates. No category goes past 40% of the length. When o
 categories have candidates, the selection holds each to 1 / n of the budget (40% minimum) and the
 check accepts up to 60% of the length with two categories and 100% with one. `--json` writes the result as one
 [JSON envelope](#json-output) on stdout.
+
+The project's activity profile can rename categories, change or zero their shares and choose the
+opener categories with its optional `mix` section (see
+[Action cam](workflows/action-cam.md#a-varied-mix)). `--quotas` goes over the profile's shares.
 
 If nothing is selected (no candidate fits `--target`, or every candidate is excluded), `mix`
 fails with `ERROR Nothing selected in <project>: ...`, exit code 1, and writes no files. Raise
