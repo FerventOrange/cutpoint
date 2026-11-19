@@ -9,9 +9,8 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info
-from cutpoint.assemble import clip_offsets
 from cutpoint.ffmpeg_utils import MediaInfo
-from cutpoint.timeline import write_fcpxml, write_otio, write_timeline
+from cutpoint.timeline import clip_offsets, write_fcpxml, write_otio, write_timeline
 
 FPS = Fraction(30)
 FADE = 0.5  # 15 frames

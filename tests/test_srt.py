@@ -13,7 +13,8 @@ from typing import Any
 import pytest
 
 from conftest import media_info, needs_ffmpeg, transcribed_both
-from cutpoint import assemble, cache, clips, planning, sources, srt
+from cutpoint import assemble, cache, clips, jsonout, planning, sources, srt, timeline
+from cutpoint.config import path_key
 from cutpoint.ffmpeg_utils import MediaInfo
 from export_helpers import install_fake_export
 
@@ -65,7 +66,7 @@ def test_final_cues_follow_cuts_and_crossfade_overlap(tmp_path, fade):
     assert cues[1][0] == pytest.approx(second + 0.2)
     assert cues[2][0] == pytest.approx(second + 2.0)
     assert cues[0][1] <= cues[1][0]  # never overlapping, also inside a crossfade
-    assert assemble.clip_offsets(infos, fade) == [0.0, second]
+    assert timeline.clip_offsets(infos, fade) == [0.0, second]
 
 
 def test_final_cues_with_a_join_list_follow_each_join(tmp_path):
@@ -85,10 +86,10 @@ def test_final_cues_with_a_join_list_follow_each_join(tmp_path):
     fade = [0.5, 0.0]
     cues, missing, _ = srt.final_cues(files, infos, entries, fade, by_source.get)
     assert missing == []
-    assert assemble.clip_offsets(infos, fade) == pytest.approx([0.0, 3.5, 6.5])
+    assert timeline.clip_offsets(infos, fade) == pytest.approx([0.0, 3.5, 6.5])
     assert [(c[2], round(c[0], 3)) for c in cues] == [("a", 0.2), ("b", 3.7), ("c", 6.7)]
     # every join a cut: the container durations (audio runs on) place the clips
-    assert assemble.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 4.1, 7.4])
+    assert timeline.clip_offsets(infos, [0.0, 0.0]) == pytest.approx([0.0, 4.1, 7.4])
 
 
 def test_a_laughter_only_transcript_part_makes_no_subtitle_cue(tmp_path, home):
@@ -123,6 +124,32 @@ def test_missing_transcript_writes_no_srt_and_says_so_once(tmp_path, monkeypatch
     assert len([r for r in caplog.records if "No subtitles" in r.message]) == 1
 
 
+def test_an_earlier_final_srt_left_unmatched_is_a_json_warning(tmp_path, monkeypatch):
+    clips_dir = tmp_path / "clips"
+    clips_dir.mkdir()
+    files = [clips_dir / "001_a.mp4"]  # hand-made: no manifest, no transcript
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
+    out = tmp_path / "final.mp4"
+    out.with_suffix(".srt").write_text("old", encoding="utf-8")
+    with jsonout.run("assemble") as res:
+        assert srt.write_final_srt(clips_dir, files, [_info(files[0], 2.0)], 0.0, out, "en") is None
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("stale_srt", [str(out.with_suffix(".srt"))])
+    ]
+
+
+def test_a_kept_srt_the_manifest_does_not_list_is_a_json_warning(tmp_path, monkeypatch):
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
+    subs = srt.ClipSubtitles({path_key("001_a.srt", tmp_path)}, folder=tmp_path)
+    with jsonout.run("clips") as res:
+        assert subs.write(tmp_path / "001_a.mp4", "src.mp4", 0.0, 4.0) is None
+        assert subs.write(tmp_path / "002_b.mp4", "src.mp4", 0.0, 4.0) == "002_b.srt"
+        subs.report(2)
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("kept_srt", [str(tmp_path / "001_a.srt")])
+    ]
+
+
 def _project(home: Path) -> tuple[Path, Path, Path]:
     project = home / "projects" / "p"
     project.mkdir(parents=True)
@@ -135,6 +162,18 @@ def _project(home: Path) -> tuple[Path, Path, Path]:
         encoding="utf-8",
     )  # fmt: skip
     return project, seg, project / "clips"
+
+
+def test_event_tails_without_events_json_is_a_json_warning(home, monkeypatch):
+    project, seg, _ = _project(home)
+    monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
+    install_fake_export(monkeypatch, clips)
+    monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
+    with jsonout.run("clips") as res:
+        clips.export_clips(project, segments=seg, event_tails=True)
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("event_tails_no_events", [str(project / "events.json")])
+    ]
 
 
 def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, caplog):

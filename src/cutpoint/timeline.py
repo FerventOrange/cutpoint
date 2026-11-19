@@ -6,7 +6,7 @@ Resolve via File > Import > Timeline.
 
 With no fade they are hard cuts, back to back, the last clip lasting its video
 (``vduration``), where final.mp4 ends. With a crossfade (``assemble --transition fade``)
-each join is a cross-dissolve of ``fade`` s that starts on the edit, as in final.mp4: the incoming clip starts at :func:`cutpoint.assemble.clip_offsets`
+each join is a cross-dissolve of ``fade`` s that starts on the edit, as in final.mp4: the incoming clip starts at :func:`clip_offsets`
 from its first frame, and the outgoing clip is trimmed by the fade, its last frames
 becoming the handle the dissolve plays over. The clips then last their video
 (``vduration``), which the crossfade follows, so the timeline is as long as final.mp4.
@@ -18,7 +18,7 @@ where, so the editor places the cut (likely at the start of the dissolve).
 
 With mixed joins (``assemble --joins``) ``fade`` is one value per join: a dissolve at the
 joins above 0 and a hard cut at the others, audio included. Every clip then lasts its
-video, as in final.mp4 (:func:`cutpoint.assemble.clip_offsets`).
+video, as in final.mp4 (:func:`clip_offsets`).
 """
 
 from __future__ import annotations
@@ -40,6 +40,25 @@ def per_join(fade: float | list[float], clips: int) -> list[float]:
     return fade if isinstance(fade, list) else [fade] * (clips - 1)
 
 
+def clip_offsets(infos: list[MediaInfo], fade: float | list[float] = 0.0) -> list[float]:
+    """Where each clip starts in the joined video: back to back, each crossfade
+    (``fade`` s, 0 for cuts, or a list with one such value per join) overlapping it with the
+    previous clip.
+
+    Cuts (concat demuxer or filter) start a clip where the previous file ends: its
+    container ``duration``, longer than its video when the audio runs on. Crossfades
+    follow the video (``vduration``), and so does every join of a video that has one."""
+    joins = per_join(fade, len(infos))
+    video = any(f > 0 for f in joins)
+    offsets, t = [], 0.0
+    for info, f in zip(infos, [*joins, 0.0], strict=False):
+        offsets.append(t)
+        # a cut join: the concat demuxer starts the next file at the container duration, so
+        # the cut offsets (so final.srt) and the audio rebuilt by concat_copy use it too
+        t += info.vduration - f if video else info.duration
+    return offsets
+
+
 def _uri(path: Path) -> str:
     """Absolute ``file:`` URI that keeps mapped drive letters, not UNC paths."""
     return Path(os.path.abspath(path)).as_uri()  # noqa: PTH100 - normalises '..', keeps drive letters
@@ -47,7 +66,7 @@ def _uri(path: Path) -> str:
 
 def _frames(info: MediaInfo, fps: Fraction, fade: int = 0, last: bool = False) -> int:
     """A clip's length in frames: its container ``duration`` on cuts, its video
-    (``vduration``) when crossfaded (``fade`` frames > 0), as :func:`cutpoint.assemble.clip_offsets`.
+    (``vduration``) when crossfaded (``fade`` frames > 0), as :func:`clip_offsets`.
     The ``last`` clip lasts its video on cuts too: final.mp4 ends there
     (:func:`cutpoint.assemble.cut_audio_ends`)."""
     seconds = info.vduration if fade > 0 or last else info.duration

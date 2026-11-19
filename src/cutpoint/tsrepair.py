@@ -350,6 +350,18 @@ def _no_copy(src: Path, why: str, then: str = "re-run once the copy can be made"
     )
 
 
+def remuxed_sources(highlights: Any) -> list[str]:
+    """The sources a project's analysis read through their stream copy: the ``path`` of each
+    highlights.json ``sources`` entry with a ``timeline`` record (none when ``highlights`` is
+    not a highlights.json dict), for :func:`prepare_sources` ``required``."""
+    entries = highlights.get("sources") if isinstance(highlights, dict) else None
+    return [
+        e["path"]
+        for e in entries or []
+        if isinstance(e, dict) and e.get("timeline") and isinstance(e.get("path"), str)
+    ]
+
+
 def prepare_sources(
     sources: Iterable[Path], *, required: Collection[str] = ()
 ) -> dict[str, dict[str, Any]]:

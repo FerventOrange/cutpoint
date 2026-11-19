@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 from conftest import media_info, remap, write
-from cutpoint import cache, extend, planning, sources, srt
+from cutpoint import cache, extend, jsonout, planning, runstate, sources, srt
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 
@@ -412,3 +413,72 @@ def test_extend_refuses_a_manifest_entry_without_a_pick(reads, tmp_path) -> None
     with pytest.raises(ValueError, match=r"no pick.*export the clips again"):
         extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
     assert reads == []
+
+
+def _two_clips(tmp_path: Path, **entry) -> Path:
+    src = tmp_path / "a.mp4"
+    write(src)
+    clips = tmp_path / "proj" / "clips"
+    entries = []
+    for i, name in enumerate(("001_a.mp4", "002_b.mp4")):
+        write(clips / name)
+        t = 10.0 + 20 * i
+        entries.append(
+            {"file": name, "source": str(src), "start": t, "end": t + 10,
+             "pick": {"start": t, "end": t + 10}} | entry
+        )  # fmt: skip
+    write(clips / "manifest.json", json.dumps({"format": FMT, "clips": entries}))
+    return clips
+
+
+def test_extend_dropping_compress_peaks_is_a_json_warning(tmp_path, reads):
+    clips = _two_clips(tmp_path, compress_peaks="light")
+    with jsonout.run("extend") as res:
+        _run(clips)
+    out = extend.default_out_dir(clips, Padding(1.0, 1.0))
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("compress_peaks_dropped", [str(out / "001_a.mp4"), str(out / "002_b.mp4")])
+    ]
+
+
+def test_extend_refuses_a_non_empty_folder_with_the_clips_hint(tmp_path, reads):
+    clips = _two_clips(tmp_path)
+    write(tmp_path / "proj" / "out" / "x.mp4")
+    with pytest.raises(FileExistsError, match=re.escape(runstate.force_hint())):
+        _run(clips, out_dir=tmp_path / "proj" / "out")
+
+
+def test_extend_checks_its_360_clips_for_mixed_sources_as_clips_does(tmp_path, monkeypatch, reads):
+    pano: list = []
+    monkeypatch.setattr(extend, "warn_pano_sources", lambda recs, out: pano.append((recs, out)))
+    out = extend.extend_clips(
+        _two_clips(tmp_path), Padding(1.0, 1.0), speech=SpeechSettings(enabled=False)
+    )
+    assert pano == [([("001_a.mp4", None), ("002_b.mp4", None)], out)]  # flat: no 360 record
+
+
+def test_extend_passes_the_new_360_record_to_the_mixed_sources_check(tmp_path, monkeypatch, reads):
+    from cutpoint.pano import render  # noqa: PLC0415
+
+    new_rec = {"mode": "dfisheye", "path_file": None}
+
+    class FakePano:  # the PanoExporter parts extend uses
+        def __init__(self, *_a, **_kw) -> None:
+            self.fmt = self.paths_dir = None
+
+        def inputs(self, _source, _mode):
+            return []
+
+        def export(self, _source, _start, _end, out, **_kw):
+            out.write_bytes(b"360")
+            return None, new_rec
+
+    monkeypatch.setattr(render, "PanoExporter", FakePano)
+    pano: list = []
+    monkeypatch.setattr(extend, "warn_pano_sources", lambda recs, out: pano.append((recs, out)))
+    clips = _two_clips(tmp_path)
+    manifest = json.loads((clips / "manifest.json").read_text(encoding="utf-8"))
+    manifest["clips"][0]["pano"] = {"mode": "sdk", "path_file": None}
+    write(clips / "manifest.json", json.dumps(manifest))
+    out = extend.extend_clips(clips, Padding(1.0, 1.0), speech=SpeechSettings(enabled=False))
+    assert pano == [([("001_a.mp4", new_rec), ("002_b.mp4", None)], out)]

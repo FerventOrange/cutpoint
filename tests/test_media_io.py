@@ -21,7 +21,7 @@ import pytest
 
 from conftest import needs_ffmpeg
 from cutpoint import assemble as asm
-from cutpoint import cache, capabilities, crash, stage
+from cutpoint import cache, capabilities, crash, srt, stage
 from cutpoint import ffmpeg_utils as fu
 from cutpoint.errors import FFmpegError
 from cutpoint.pano import x3
@@ -676,7 +676,7 @@ def test_caption_chunks_split_on_punctuation_and_gaps():
             word("then", 2.5, 2.8),  # long pause: new chunk
         ]
     }
-    chunks = asm.caption_chunks([seg])
+    chunks = srt.caption_chunks([seg])
     assert [text for _, _, text in chunks] == ["hello there.", "ok", "then"]
     assert all(a < b for a, b, _ in chunks)
     assert all(chunks[i][1] <= chunks[i + 1][0] for i in range(len(chunks) - 1))  # no overlap

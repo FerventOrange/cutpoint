@@ -503,6 +503,35 @@ def check_own_manifest(folder: Path) -> None:
         )
 
 
+def warn_pano_sources(clips: list[tuple[str, dict[str, Any] | None]], out_dir: Path | None) -> None:
+    """One WARNING (and a ``pano_mixed_sources`` --json warning naming the 360 clips in
+    ``out_dir``; none for a temporary folder, None) when the run's 360 clips are not
+    rendered like-for-like (:func:`~cutpoint.pano.render.source_mix_warning`).
+
+    ``clips``: each clip's name and 360 render record (manifest ``pano``, None for a flat
+    clip), for ``clips`` and ``extend``."""
+    from cutpoint.pano.render import MIXED_SOURCES, source_mix_warning  # noqa: PLC0415
+
+    recs = [(name, rec) for name, rec in clips if rec]
+    message = source_mix_warning(recs)
+    if message is not None:
+        logger.warning("%s", message)
+        files = [out_dir / name for name, _ in recs] if out_dir is not None else []
+        jsonout.warn(MIXED_SOURCES, message, files)
+
+
+def manifest_project(manifest: dict[str, Any], clips_dir: Path) -> Path:
+    """Project folder of a clips folder (manifest ``project``, else the parent)."""
+    recorded = manifest.get("project")
+    if recorded:
+        try:
+            if Path(recorded).is_dir():
+                return Path(recorded)
+        except OSError:
+            pass
+    return clips_dir.resolve().parent
+
+
 def manifest_entries(folder: Path, files: list[Path]) -> dict[str, dict[str, Any]]:
     """The manifest.json entry of each of ``files`` (clips in ``folder``), by file name.
 

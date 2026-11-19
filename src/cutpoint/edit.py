@@ -365,7 +365,9 @@ def _run_edit(
     if written:
         cache.save_bytes(named_srt, srt.read_bytes())
     elif named_srt.exists():
-        logger.warning("%s is from an earlier run and does not match %s", named_srt, named.name)
+        message = f"{named_srt} is from an earlier run and does not match {named.name}"
+        logger.warning("%s", message)
+        jsonout.warn("stale_srt", message, [named_srt])
     logger.info("%s %s", "Final video:" if output_format == "mp4" else "Timeline:   ", named)
     logger.info("Subtitles:   %s", named_srt if written else "none (no transcript)")
     logger.info("Clips:       %s", clips_dir if keep_clips else "none (temporary, removed)")

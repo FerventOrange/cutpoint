@@ -44,8 +44,7 @@ from cutpoint.encode import (
     bt709_filter,
     choose_format,
     export_clip_checked,
-    plan_makeup,
-    plan_peaks,
+    plan_set,
     warn_if_log,
 )
 from cutpoint.errors import FFmpegError
@@ -71,6 +70,7 @@ from cutpoint.planning import (
     select_moments,
     speech_pass,
     warn_kept,
+    warn_pano_sources,
 )
 from cutpoint.styles import Style, recorded_name
 from cutpoint.tail import TailResult, TailSettings, smart_tail
@@ -952,28 +952,16 @@ def peak_filters(plans: list[ClipPlan], preset: str) -> tuple[list[str], list[fl
     flat = [not p.pano for p in plans]
     if not all(flat):
         logger.info("Compress peaks: %d 360 clip(s) are not compressed", flat.count(False))
-    series = [
-        clip_momentary(p.src, p.info.audio_streams, p.start, p.end - p.start) if f else []
-        for p, f in zip(plans, flat, strict=True)
-    ]
-    plan = plan_peaks(preset, series, [p.end - p.start for p in plans], flat)
+
+    def measure(i: int, chain: str) -> list[float]:  # a 360 clip: not measured
+        p = plans[i]
+        if not flat[i]:
+            return []
+        return clip_momentary(p.src, p.info.audio_streams, p.start, p.end - p.start, chain)
+
+    plan = plan_set(preset, measure, [p.end - p.start for p in plans], flat)
     if plan is None:
-        logger.info("Compress peaks: no clip has audio above silence")
         return [""] * len(plans), none
-    compressed = [
-        clip_momentary(p.src, p.info.audio_streams, p.start, p.end - p.start, chain)
-        if (chain := plan.measure_chain(i))
-        else []
-        for i, p in enumerate(plans)
-    ]
-    plan = plan_makeup(plan, series, compressed)
-    logger.info(
-        "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; makeup %s",
-        preset,
-        plan.threshold,
-        " ".join("-" if g is None else f"{g:+.1f}" for g in plan.gains),
-        " ".join("-" if m is None else f"{m:+.1f}" for m in plan.makeup),
-    )
     return [plan.filter(i) for i in range(len(plans))], list(plan.makeup)
 
 
@@ -1129,22 +1117,6 @@ def _graded_keys(entry: Any) -> list[str]:
         for k in GRADE_KEYS
         if entry.get(k) and not (k == "color" and isinstance(color, dict) and color.get("skip"))
     ]
-
-
-def _warn_pano_sources(
-    plans: list[ClipPlan], results: list[RenderResult], out_dir: Path | None
-) -> None:
-    """One WARNING (and a ``pano_mixed_sources`` --json warning naming the 360 clips in
-    ``out_dir``; none for a temporary folder, None) when the run's 360 clips are not
-    rendered like-for-like (:func:`~cutpoint.pano.render.source_mix_warning`)."""
-    from cutpoint.pano.render import MIXED_SOURCES, source_mix_warning  # noqa: PLC0415
-
-    recs = [(p.name, r.pano) for p, r in zip(plans, results, strict=True) if r.pano]
-    message = source_mix_warning(recs)
-    if message is not None:
-        logger.warning("%s", message)
-        files = [out_dir / name for name, _ in recs] if out_dir is not None else []
-        jsonout.warn(MIXED_SOURCES, message, files)
 
 
 def _warn_dropped_grade(out_dir: Path) -> None:
@@ -1469,11 +1441,12 @@ def export_clips(
     )
     project_events = load_events(project) if event_tails is not False else None
     if event_tails and project_events is None:
-        logger.warning(
-            "--event-tails: %s has no events.json (run `cutpoint events`); "
-            "continuing without event tails",
-            project,
+        message = (
+            f"--event-tails: {project} has no events.json (run `cutpoint events`); "
+            "continuing without event tails"
         )
+        logger.warning("%s", message)
+        jsonout.warn("event_tails_no_events", message, [project / "events.json"])
     ev_settings = EventTailSettings(
         enabled=project_events is not None,
         **({"window": event_window} if event_window is not None else {}),
@@ -1502,12 +1475,9 @@ def export_clips(
         io_paths = {s: remap_source(s) for s in {m["source"] for m in ordered}}
         # joined MPEG-TS/PS recordings are read through their stream copy, the clock of the
         # analysis (#1052); one the analysis read so is never read in place
-        remuxed = [
-            e["path"]
-            for e in hl.get("sources") or []
-            if isinstance(e, dict) and e.get("timeline") and isinstance(e.get("path"), str)
-        ]
-        tsrepair.prepare_sources([source_path(s) for s in io_paths], required=remuxed)
+        tsrepair.prepare_sources(
+            [source_path(s) for s in io_paths], required=tsrepair.remuxed_sources(hl)
+        )
         for s, p in io_paths.items():
             if str(p) != s:
                 logger.info("Reading %s from %s (source_remap)", source_path(s).name, p)
@@ -1617,7 +1587,10 @@ def export_clips(
             workers=workers,
             resume=resume,
         )
-        _warn_pano_sources(plans, results, None if temporary else out_dir)
+        warn_pano_sources(
+            [(p.name, r.pano) for p, r in zip(plans, results, strict=True)],
+            None if temporary else out_dir,
+        )
         write_manifest(
             work,
             project,
