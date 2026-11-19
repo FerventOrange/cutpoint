@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import sources
-from cutpoint.styles import Style
+from cutpoint.intervals import overlap
+from cutpoint.styles import Style, analysis_style
 from cutpoint.utils import slugify
 
 logger = logging.getLogger(__name__)
@@ -55,15 +56,13 @@ def source_menu_spans(ev: dict[str, Any]) -> dict[str, list[list[float]]]:
 
 def _overlap(a: float, b: float, spans: list[list[float]]) -> float:
     """Seconds of ``[a, b]`` inside ``spans``."""
-    return sum(max(0.0, min(b, y) - max(a, x)) for x, y in spans)
+    return sum(overlap(a, b, x, y) for x, y in spans)
 
 
 def _style(hl: dict[str, Any]) -> Style | None:
     """The style of the analysis ``hl`` (a deleted user style: its recorded base; a file without
     ``style``: the built-in style :func:`cutpoint.styles.style_name` falls back to, see
-    :func:`cutpoint.events.scoring.analysis_style`); None when there is none to use."""
-    from cutpoint.events.scoring import analysis_style  # noqa: PLC0415 - imports this module
-
+    :func:`cutpoint.styles.analysis_style`); None when there is none to use."""
     try:
         return analysis_style(hl, logging.DEBUG)
     except ValueError:

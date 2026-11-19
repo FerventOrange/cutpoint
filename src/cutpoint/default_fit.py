@@ -13,6 +13,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from cutpoint.config import path_key
+from cutpoint.intervals import overlaps
 
 CLASH_SHARE = (
     0.5  # an automatic pick skips a candidate overlapping a pick by this share of the shorter
@@ -25,11 +26,8 @@ FIT_SHARE = 1 / 3
 
 
 def span_overlaps(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    return (
-        path_key(str(a["source"])) == path_key(str(b["source"]))
-        and a["start"] < b["end"]
-        and b["start"] < a["end"]
-    )
+    same = path_key(str(a["source"])) == path_key(str(b["source"]))
+    return same and overlaps(a["start"], a["end"], b["start"], b["end"])
 
 
 def clashes(c: dict[str, Any], picked: Iterable[dict[str, Any]]) -> bool:

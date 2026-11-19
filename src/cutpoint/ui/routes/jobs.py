@@ -24,6 +24,7 @@ from cutpoint.assistant import providers as ai_providers
 from cutpoint.config import projects_dir, vision_assistant_settings
 from cutpoint.edit import KINDS
 from cutpoint.pano import x3
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
@@ -162,7 +163,7 @@ def _analyze_360_job(r: _JobRequest) -> JobSpec:
     if f:  # a project made before A207 holds the bare number of its one picked file
         only = [x3.clip_key(f["date"], f["time"], f["num"]) if c == f["num"] else c for c in only]
     live = ProjectStyle.of(meta, hl).library(style)  # a deleted style: its recorded base
-    _own(p, "highlights.json")  # the analysis rewrites it
+    _own(p, HIGHLIGHTS)  # the analysis rewrites it
     _own(p, "pano.json")  # and the scan this
     args = cutpoint_cmd("360", "analyze", str(p), "--scan", str(_pano_folder(meta["source"])))
     args += ["--style", str(live)]
@@ -204,7 +205,7 @@ def _analyze_job(r: _JobRequest) -> JobSpec:
     reranked = isinstance(((hl or {}).get("settings") or {}).get("reranked"), dict)
     leaving_auto = new is not None and (style == AUTO or reranked) and new != AUTO
     style = new if new is not None else style
-    _own(p, "highlights.json")  # the analysis rewrites it
+    _own(p, HIGHLIGHTS)  # the analysis rewrites it
     args = cutpoint_cmd("analyze", *map(str, inputs), "--style", str(style), "--out", str(p))
     # What the project was made with, else (made, or re-analyzed with these options, on
     # the command line) what the earlier analysis recorded, or the source set would change.
@@ -283,7 +284,7 @@ def _edit_job(r: _JobRequest) -> JobSpec:
     force = _flag(body, "force")
     clips_name = "clips_vertical" if vertical else "clips"
     final_name = "final_vertical.mp4" if vertical else "final.mp4"
-    _own(p, "highlights.json")  # the analysis rewrites it
+    _own(p, HIGHLIGHTS)  # the analysis rewrites it
     _own(p, clips_name)
     _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the edit
     if clips_name in preset_taken(p) and not force:
@@ -556,7 +557,7 @@ def _refine_job(r: _JobRequest) -> JobSpec:
         raise bad(f"{action} does not apply to 360 projects")
     if why := events_unavailable():
         raise bad(why, 409)
-    _own(p, "highlights.json")  # the re-rank rewrites it
+    _own(p, HIGHLIGHTS)  # the re-rank rewrites it
     if action == "crashes":
         context = body.get("context")
         if not isinstance(context, str) or not context.strip():
@@ -607,7 +608,7 @@ def _resume_job(r: _JobRequest) -> JobSpec:
             return stitch_first(job, p, seg_file, chosen)
 
     if run["command"] != "clips":
-        _own(p, "highlights.json")  # the analysis rewrites it
+        _own(p, HIGHLIGHTS)  # the analysis rewrites it
     plan = None
     if run["command"] == "360 analyze":
         plan = [{"step": s, "label": progress.LABELS[s]} for s in progress.PANO_STEPS]

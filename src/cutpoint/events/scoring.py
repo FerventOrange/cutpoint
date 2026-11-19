@@ -39,18 +39,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import cache, repeats, scorer, selfcheck, sources
+from cutpoint import cache, projectfiles, repeats, scorer, selfcheck, sources
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
+from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
 from cutpoint.sources import settings_language
-from cutpoint.styles import STYLES, get_style, learned_styles, style_name
+from cutpoint.styles import analysis_style, get_style, style_and_base
 from cutpoint.transcribe import flat_markers
 from cutpoint.utils import slugify, title_slug
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
-    from cutpoint.styles import Style
 
 logger = logging.getLogger(__name__)
 
@@ -369,76 +369,6 @@ def _segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
     except OSError as err:  # the source is gone (moved, drive disconnected)
         logger.debug("No transcript for %s (%s)", source, err)
         return []
-
-
-def style_and_base(name: str | None, recorded: object = None) -> tuple[str, ...]:
-    """The project style's name and, for a learned style, its base (just the name
-    when the style is unknown or its file is missing).
-
-    Args:
-        name: The project style's name.
-        recorded: The ``style_base`` of ``highlights.json``, used first when it names a
-            built-in style, so a deleted learned style keeps its base; anything else (no
-            field in an older file, an unknown name) leaves the style library to answer.
-    """
-    if not name:
-        return ()
-    if isinstance(recorded, str) and recorded in STYLES:
-        base = recorded
-    else:
-        try:
-            base = get_style(name).base
-        except ValueError:
-            return (name,)
-    return (name,) if base == name else (name, base)
-
-
-def analysis_names(hl: dict[str, Any]) -> tuple[str, ...]:
-    """:func:`style_and_base` of the analysis ``hl``: its style, for a file without ``style``
-    the fallback of :func:`cutpoint.styles.style_name` (never ``gaming`` by default)."""
-    return style_and_base(style_name(hl), hl.get("style_base"))
-
-
-def recorded_style(hl: dict[str, Any], level: int = logging.INFO) -> Style:
-    """The style of the analysis ``hl`` (a highlights.json object) from the style library.
-
-    The file wins: a style no longer in the library (a deleted user style) degrades to the
-    built-in ``style_base`` the file records, with a log line at ``level`` naming both.
-
-    Raises:
-        ValueError: If the style is not in the library and the file records no built-in
-            base (an older file, or an unknown name), or the style's file is there but
-            cannot be used (:func:`cutpoint.styles.load_learned`).
-    """
-    name = hl.get("style") or ""
-    try:
-        return get_style(name)
-    except ValueError:
-        if name in learned_styles():  # there but unusable (broken file): its own error
-            raise
-        base = hl.get("style_base")
-        if not isinstance(base, str) or base not in STYLES:
-            raise ValueError(
-                f"The style {name!r} of this analysis is not in the style library (deleted?); "
-                "run 'cutpoint analyze' again with another --style"
-            ) from None
-    logger.log(
-        level, "Style %r is not in the style library (deleted?); using its base %r", name, base
-    )
-    return STYLES[base]
-
-
-def analysis_style(hl: dict[str, Any], level: int = logging.INFO) -> Style:
-    """The style of the analysis ``hl`` (a highlights.json object, ``{}`` for none): its
-    :func:`recorded_style`; for a file without ``style``, the built-in style
-    :func:`cutpoint.styles.style_name` falls back to (never ``gaming`` by default).
-
-    Raises:
-        ValueError: As :func:`recorded_style`, for a recorded style that cannot be used.
-    """
-    if hl.get("style"):
-        return recorded_style(hl, level)
-    return STYLES[style_name(hl)]
 
 
 @dataclass(frozen=True)
@@ -1069,7 +999,7 @@ def rescore_highlights(project: Path) -> int:
     Returns:
         Number of candidates whose score changed (0 if either file is missing).
     """
-    hl = cache.load_json(project / "highlights.json")
+    hl = projectfiles.load_highlights(project)
     ev = cache.load_json(project / "events.json")
     if not hl or not ev:
         return 0
@@ -1078,7 +1008,7 @@ def rescore_highlights(project: Path) -> int:
     restore_widened(hl.get("candidates", []))
     from cutpoint.backends import saved_settings  # noqa: PLC0415 (requests: off the CLI import)
 
-    backup = project / "highlights.pre-events.json"
+    backup = project / PRE_EVENTS
     if not backup.exists() and not hl.get("settings", {}).get("events_rescored"):
         # one-time copy of the untouched analysis, without an Ollama login (A639)
         cache.save_json(backup, saved_settings(copy.deepcopy(hl)), durable=True)
@@ -1086,7 +1016,7 @@ def rescore_highlights(project: Path) -> int:
     changed = rescore(hl, ev, project)
     number_candidates(hl)
     selfcheck.apply(hl, ev)  # warns; changes no score (#1073)
-    cache.save_json(project / "highlights.json", saved_settings(hl), durable=True)
+    cache.save_json(project / HIGHLIGHTS, saved_settings(hl), durable=True)
     logger.info(
         "Rescored %d of %d candidates from events.json", changed, len(hl.get("candidates", []))
     )

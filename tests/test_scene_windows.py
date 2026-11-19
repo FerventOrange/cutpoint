@@ -53,11 +53,6 @@ def test_an_edge_window_reaches_the_pad_either_side_on_the_proxy_grid():
     assert analyze._edge_window(59.0, 60.0) == (56.5, 60.0)
 
 
-def test_windows_that_overlap_or_touch_merge():
-    got = analyze._merge_windows([(30.0, 35.0), (10.0, 15.0), (14.0, 19.0), (19.0, 20.0)])
-    assert got == [(10.0, 20.0), (30.0, 35.0)]
-
-
 def test_a_window_proxy_seeks_to_the_part_offset_plus_the_window(tmp_path, monkeypatch):
     """The proxy is the 10 fps one of a normal file, cut to the window; cuts come back in part
     time (window start added)."""

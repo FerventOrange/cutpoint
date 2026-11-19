@@ -27,13 +27,13 @@ from pathlib import Path
 import send2trash
 
 from cutpoint import cache, folders, planning, runstate
+from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS, RERANK_BACKUP, UI_DIR
 
-UI_DIR = "ui"  # per-project state folder of cutpoint ui (imported by cutpoint.ui.common)
 OWN_FILES = frozenset(
     {
-        "highlights.json",
-        "highlights.pre-events.json",
-        "highlights.before-rerank.json",  # cutpoint.rerank.BACKUP
+        HIGHLIGHTS,
+        PRE_EVENTS,
+        RERANK_BACKUP,
         "transcript.txt",
         "events.json",
         "events.txt",

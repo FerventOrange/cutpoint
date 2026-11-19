@@ -49,10 +49,12 @@ from cutpoint import (
     features,
     ffmpeg_utils,
     folders,
+    intervals,
     jsonout,
     memguard,
     paths,
     progress,
+    projectfiles,
     repeats,
     runstate,
     scorer,
@@ -66,7 +68,6 @@ from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
     Seed,
-    analysis_style,
     heard_laughter,
     is_nominated,
     number_candidates,
@@ -96,6 +97,7 @@ from cutpoint.ffmpeg_utils import (
     wav_duration,
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
+from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS, RERANK_BACKUP
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
 from cutpoint.styles import (
     ACTION_CAM,
@@ -104,6 +106,7 @@ from cutpoint.styles import (
     PROFANITY,
     AutoRequest,
     Style,
+    analysis_style,
     style_hash,
     style_name,
 )
@@ -192,8 +195,8 @@ MAX_RECOVERED_PARTS = 5  # per source
 # preset folder at once) and the caches outside the project.
 HELD_OUTPUTS = (
     "transcript.txt",
-    "highlights.json",
-    "highlights.pre-events.json",  # deleted once ranked with the events
+    HIGHLIGHTS,
+    PRE_EVENTS,  # deleted once ranked with the events
     "events.json",
     "events.txt",
     "crashes.json",
@@ -1369,17 +1372,6 @@ def _edge_window(t: float, span: float) -> tuple[float, float]:
     return round(a, 3), round(min(span, t + WINDOW_PAD_S), 3)
 
 
-def _merge_windows(wins: Sequence[tuple[float, float]]) -> list[tuple[float, float]]:
-    """``wins`` sorted, the ones that overlap or touch merged."""
-    out: list[tuple[float, float]] = []
-    for a, b in sorted(wins):
-        if out and a <= out[-1][1]:
-            out[-1] = (out[-1][0], max(out[-1][1], b))
-        else:
-            out.append((a, b))
-    return out
-
-
 def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> list[float]:
     """Scene cuts of ``[a, b]`` of the part at ``offset`` of ``io`` (part-relative time), from a
     proxy of that stretch made as the full one of a normal-length file (:func:`_proxy_args`),
@@ -1458,7 +1450,7 @@ class EdgeCuts:
             )
             return self.full()
         t0 = time.perf_counter()
-        todo = _merge_windows(need)
+        todo = intervals.merge(need)
         logger.info(
             "%s: detecting scene cuts around the candidate edges (%d windows, %.0fs)",
             self.io.name,
@@ -2447,19 +2439,10 @@ def describe_candidates(
     return cands
 
 
-def _free_around(t: float, taken: list[tuple[float, float]], span: float) -> tuple[float, float]:
-    """The stretch of ``[0, span]`` around ``t`` that no ``taken`` window covers."""
-    if any(a < t < b for a, b in taken):
-        return t, t
-    lo = max([0.0, *(b for a, b in taken if b <= t)])
-    hi = min([span, *(a for a, b in taken if a >= t)])
-    return lo, hi
-
-
 def _fit_free(c: Candidate, taken: list[tuple[float, float]], span: float, style: Style) -> bool:
     """Keep ``c`` out of the ``taken`` windows (existing candidates), at least ``min_len``
     long: moved within the free stretch around its event; False if that is too short."""
-    lo, hi = _free_around(c.peak_t, taken, span)
+    lo, hi = intervals.free_around(c.peak_t, taken, 0.0, span)
     c.start, c.end = max(c.start, lo), min(c.end, hi)
     if c.end - c.start < style.min_len:
         c.end = min(hi, c.start + style.min_len)
@@ -2480,7 +2463,7 @@ def _place_free(
     stretches: dict[tuple[float, float], list[Candidate]] = {}
     for c in cands:
         if c.over or _fit_free(c, taken, span, style):
-            stretches.setdefault(_free_around(c.peak_t, taken, span), []).append(c)
+            stretches.setdefault(intervals.free_around(c.peak_t, taken, 0.0, span), []).append(c)
     cands = [m for group in stretches.values() for m in _merge(group, style)]
     _cover_edges(ps, cands)
     snap_index = _SnapIndex(ps.segments)
@@ -2901,8 +2884,8 @@ def rebuild_crash_moments(project: Path) -> bool:
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415
 
-    path = project / "highlights.json"
-    hl = cache.load_json(path)
+    path = project / HIGHLIGHTS
+    hl = projectfiles.load_highlights(project)
     if not isinstance(hl, dict) or "sources" not in hl:
         return False
     if (hl.get("settings") or {}).get("crash_moments") is False or (project / PANO_FILE).is_file():
@@ -4820,10 +4803,10 @@ def _write_outputs(
     cache.save_bytes(
         out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
     )
-    out = out_dir / "highlights.json"
+    out = out_dir / HIGHLIGHTS
     cache.save_json(out, backends.saved_settings(hl), durable=True)
     if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
-        cache.remove(out_dir / "highlights.pre-events.json")
+        cache.remove(out_dir / PRE_EVENTS)
     held.commit()  # every HELD_OUTPUTS file at once (a cancel in it waits for the last)
     logger.info("Wrote %d candidates to %s (%.1fs)", len(hl["candidates"]), out, took)
     report_highlights(out_dir, out)
@@ -4901,16 +4884,14 @@ def project_ids(
     """The ids a fresh analysis into ``project`` keeps (#1009): :func:`earlier_ids` of its
     highlights.json and of its re-rank backup, or ``(None, 0)`` (number from ``h001``) when
     there is no highlights.json or it is not a readable analysis."""
-    from cutpoint.rerank import BACKUP  # noqa: PLC0415
-
-    raw = cache.load_bytes(project / "highlights.json")
+    raw = cache.load_bytes(project / HIGHLIGHTS)
     if raw is None:
         return None, 0
     try:
         hl = json.loads(raw.decode("utf-8-sig"))
         if not isinstance(hl, dict) or not isinstance(hl.get("candidates"), list):
             return None, 0
-        return earlier_ids(hl, cache.load_bytes(project / BACKUP))
+        return earlier_ids(hl, cache.load_bytes(project / RERANK_BACKUP))
     except (AttributeError, KeyError, TypeError, ValueError):  # not an analysis
         logger.debug(
             "the earlier highlights.json's ids cannot be read; numbering anew", exc_info=True
@@ -4922,10 +4903,8 @@ def project_backup_link(project: Path) -> str | None:
     """The ``settings.rerank_backup`` of ``project``'s highlights.json when it still names the
     re-rank backup file next to it (:func:`backup_digest` equal), else None (#1009): a fresh
     analysis records it again, so the backup keeps giving ids back after it."""
-    from cutpoint.rerank import BACKUP  # noqa: PLC0415
-
-    raw = cache.load_bytes(project / "highlights.json")
-    backup = cache.load_bytes(project / BACKUP)
+    raw = cache.load_bytes(project / HIGHLIGHTS)
+    backup = cache.load_bytes(project / RERANK_BACKUP)
     if raw is None or backup is None:
         return None
     try:
@@ -5254,7 +5233,7 @@ def _recorded_style(hl: dict[str, Any]) -> Style:
 
     A style no longer in the library (a deleted user style) degrades to its recorded built-in
     base; ``hl`` without ``style`` has the built-in style :func:`cutpoint.styles.style_name`
-    falls back to (:func:`cutpoint.events.scoring.analysis_style`).
+    falls back to (:func:`cutpoint.styles.analysis_style`).
 
     Raises:
         ValueError: If the style is not in the library and ``hl`` records no built-in base.
@@ -5269,7 +5248,7 @@ def _recorded_style(hl: dict[str, Any]) -> Style:
 def restyled(hl: dict[str, Any], style: Style) -> Style:
     """``style`` for a re-rank of the analysis ``hl``, with the ``--must-include-crash`` it
     recorded when that was not its own style's (an override of ``analyze``). A file without
-    ``style`` has the fallback style of :func:`cutpoint.events.scoring.analysis_style`."""
+    ``style`` has the fallback style of :func:`cutpoint.styles.analysis_style`."""
     at = (hl.get("settings") or {}).get("must_include_crash")
     if not isinstance(at, int | float) or isinstance(at, bool):
         return style
@@ -5328,17 +5307,10 @@ def reanalyze(
     """
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
 
-    try:
-        hl = cache.read_json(
-            project / "highlights.json", hint="; re-run `cutpoint analyze` to rewrite it"
-        )
-    except FileNotFoundError:
-        raise FileNotFoundError(f"{project / 'highlights.json'} not found") from None
     # e.g. an empty {} or a list: a clear error, not a KeyError or AttributeError traceback
-    if not isinstance(hl, dict) or not isinstance(hl.get("sources"), list):
-        raise ValueError(
-            f"{project / 'highlights.json'} records no analysis; run 'cutpoint analyze' again"
-        )
+    hl = projectfiles.load_highlights(
+        project, strict=True, invalid="{path} records no analysis; run 'cutpoint analyze' again"
+    )
     st = hl.get("settings") or {}
     inputs = st.get("inputs") or [
         s["path"] for s in hl["sources"] if isinstance(s, dict) and isinstance(s.get("path"), str)
@@ -5420,7 +5392,7 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
     Returns:
         Path of highlights.json, or None if skipped.
     """
-    hl = cache.load_json(project / "highlights.json")
+    hl = projectfiles.load_highlights(project)
     if not isinstance(hl, dict):  # missing or not an object: reanalyze below reports it
         hl = {}
     offline = 0

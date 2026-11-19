@@ -42,6 +42,7 @@ import numpy as np
 from cutpoint import actioncam, telemetry
 from cutpoint.config import path_key
 from cutpoint.dsp import clean_mask, mask_runs
+from cutpoint.intervals import overlap
 from cutpoint.styles import ACTION_CAM, Style, style_name
 
 POOL = "visual"  # the ``pool`` value of these candidates
@@ -373,10 +374,6 @@ def part_windows(
     return keep
 
 
-def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:
-    return max(0.0, min(a1, b1) - max(a0, b0))
-
-
 def select(
     windows: list[Window],
     scored: Sequence[Mapping[str, Any]],
@@ -392,7 +389,7 @@ def select(
     speech = speech or {}
 
     def talk(w: Window) -> float:
-        return sum(_overlap(w.start, w.end, a, b) for a, b in speech.get(w.index, ()))
+        return sum(overlap(w.start, w.end, a, b) for a, b in speech.get(w.index, ()))
 
     def order(w: Window) -> tuple[float, float, float, int, float]:
         return (-round(10 * w.peak, 1), -talk(w), -w.peak, w.index, w.start)
@@ -407,7 +404,7 @@ def select(
     for w in sorted(windows, key=order):
         key = path_key(str(w.source))
         if any(
-            _overlap(w.start, w.end, a, b) >= SCORED_OVERLAP * min(w.end - w.start, b - a)
+            overlap(w.start, w.end, a, b) >= SCORED_OVERLAP * min(w.end - w.start, b - a)
             for a, b in by_src.get(key, [])
         ):
             continue
@@ -415,7 +412,7 @@ def select(
         same = [o for o in mine if o.kind == w.kind]
         if len(mine) >= PER_SOURCE or len(same) >= PER_KIND:
             continue
-        if any(_overlap(w.start, w.end, o.start, o.end) > 0 for o in mine):
+        if any(overlap(w.start, w.end, o.start, o.end) > 0 for o in mine):
             continue
         gap = SPACING_S[w.kind]
         if any(w.start < o.end + gap and o.start < w.end + gap for o in same):

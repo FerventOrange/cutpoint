@@ -24,7 +24,6 @@ from cutpoint.config import (
     vision_assistant_settings,
     vision_detect_all_default,
 )
-from cutpoint.events import scoring
 from cutpoint.pano import project as pano_project
 from cutpoint.pano import stitch as pano_stitch
 from cutpoint.segments import MAX_SEGMENTS
@@ -35,6 +34,7 @@ from cutpoint.styles import (
     auto_fallback,
     get_style,
     learned_styles,
+    recorded_style,
     style_names,
 )
 from cutpoint.ui.common import (
@@ -312,7 +312,7 @@ class ProjectStyle:
         except (ValueError, TypeError, AttributeError):
             if isinstance(self.hl, dict) and name and name == self.hl.get("style"):
                 try:
-                    return scoring.recorded_style(self.hl, logging.DEBUG)
+                    return recorded_style(self.hl, logging.DEBUG)
                 except ValueError:
                     pass
             return None
@@ -333,7 +333,7 @@ class ProjectStyle:
             try:
                 if not isinstance(self.hl, dict) or self.hl.get("style") != style:
                     raise ValueError(style)
-                return scoring.recorded_style(self.hl).name
+                return recorded_style(self.hl).name
             except ValueError:
                 raise bad(
                     f"The style {style!r} of this analysis is not in the style library "

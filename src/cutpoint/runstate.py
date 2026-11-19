@@ -59,10 +59,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import __version__, cache, folders, jsonout
+from cutpoint import __version__, cache, folders, jsonout, projectfiles
 from cutpoint.config import path_key
 from cutpoint.errors import LowMemoryError
 from cutpoint.progress import Run
+from cutpoint.projectfiles import HIGHLIGHTS
 from cutpoint.utils import command_line, file_stamp
 
 logger = logging.getLogger(__name__)
@@ -184,7 +185,7 @@ class Recorder:
         alone only for ``analyze``, ``edit`` and ``360 analyze``, which resume it, so that
         ``events``, ``crashes`` or ``profile`` stop with ``not_found`` and leave the record of
         an interrupted first ``analyze`` as it was."""
-        names = ["highlights.json", "pano.json"]
+        names = [HIGHLIGHTS, "pano.json"]
         if self.command in AFTER_TRANSCRIPT or self.command == "360 analyze":
             names.append(FILE)
         return any((self.project / n).is_file() for n in names)
@@ -211,7 +212,7 @@ class Recorder:
                 prev.get("command"),
             )
             return
-        hl = cache.load_json(self.project / "highlights.json")
+        hl = projectfiles.load_highlights(self.project)
         srcs = hl.get("sources") if isinstance(hl, dict) else None
         if self.same_run() and self.previous and isinstance(self.previous.get("sources"), list):
             srcs = self.previous["sources"]  # resumed: the sources the run had, until replaced

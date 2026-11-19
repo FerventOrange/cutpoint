@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from cutpoint import jsonout
 from cutpoint.assistant import ranking as ai_ranking
 from cutpoint.pano import project as pano_project
+from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP
 from cutpoint.segments import moment_id
 from cutpoint.styles import AUTO, Style, get_style
 from cutpoint.styles import style_name as fallback_style_name
@@ -107,12 +108,12 @@ def ranking_key(p: Path) -> str | None:
     """The ranking key (:func:`cutpoint.analyze.backup_digest`) of the project's
     ``highlights.json``, which a preview is applied against; None without a readable file of
     its own."""
-    from cutpoint import analyze, rerank  # noqa: PLC0415
+    from cutpoint import analyze  # noqa: PLC0415
 
-    if not _inside(p, rerank.HIGHLIGHTS):
+    if not _inside(p, HIGHLIGHTS):
         return None
     try:
-        return analyze.backup_digest((p / rerank.HIGHLIGHTS).read_bytes())
+        return analyze.backup_digest((p / HIGHLIGHTS).read_bytes())
     except OSError:
         return None
 
@@ -142,7 +143,7 @@ def _ranking_load(p: Path) -> tuple[bytes, dict[str, Any]]:
     """The bytes and object of the project's ``highlights.json``; 409 without an analysis."""
     from cutpoint import rerank  # noqa: PLC0415
 
-    _own(p, rerank.HIGHLIGHTS)  # never read through a link out of the project
+    _own(p, HIGHLIGHTS)  # never read through a link out of the project
     try:
         return rerank.load(p)
     except FileNotFoundError:
@@ -266,11 +267,11 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
 
     if meta.get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
         return None
-    if not _inside(p, rerank.BACKUP) or not _inside(p, rerank.HIGHLIGHTS):
+    if not _inside(p, RERANK_BACKUP) or not _inside(p, HIGHLIGHTS):
         return None
     try:
-        st = (p / rerank.BACKUP).stat()
-        raw = (p / rerank.HIGHLIGHTS).read_bytes()
+        st = (p / RERANK_BACKUP).stat()
+        raw = (p / HIGHLIGHTS).read_bytes()
     except OSError:
         return None
     seen = (analyze.backup_digest(raw), st.st_size, st.st_mtime_ns)

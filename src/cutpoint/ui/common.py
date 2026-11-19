@@ -15,12 +15,12 @@ from fastapi import HTTPException
 
 from cutpoint import procs
 from cutpoint.assistant import keys as ai_keys
-from cutpoint.projectdelete import UI_DIR
+from cutpoint.projectfiles import UI_DIR
 
 logger = logging.getLogger("cutpoint.ui")
 
 WEB_DIR = Path(__file__).parent.parent / "web"
-# UI_DIR (projectdelete): per-project state: meta.json, review.json, exports.json, proxy/, ...
+# UI_DIR (projectfiles): per-project state: meta.json, review.json, exports.json, proxy/, ...
 META_FILE = f"{UI_DIR}/meta.json"  # the project's name, sources and chosen style
 LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 MAX_LOG_LINES = 300

@@ -38,7 +38,7 @@ from cutpoint.events.common import Source, layer_cache_path, transcript_excerpt
 from cutpoint.events.eventtypes import EventType, first_match
 from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
 from cutpoint.ffmpeg_utils import grab_images
-from cutpoint.utils import clock, context_block, context_hash
+from cutpoint.utils import clock, context_block, context_hash, json_object
 from cutpoint.vision import VisionRater
 
 if TYPE_CHECKING:
@@ -480,7 +480,7 @@ def select_windows(
         types: ``{source_path: event types}`` (custom seed priorities).
         quiet: Log the window counts at debug level (VLM layer off: only cached
             descriptions are reused).
-        style: The project style's name and base (``scoring.style_and_base``); an event type
+        style: The project style's name and base (``styles.style_and_base``); an event type
             limited to some styles seeds only in those.
     """
     dur = {str(s.path): s.duration for s in sources}
@@ -789,12 +789,8 @@ def build_messages_action_cam(
 
 def parse_reply(text: str) -> dict[str, Any] | None:
     """Parse and sanitise the model's JSON reply (None if unusable)."""
-    m = re.search(r"\{.*\}", text or "", re.DOTALL)
-    if not m:
-        return None
-    try:
-        data = json.loads(m.group(0))
-    except json.JSONDecodeError:
+    data = json_object(text or "", scan=False)
+    if data is None:
         return None
 
     def score(v: Any) -> int:

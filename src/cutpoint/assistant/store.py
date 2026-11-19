@@ -25,9 +25,10 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, state
+from cutpoint.projectfiles import UI_DIR
 from cutpoint.utils import file_stamp
 
-FOLDER = "ui/assistant"
+FOLDER = f"{UI_DIR}/assistant"
 CHAT = "chat.json"
 HISTORY = "history.json"
 MAX_TURNS = 200  # the oldest go first

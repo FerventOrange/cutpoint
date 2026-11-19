@@ -572,3 +572,73 @@ def get_style(name: str) -> Style:
     if name in learned:
         return load_learned(learned[name])
     raise ValueError(f"Unknown style {name!r}; choose from {style_names()}")
+
+
+def style_and_base(name: str | None, recorded: object = None) -> tuple[str, ...]:
+    """The project style's name and, for a learned style, its base (just the name
+    when the style is unknown or its file is missing).
+
+    Args:
+        name: The project style's name.
+        recorded: The ``style_base`` of ``highlights.json``, used first when it names a
+            built-in style, so a deleted learned style keeps its base; anything else (no
+            field in an older file, an unknown name) leaves the style library to answer.
+    """
+    if not name:
+        return ()
+    if isinstance(recorded, str) and recorded in STYLES:
+        base = recorded
+    else:
+        try:
+            base = get_style(name).base
+        except ValueError:
+            return (name,)
+    return (name,) if base == name else (name, base)
+
+
+def analysis_names(hl: dict) -> tuple[str, ...]:
+    """:func:`style_and_base` of the analysis ``hl``: its style, for a file without ``style``
+    the fallback of :func:`cutpoint.styles.style_name` (never ``gaming`` by default)."""
+    return style_and_base(style_name(hl), hl.get("style_base"))
+
+
+def recorded_style(hl: dict, level: int = logging.INFO) -> Style:
+    """The style of the analysis ``hl`` (a highlights.json object) from the style library.
+
+    The file wins: a style no longer in the library (a deleted user style) degrades to the
+    built-in ``style_base`` the file records, with a log line at ``level`` naming both.
+
+    Raises:
+        ValueError: If the style is not in the library and the file records no built-in
+            base (an older file, or an unknown name), or the style's file is there but
+            cannot be used (:func:`cutpoint.styles.load_learned`).
+    """
+    name = hl.get("style") or ""
+    try:
+        return get_style(name)
+    except ValueError:
+        if name in learned_styles():  # there but unusable (broken file): its own error
+            raise
+        base = hl.get("style_base")
+        if not isinstance(base, str) or base not in STYLES:
+            raise ValueError(
+                f"The style {name!r} of this analysis is not in the style library (deleted?); "
+                "run 'cutpoint analyze' again with another --style"
+            ) from None
+    logger.log(
+        level, "Style %r is not in the style library (deleted?); using its base %r", name, base
+    )
+    return STYLES[base]
+
+
+def analysis_style(hl: dict, level: int = logging.INFO) -> Style:
+    """The style of the analysis ``hl`` (a highlights.json object, ``{}`` for none): its
+    :func:`recorded_style`; for a file without ``style``, the built-in style
+    :func:`cutpoint.styles.style_name` falls back to (never ``gaming`` by default).
+
+    Raises:
+        ValueError: As :func:`recorded_style`, for a recorded style that cannot be used.
+    """
+    if hl.get("style"):
+        return recorded_style(hl, level)
+    return STYLES[style_name(hl)]

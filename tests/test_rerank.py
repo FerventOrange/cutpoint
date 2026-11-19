@@ -17,7 +17,17 @@ import numpy as np
 import pytest
 
 from conftest import envelope
-from cutpoint import activity, analyze, cache, cli, folders, jsonout, rerank, runstate
+from cutpoint import (
+    activity,
+    analyze,
+    cache,
+    cli,
+    folders,
+    jsonout,
+    projectfiles,
+    rerank,
+    runstate,
+)
 from cutpoint.assistant.providers import AUTO_SERVER_MODEL
 from cutpoint.errors import FolderBusyError, NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -386,7 +396,7 @@ def test_the_backup_of_an_old_file_keeps_no_ollama_login(home, tmp_path):
 
     project = make_project(home, tmp_path, ollama_url="http://alice:s3c@ret@myhost:11434")
     res = rerank.rerank(project, get_style("commentary"))
-    kept = (project / rerank.BACKUP).read_bytes()
+    kept = (project / projectfiles.RERANK_BACKUP).read_bytes()
     for raw in (kept, (project / "highlights.json").read_bytes()):
         assert b"s3c" not in raw and b"alice" not in raw
     assert json.loads(kept)["settings"]["ollama_url"] == "http://myhost:11434"
@@ -407,10 +417,10 @@ def test_save_keeps_the_earlier_file_as_the_backup(home, tmp_path):
     project = make_project(home, tmp_path)
     before = (project / "highlights.json").read_bytes()
     res = rerank.rerank(project, get_style("commentary"))
-    assert res.backup == project / rerank.BACKUP
-    assert (project / rerank.BACKUP).read_bytes() == before
+    assert res.backup == project / projectfiles.RERANK_BACKUP
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == before
     rerank.rerank(project, get_style("funny"))  # one backup: the file just before
-    assert json.loads((project / rerank.BACKUP).read_bytes())["style"] == "commentary"
+    assert json.loads((project / projectfiles.RERANK_BACKUP).read_bytes())["style"] == "commentary"
 
 
 def test_swap_round_trip_restores_each_ranking_and_writes_as_save_json(home, tmp_path):
@@ -507,11 +517,11 @@ def test_switching_style_and_back_restores_the_ids(home, tmp_path):
     assert back["settings"]["last_candidate_id"] == preview["settings"]["last_candidate_id"]
     assert back["settings"]["rerank_backup"] == preview["settings"]["rerank_backup"]
     assert back["settings"]["rerank_backup"] == analyze.backup_digest(
-        (project / rerank.BACKUP).read_bytes()
+        (project / projectfiles.RERANK_BACKUP).read_bytes()
     )
     assert _by_span(back) == _by_span(a)
     assert back["settings"]["last_candidate_id"] == b["settings"]["last_candidate_id"]
-    assert json.loads((project / rerank.BACKUP).read_bytes())["style"] == "funny"
+    assert json.loads((project / projectfiles.RERANK_BACKUP).read_bytes())["style"] == "funny"
 
 
 def test_a_backup_id_another_span_has_is_not_given_again(home, tmp_path):
@@ -534,7 +544,7 @@ def test_a_backup_id_another_span_has_is_not_given_again(home, tmp_path):
 @pytest.mark.parametrize("backup", [b"{not json", b'{"candidates": [{"id": "h001"}]}', b"[]"])
 def test_a_backup_that_cannot_be_read_is_ignored(home, tmp_path, backup):
     project, _, b = _a_to_b(home, tmp_path)
-    (project / rerank.BACKUP).write_bytes(backup)
+    (project / projectfiles.RERANK_BACKUP).write_bytes(backup)
     back = rerank.rerank(project, get_style("gaming")).after
     got, was, last = _by_span(back), _by_span(b), b["settings"]["last_candidate_id"]
     for key, i in got.items():  # funny's ids kept, the spans only gaming had are new
@@ -607,7 +617,7 @@ def test_a_plain_reanalyze_keeps_the_link_to_the_backup(home, tmp_path, monkeypa
     raw = (project / "highlights.json").read_bytes()
     rerank.rerank(project, get_style("gaming"), analyze_missing=True)
     assert got["rerank_backup"] == analyze.backup_digest(raw)
-    assert (project / rerank.BACKUP).read_bytes() == raw
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == raw
 
 
 def test_rerank_analyze_restores_the_ids_from_the_backup_it_replaces(home, tmp_path, monkeypatch):
@@ -619,7 +629,7 @@ def test_rerank_analyze_restores_the_ids_from_the_backup_it_replaces(home, tmp_p
     )
     got = _captured_analyze(monkeypatch)
     rerank.rerank(project, get_style("gaming"), analyze_missing=True)
-    assert json.loads((project / rerank.BACKUP).read_bytes())["style"] == "funny"
+    assert json.loads((project / projectfiles.RERANK_BACKUP).read_bytes())["style"] == "funny"
     assert got["last_candidate_id"] == b["settings"]["last_candidate_id"]
     assert {k: i for k, i in got["ids"].items() if k in _by_span(a)} == _by_span(a)
     assert {k: i for k, i in got["ids"].items() if k in _by_span(b)} == _by_span(b)
@@ -669,7 +679,7 @@ def test_a_save_with_the_previewed_key_writes(home, tmp_path):
     token = analyze.backup_digest((project / "highlights.json").read_bytes())
     res = rerank.rerank(project, get_style("funny"), expect=token)
     assert res.saved and read(project)["style"] == "funny"
-    assert (project / rerank.BACKUP).exists()
+    assert (project / projectfiles.RERANK_BACKUP).exists()
 
 
 def test_a_save_with_a_stale_key_raises_before_any_write(home, tmp_path):
@@ -707,7 +717,7 @@ def test_refused_names_the_missing_features_and_the_command(home, tmp_path):
     assert err.command == "cutpoint rerank p --style action-cam --analyze"
     assert [m["feature"] for m in err.missing] == ["action_cam"]
     assert err.command in str(err)
-    assert not (project / rerank.BACKUP).exists()
+    assert not (project / projectfiles.RERANK_BACKUP).exists()
 
 
 def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monkeypatch):
@@ -717,7 +727,9 @@ def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monk
 
     def fake_reanalyze(p: Path, style=None, *, backup=None, rerank_backup=None) -> Path:
         called.append((p, style.name))
-        assert (p / rerank.BACKUP).read_bytes() == before  # written before analyze replaces it
+        assert (
+            p / projectfiles.RERANK_BACKUP
+        ).read_bytes() == before  # written before analyze replaces it
         hl = read(p)
         hl.update(style=style.name, candidates=[])
         (p / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
@@ -730,7 +742,7 @@ def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monk
     res = rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
     assert called == [(project, "action-cam")]
     assert res.analyzed and res.saved and res.after["style"] == "action-cam"
-    assert (project / rerank.BACKUP).read_bytes() == before
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == before
 
 
 def test_a_360_project_names_360_analyze_and_analyze_refuses_it(home, tmp_path, monkeypatch):
@@ -741,7 +753,7 @@ def test_a_360_project_names_360_analyze_and_analyze_refuses_it(home, tmp_path, 
         rerank.rerank(project, get_style("funny"), analyze_missing=True)
     assert got.value.command == "cutpoint 360 analyze p --style funny"
     assert got.value.command in str(got.value)
-    assert not (project / rerank.BACKUP).exists()
+    assert not (project / projectfiles.RERANK_BACKUP).exists()
     assert rerank.analyze_command(project, get_style("action-cam")) == (
         "cutpoint 360 analyze p --style action-cam"
     )
@@ -906,7 +918,7 @@ def test_a_fresh_analyze_gives_a_span_its_id_from_the_linked_backup(run, monkeyp
         "settings": {"last_candidate_id": 60},
     }
     raw = json.dumps(backup).encode()
-    (run.proj / rerank.BACKUP).write_bytes(raw)
+    (run.proj / projectfiles.RERANK_BACKUP).write_bytes(raw)
     hl["settings"]["rerank_backup"] = analyze.backup_digest(raw)
     (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
 
@@ -942,7 +954,7 @@ def _spans(monkeypatch, *spans: tuple[float, float]) -> None:
 
 
 def _link_backup(proj: Path, raw: bytes, *, link: bool = True) -> None:
-    (proj / rerank.BACKUP).write_bytes(raw)
+    (proj / projectfiles.RERANK_BACKUP).write_bytes(raw)
     hl = read(proj)
     if link:
         hl["settings"]["rerank_backup"] = analyze.backup_digest(raw)
@@ -992,7 +1004,7 @@ def test_action_rerank_sport_analyze_sport_analyze_action_gives_the_original_ids
     first = {c["start"]: c["id"] for c in read(run.proj)["candidates"]}
     assert sorted(first.values()) == ["h001", "h002", "h003"]
     rerank.rerank(run.proj, get_style("sport"))
-    assert (run.proj / rerank.BACKUP).exists()
+    assert (run.proj / projectfiles.RERANK_BACKUP).exists()
     assert "rerank_backup" in read(run.proj)["settings"]
     _spans(monkeypatch, *sport)
     run.go("sport", layers=False)
@@ -1080,7 +1092,7 @@ def test_rerank_json_save(home, tmp_path, capsys):
     project = make_project(home, tmp_path)
     code, doc = _json(capsys, ["rerank", "p", "--style", "commentary"])
     assert code == 0 and doc["outputs"]["saved"] is True
-    assert doc["outputs"]["backup"] == str(project / rerank.BACKUP)
+    assert doc["outputs"]["backup"] == str(project / projectfiles.RERANK_BACKUP)
     assert read(project)["style"] == "commentary"
 
 
@@ -1329,7 +1341,7 @@ def _context_rater(raters: list[Any]) -> type:
 def test_rerank_analyze_that_fails_keeps_the_earlier_undo(home, tmp_path, monkeypatch):
     """A121: the backup is the one before the failed run, not the ranking it never replaced."""
     project, _, _ = _a_to_b(home, tmp_path)
-    before = (project / rerank.BACKUP).read_bytes()
+    before = (project / projectfiles.RERANK_BACKUP).read_bytes()
     monkeypatch.setattr(
         rerank, "readiness", lambda *x: rerank.Readiness([rerank.Missing("x", "y")])
     )
@@ -1340,7 +1352,7 @@ def test_rerank_analyze_that_fails_keeps_the_earlier_undo(home, tmp_path, monkey
     monkeypatch.setattr(analyze, "reanalyze", boom)
     with pytest.raises(KeyboardInterrupt):
         rerank.rerank(project, get_style("gaming"), analyze_missing=True)
-    assert (project / rerank.BACKUP).read_bytes() == before
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == before
 
 
 def test_a_failure_after_analyze_saved_highlights_keeps_the_new_backup(home, tmp_path, monkeypatch):
@@ -1356,7 +1368,7 @@ def test_a_failure_after_analyze_saved_highlights_keeps_the_new_backup(home, tmp
     monkeypatch.setattr(analyze, "reanalyze", saves_then_fails)
     with pytest.raises(KeyboardInterrupt):
         rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
-    assert (project / rerank.BACKUP).read_bytes() == raw
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == raw
 
 
 def test_readiness_logs_nothing_at_info_about_missing_model_files(
