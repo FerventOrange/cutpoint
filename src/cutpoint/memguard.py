@@ -369,31 +369,13 @@ def device_for(
     return device
 
 
-def _ollama_entry(url: str, model: str) -> dict | None:
-    """``model``'s entry in the ``/api/ps`` list of the Ollama at ``url``; None when it is not
-    loaded or Ollama does not answer."""
-    import requests  # noqa: PLC0415
-
-    from cutpoint.backends import ollama_get  # noqa: PLC0415
-
-    try:
-        loaded = ollama_get(url, "/api/ps", timeout=(1, 3)).get("models", [])
-    except (requests.RequestException, ValueError, AttributeError):
-        return None
-    if not isinstance(loaded, list):  # another shape: as not loaded (A116)
-        return None
-    names = (model, f"{model}:latest")
-    found = (
-        m for m in loaded if isinstance(m, dict) and (m.get("name") or m.get("model")) in names
-    )
-    return next(found, None)
-
-
 def ollama_context(url: str, model: str) -> int | None:
     """The context (``num_ctx``) ``model`` is loaded with in the Ollama at ``url``
     (``context_length`` of ``/api/ps``); None when it is not loaded, Ollama does not report it
     or does not answer."""
-    entry = _ollama_entry(url, model)
+    from cutpoint.backends import ollama_loaded_entry  # noqa: PLC0415
+
+    entry = ollama_loaded_entry(url, model)
     ctx = entry.get("context_length") if entry else None
     return ctx if isinstance(ctx, int) and not isinstance(ctx, bool) and ctx > 0 else None
 
@@ -403,7 +385,9 @@ def ollama_loaded(url: str, model: str, num_ctx: int | None = None) -> bool:
     keeps it there: Ollama reloads a model asked for another context (#732), so a model loaded
     with another ``context_length`` does not count. ``num_ctx`` None, or an Ollama that does not
     report the context: the model's name alone. False when Ollama does not answer."""
-    entry = _ollama_entry(url, model)
+    from cutpoint.backends import ollama_loaded_entry  # noqa: PLC0415
+
+    entry = ollama_loaded_entry(url, model)
     if entry is None:
         return False
     ctx = entry.get("context_length")

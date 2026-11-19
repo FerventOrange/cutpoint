@@ -282,6 +282,69 @@ def child_scope(scope: ChildScope) -> Iterator[ChildScope]:
         _SCOPE.current = previous
 
 
+def _spawn(
+    cmd: list[str], scope: ChildScope | None, *, isolate: bool = False, **popen: Any
+) -> subprocess.Popen:
+    """Start ``cmd`` (``popen``: the ``Popen`` options of the caller's output handling) and
+    register it in ``scope``. ``isolate``: in its own process group (Windows; also in a job
+    object that ends it with Python) or session (POSIX), without stdin
+    (:func:`cutpoint.procs.isolated_kwargs`).
+
+    Raises:
+        KeyboardInterrupt: If ``scope`` is cancelled before the child starts.
+    """
+    if scope is not None:
+        scope.check()
+    proc = subprocess.Popen(cmd, **popen, **(procs.isolated_kwargs() if isolate else {}))
+    try:
+        if isolate:
+            procs.kill_with_parent(proc)
+        if scope is not None:
+            scope.add(proc)
+    except BaseException as err:  # a Ctrl+C right after the start: no child left behind
+        procs.stop_child(proc, err)
+        if scope is not None:
+            scope.discard(proc)  # a set's discard: safe when it was never added
+        raise
+    return proc
+
+
+def _communicate(
+    proc: subprocess.Popen,
+    scope: ChildScope | None,
+    timeout: float | None,
+    tool: str,
+    where: str = "",
+) -> tuple[Any, Any]:
+    """``(stdout, stderr)`` of ``proc`` (from :func:`_spawn`) once it exits; it leaves
+    ``scope`` then. Killed after ``timeout`` seconds (:class:`FFmpegError` naming ``tool``,
+    then ``where``) and on any other error (:func:`cutpoint.procs.stop_child`). The exit code
+    is the caller's.
+
+    Raises:
+        FFmpegError: If it runs longer than ``timeout`` seconds.
+        KeyboardInterrupt: If ``scope`` is cancelled by the time it ends, or within
+            :data:`STOP_GRACE_S` after a failed exit (it got the Ctrl+C first).
+    """
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as err:
+        proc.kill()
+        proc.communicate()
+        raise FFmpegError(f"{tool} timed out after {timeout:g}s{where}") from err
+    except BaseException as err:
+        procs.stop_child(proc, err)
+        raise
+    finally:
+        if scope is not None:
+            scope.discard(proc)
+    if scope is not None:
+        scope.check()  # stopped from outside: not an ffmpeg failure
+        if proc.returncode != 0 and scope.wait_cancelled(STOP_GRACE_S):
+            raise KeyboardInterrupt  # ffmpeg got the Ctrl+C before the scope was cancelled
+    return stdout, stderr
+
+
 def run(
     args: list[str],
     *,
@@ -296,10 +359,9 @@ def run(
     cmd = _command(args[0], args[1:])
     logger.debug("exec: %s", subprocess.list2cmdline(cmd))
     scope: ChildScope | None = getattr(_SCOPE, "current", None)
-    if scope is not None:
-        scope.check()
-    proc = subprocess.Popen(
+    proc = _spawn(
         cmd,
+        scope,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -307,26 +369,9 @@ def run(
         errors="replace",
         cwd=cwd,
     )
-    try:
-        if scope is not None:
-            scope.add(proc)
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as err:
-        proc.kill()
-        proc.communicate()
-        raise FFmpegError(f"{args[0]} timed out after {timeout:g}s") from err
-    except BaseException as err:
-        procs.stop_child(proc, err)
-        raise
-    finally:
-        if scope is not None:
-            scope.discard(proc)
-    if scope is not None:
-        scope.check()  # stopped from outside: not an ffmpeg failure
+    stdout, stderr = _communicate(proc, scope, timeout, args[0])
     out = (stdout or "") + (stderr or "")
     if proc.returncode != 0:
-        if scope is not None and scope.wait_cancelled(STOP_GRACE_S):
-            raise KeyboardInterrupt  # ffmpeg got the Ctrl+C before the scope was cancelled
         raise FFmpegError(f"{args[0]} failed (exit {exit_code(proc.returncode)}):\n{_tail(out)}")
     return out
 
@@ -403,8 +448,14 @@ def run_progress(
                 stream.close()
 
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(
-            cmd, stdout=subprocess.PIPE, stderr=err, text=True, encoding="utf-8", errors="replace"
+        proc = _spawn(
+            cmd,
+            None,
+            stdout=subprocess.PIPE,
+            stderr=err,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         assert proc.stdout is not None
         # The pipe reaches EOF only when every copy of its write end is closed, which a process
@@ -1580,23 +1631,8 @@ def _exec_scoped(
     scope: ChildScope, cmd: list[str], timeout: float | None, tool: str, path: Path | str
 ) -> subprocess.CompletedProcess:
     """:func:`_exec` of a thread in ``scope``: the child is registered there."""
-    scope.check()
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    try:
-        scope.add(proc)
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as err:
-        proc.kill()
-        proc.communicate()
-        raise FFmpegError(f"{tool} timed out after {timeout:g}s on {path}") from err
-    except BaseException as err:
-        procs.stop_child(proc, err)
-        raise
-    finally:
-        scope.discard(proc)
-    scope.check()  # stopped from outside
-    if proc.returncode != 0 and scope.wait_cancelled(STOP_GRACE_S):
-        raise KeyboardInterrupt  # it got the Ctrl+C before the scope was cancelled
+    proc = _spawn(cmd, scope, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout, stderr = _communicate(proc, scope, timeout, tool, f" on {path}")
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
@@ -1941,19 +1977,14 @@ def decode_raw(
         cmd = _command("ffmpeg", args)
         logger.debug("exec: %s", subprocess.list2cmdline(cmd))
         log = _StderrLog(pts, stderr_lines)
-        if scope is not None:
-            scope.check()
-        proc = subprocess.Popen(
+        proc = _spawn(
             cmd,
+            scope,
+            isolate=isolate,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             bufsize=frame_bytes * 4,
-            **(procs.isolated_kwargs() if isolate else {}),
         )
-        if isolate:
-            procs.kill_with_parent(proc)
-        if scope is not None:
-            scope.add(proc)
         reader = threading.Thread(target=log.read, args=(proc.stderr,), daemon=True)
         reader.start()
         deadline = _Deadline(proc, timeout) if timeout is not None else None

@@ -1402,6 +1402,23 @@ def test_stale_lock_check_passes_the_locks_mtime(monkeypatch, tmp_path):
     assert seen == [lock.stat().st_mtime]
 
 
+def test_owner_alive_is_the_one_rule_of_locks_and_run_records(monkeypatch, tmp_path):
+    """A402: another host cannot be told (alive); this process: ``held``; any other process:
+    :func:`procs.pid_alive` with the file's mtime (None once the file is gone)."""
+    rec = tmp_path / "progress.json"
+    rec.write_bytes(b"{}")
+    seen = []
+    monkeypatch.setattr(procs, "pid_alive", lambda pid, t=None: seen.append((pid, t)) or False)
+    here = socket.gethostname()
+    assert folders.owner_alive(4321, f"not-{here}", rec, False) is True
+    assert folders.owner_alive(os.getpid(), here, rec, True) is True
+    assert folders.owner_alive(os.getpid(), here, rec, False) is False
+    assert seen == []
+    assert folders.owner_alive(4321, here, rec, True) is False
+    assert folders.owner_alive(4321, here, tmp_path / "gone", True) is False
+    assert seen == [(4321, rec.stat().st_mtime), (4321, None)]
+
+
 def test_pid_alive_counts_a_process_it_cannot_open_as_alive():
     """Windows: the System process (4) cannot be opened (access denied); POSIX: init (1)
     belongs to root, so signal 0 is refused (EPERM)."""

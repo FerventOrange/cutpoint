@@ -310,6 +310,33 @@ def ollama_post(
     return _read(resp)
 
 
+def same_model(name: Any, model: str) -> bool:
+    """``name``, as Ollama lists it, is ``model``: the same name or with the ``:latest`` tag
+    Ollama adds to a name without one."""
+    return name in (model, f"{model}:latest")
+
+
+def ollama_ps(url: str) -> list[dict[str, Any]]:
+    """The models the Ollama at ``url`` has in memory (``/api/ps``, a short probe); entries of
+    another shape are left out (A116). Empty when Ollama does not answer usably."""
+    try:
+        loaded = ollama_get(url, "/api/ps", timeout=(1, 3)).get("models", [])
+    except (requests.RequestException, ValueError):
+        return []
+    return [m for m in loaded if isinstance(m, dict)] if isinstance(loaded, list) else []
+
+
+def ollama_loaded_entry(url: str, model: str) -> dict[str, Any] | None:
+    """``model``'s entry in :func:`ollama_ps` (by its ``name`` or ``model`` field); None when
+    it is not loaded or Ollama does not answer."""
+    found = (
+        m
+        for m in ollama_ps(url)
+        if same_model(m.get("name"), model) or same_model(m.get("model"), model)
+    )
+    return next(found, None)
+
+
 def ollama_reply(body: dict[str, Any], generate: bool = False) -> str:
     """The text of an ``/api/chat`` answer (``message.content``), or of an ``/api/generate``
     one (``response``).

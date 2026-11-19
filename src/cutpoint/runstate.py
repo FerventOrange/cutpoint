@@ -59,7 +59,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import __version__, cache, folders, jsonout, procs
+from cutpoint import __version__, cache, folders, jsonout
 from cutpoint.config import path_key
 from cutpoint.errors import LowMemoryError
 from cutpoint.progress import Run
@@ -430,16 +430,7 @@ def read(project: Path) -> dict[str, Any] | None:
     pid = data.get("pid")
     if data.get("status") != "running" or not isinstance(pid, int):
         return data
-    if data.get("host") != socket.gethostname():  # a run on another computer: cannot tell
-        return data
-    if pid == os.getpid():
-        alive = _active(project) is not None
-    else:
-        try:
-            written = path.stat().st_mtime
-        except OSError:
-            written = None
-        alive = procs.pid_alive(pid, written)
+    alive = folders.owner_alive(pid, data.get("host"), path, _active(project) is not None)
     return data if alive else {**data, "status": "interrupted"}
 
 

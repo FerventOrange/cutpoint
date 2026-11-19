@@ -594,15 +594,24 @@ def _lock_stale(lock: Path, rec: dict[str, Any] | None) -> bool:
             return time.time() - lock.stat().st_mtime > _LOCK_UNWRITTEN_S
         except OSError:
             return False
-    if rec.get("host") != socket.gethostname():  # a run on another computer: cannot tell
-        return False
-    if rec["pid"] == os.getpid():  # this process: held by a run still going, else left over
-        return path_key(str(lock)) not in _HELD_LOCKS
+    held = path_key(str(lock)) in _HELD_LOCKS
+    return not owner_alive(rec["pid"], rec.get("host"), lock, held)
+
+
+def owner_alive(pid: int, host: Any, path: Path, held: bool) -> bool:
+    """Whether the process ``pid`` on ``host`` that wrote ``path`` (a lock or a run record)
+    is still running: True for a run on another computer (cannot tell); for this process,
+    ``held`` (a run still going holds it, else it is left over); else
+    :func:`cutpoint.procs.pid_alive`, ``path``'s mtime telling a reused id apart."""
+    if host != socket.gethostname():
+        return True
+    if pid == os.getpid():
+        return held
     try:
-        written = lock.stat().st_mtime
+        written = path.stat().st_mtime
     except OSError:
         written = None
-    return not procs.pid_alive(rec["pid"], written)
+    return procs.pid_alive(pid, written)
 
 
 def lock_held(dst: Path) -> bool:

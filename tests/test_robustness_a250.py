@@ -348,7 +348,7 @@ def test_write_png_retries_a_locked_replace(
             raise PermissionError(13, "in use")
         real(src, dst)
 
-    monkeypatch.setattr(imageio.os, "replace", flaky)
+    monkeypatch.setattr(imageio.cache.os, "replace", flaky)
     out = tmp_path / "p.png"
     assert imageio.write_png(out, np.zeros((4, 4, 3), np.uint8))
     assert len(calls) == 2
