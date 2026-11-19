@@ -226,7 +226,8 @@ def load_highlights(project: Path) -> dict[str, Any]:
 
     Raises:
         FileNotFoundError: If it is missing.
-        ValueError: If it is unreadable, not valid JSON or has no ``sources`` list.
+        ValueError: If it is unreadable, not valid JSON, has no ``sources`` list or has a
+            candidate that is not an object.
     """
     if _PENDING and (pending := _PENDING.get(project.resolve())) is not None:
         return pending

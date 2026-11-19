@@ -1026,8 +1026,12 @@ def test_a_fresh_analyze_records_no_link_for_a_stale_or_unlinked_backup(run, mon
     assert "rerank_backup" not in read(run.proj)["settings"]
 
 
-@pytest.mark.parametrize("raw", ["not json", "[1, 2]", '{"no": "analysis"}', b"\xff\xfe"])
+@pytest.mark.parametrize(
+    "raw",
+    ["not json", "[1, 2]", '{"no": "analysis"}', b"\xff\xfe", '{"candidates": [1, "x", null]}'],
+)
 def test_a_fresh_analyze_over_an_unreadable_highlights_numbers_from_h001(run, raw):
+    """The fresh analysis the error of a broken file asks for rewrites it (bad candidates too)."""
     run.go("funny")
     path = run.proj / "highlights.json"
     path.write_bytes(raw if isinstance(raw, bytes) else raw.encode())
@@ -1057,6 +1061,17 @@ def test_reanalyze_of_a_360_project_with_a_style_leaves_the_layers(home, tmp_pat
     got = _captured_analyze(monkeypatch)
     analyze.reanalyze(project, get_style("action-cam"))
     assert got["layers"] is False and got["crash_moments"] is False
+
+
+def test_reanalyze_refuses_a_candidate_that_is_not_an_object(home, tmp_path, monkeypatch):
+    """crashes, events and rerank --analyze re-analyse: a clean error, not an AttributeError."""
+    project = make_project(home, tmp_path)
+    path = project / "highlights.json"
+    path.write_text(json.dumps({**read(project), "candidates": ["x"]}), encoding="utf-8")
+    got = _captured_analyze(monkeypatch)
+    with pytest.raises(ValueError, match=r"candidate 1 is not an object; re-run `cutpoint anal"):
+        analyze.reanalyze(project)
+    assert got == {}  # stopped before analyzing
 
 
 def test_a_plain_reanalyze_is_unchanged(home, tmp_path, monkeypatch):
@@ -1110,6 +1125,20 @@ def test_rerank_json_needs_analyze(home, tmp_path, capsys):
 def test_rerank_without_a_project_is_not_found(home, capsys):
     code, doc = _json(capsys, ["rerank", "nothing", "--style", "funny"])
     assert code == 1 and doc["error"]["code"] == "not_found"
+
+
+@pytest.mark.parametrize("dry_run", [True, False])
+def test_rerank_refuses_a_candidate_that_is_not_an_object(home, tmp_path, capsys, dry_run):
+    project = make_project(home, tmp_path)
+    path = project / "highlights.json"
+    path.write_text(json.dumps({**read(project), "candidates": [1, "x", None]}), encoding="utf-8")
+    before = path.read_bytes()
+    code, doc = _json(capsys, ["rerank", "p", "--style", "funny", *(["--dry-run"] * dry_run)])
+    assert code == 1 and doc["error"] == {
+        "code": "error",
+        "message": f"{path}: candidate 1 is not an object; re-run `cutpoint analyze` to rewrite it",
+    }
+    assert path.read_bytes() == before and not (project / projectfiles.RERANK_BACKUP).exists()
 
 
 def test_rerank_refuses_auto_and_dry_run_with_analyze(home, capsys):

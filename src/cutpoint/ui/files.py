@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, runstate
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import HIGHLIGHTS, check_candidates
 from cutpoint.ui.common import ANALYSIS_FILE, UI_DIR, bad
 
 
@@ -47,8 +47,13 @@ def _load(p: Path, name: str) -> Any | None:
 
 
 def _highlights(p: Path) -> dict[str, Any] | None:
-    """The project's ``highlights.json``; None when missing, outside or not an object."""
+    """The project's ``highlights.json``; None when missing, outside or not an object, or when
+    a candidate is not an object (as for a file that is not valid JSON: analyze rewrites it)."""
     hl = _load(p, HIGHLIGHTS)
+    try:
+        check_candidates(hl, p / HIGHLIGHTS)
+    except ValueError:
+        return None
     return hl if isinstance(hl, dict) else None
 
 

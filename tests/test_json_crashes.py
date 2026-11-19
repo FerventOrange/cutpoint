@@ -181,6 +181,20 @@ def test_crashes_json_without_clip_is_missing_extra(ski, monkeypatch, capsys):
     )
 
 
+@pytest.mark.parametrize("argv", [[*CRASHES[:-1], "--reanalyze"], ["profile", "ski"]])
+def test_crashes_and_profile_refuse_a_candidate_that_is_not_an_object(ski, capsys, argv):
+    project, _ = ski
+    path = project / "highlights.json"
+    cache.save_json(path, {**cache.load_json(path), "candidates": [None]})
+    code, doc = run_json(capsys, argv)
+    assert code == 1 and doc["error"] == {
+        "code": "error",
+        "message": f"{path}: candidate 1 is not an object; re-run `cutpoint analyze` to rewrite it",
+    }
+    # stopped at its first read: no crashes.json or profile written
+    assert not (project / "crashes.json").exists() and not (project / "activity.json").exists()
+
+
 def test_crashes_json_unknown_activity_is_bad_args(ski, capsys):
     code, doc = run_json(capsys, ["crashes", "ski", "--activity", "curling", "--no-dense"])
     assert code == 1 and doc["error"]["code"] == "bad_args"
