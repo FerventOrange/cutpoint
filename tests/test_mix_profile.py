@@ -318,7 +318,13 @@ def test_a_mix_that_leaves_out_every_category_says_so(tmp_path: Path, fake_day) 
     with pytest.raises(ValueError, match="No candidates"):
         mix.run_mix(tmp_path, sheet=False)
     _, warnings = activity.check_profile({**SURF, "mix": off})
+    assert not any("every share is 0" in w for w in warnings)  # the other four keep their share
+    all_off = {"categories": {k: {"share": 0} for k in activity.MIX_CATEGORIES}}
+    _, warnings = activity.check_profile({**SURF, "mix": all_off})
     assert any("every share is 0" in w for w in warnings)
+    lift_off = {"categories": {"lift": {"share": 0}}}
+    _, warnings = activity.check_profile({**SURF, "mix": lift_off})
+    assert not any("every share is 0" in w for w in warnings)
     _, warnings = activity.check_profile(SURF)
     assert not any("every share is 0" in w for w in warnings)
 

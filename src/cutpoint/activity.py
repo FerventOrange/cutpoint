@@ -1723,8 +1723,10 @@ def _check_mix(raw: Any, problems: list[str], warnings: list[str]) -> None:
                 )
             if "share" in v and _mix_share(v["share"]) is None:
                 warnings.append(f"mix.categories.{k}.share ignored: not a number from 0 to 1")
-        given = [v for k in MIX_CATEGORIES if isinstance(v := cats.get(k), dict) and "share" in v]
-        if given and all(_mix_share(v["share"]) == 0 for v in given):
+        if all(
+            isinstance(v := cats.get(k), dict) and _mix_share(v.get("share")) == 0
+            for k in MIX_CATEGORIES
+        ):
             warnings.append("mix.categories: every share is 0, so no category is left in the mix")
     opener = raw.get("opener")
     if opener is not None and not isinstance(opener, list):
