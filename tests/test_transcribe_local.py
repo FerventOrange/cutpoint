@@ -208,6 +208,42 @@ def test_cpu_fallback_loads_local_only(fakes, hf_cache, monkeypatch, tmp_path):
     assert fakes.downloads == [] and tr.device == "cpu"
 
 
+def test_a_bad_wav_is_no_cuda_failure(fakes, monkeypatch, tmp_path):
+    monkeypatch.setattr(transcribe, "cuda_available", lambda: True)
+
+    def broken(_path):
+        raise OSError("cannot read the WAV")
+
+    monkeypatch.setattr(transcribe, "load_wav", broken)
+    tr = transcribe.Transcriber()
+    with pytest.raises(OSError, match="cannot read"):
+        tr.transcribe(tmp_path / "a.wav")
+    assert tr.device == "cuda" and tr._want == "cuda" and tr.fallback_reason is None
+    assert fakes.loads == []  # no model loaded, no CPU retry
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [
+        ("CUDA failed with error out of memory", "memory"),
+        ("CUDA failed to allocate 2 GB", "memory"),
+        ("cuBLAS failed with status CUBLAS_STATUS_ALLOC_FAILED", "memory"),
+        ("CUDA driver version is insufficient", "cuda_error"),
+    ],
+)
+def test_the_cpu_fallback_reason_tells_memory_from_a_cuda_error(fakes, text, reason):
+    tr = transcribe.Transcriber()
+    tr._fallback_to_cpu(RuntimeError(text))
+    assert tr.fallback_reason == reason and tr.device == tr._want == "cpu"
+
+
+def test_a_cublas_alloc_failure_is_not_a_missing_library(fakes, caplog):
+    tr = transcribe.Transcriber()
+    with caplog.at_level(logging.WARNING, logger=transcribe.logger.name):
+        tr._fallback_to_cpu(RuntimeError("cuBLAS failed with status CUBLAS_STATUS_ALLOC_FAILED"))
+    assert "libraries" not in caplog.text and "CUDA transcription failed" in caplog.text
+
+
 def test_hub_failure_on_cuda_does_not_retry_on_the_cpu(fakes, monkeypatch, tmp_path):
     monkeypatch.setattr(transcribe, "cuda_available", lambda: True)
     fakes.download_error = LocalEntryNotFoundError("offline")

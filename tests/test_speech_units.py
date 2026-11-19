@@ -429,7 +429,7 @@ def test_the_transcriber_asks_whisper_for_the_marker_friendly_suppress_list(monk
     tr._model = Model()
     tr._suppress = [10, 11]
     monkeypatch.setattr(transcribe, "load_wav", lambda _p: None)
-    tr._run(Path("x.wav"))
+    tr._run(Path("x.wav"), None)
     assert seen["suppress_tokens"] == [10, 11] and seen["suppress_tokens"] is not tr._suppress
 
 

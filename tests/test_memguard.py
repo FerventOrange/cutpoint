@@ -393,6 +393,7 @@ def test_whisper_goes_back_to_the_gpu_once_its_vram_is_free(mem, monkeypatch):
 def test_whisper_short_of_ram_stops_without_a_cpu_fallback(mem, monkeypatch):
     from cutpoint import transcribe  # noqa: PLC0415
 
+    monkeypatch.setattr(transcribe, "load_wav", lambda _p: None)
     monkeypatch.setattr(transcribe, "load_model", lambda *a: pytest.fail("loaded"))
     mem.ram, mem.vram = 1.0, 0.5
     tr = transcribe.Transcriber(model="large-v3")
@@ -470,6 +471,7 @@ def _transcriber(monkeypatch, model: str | None, small_cached: bool = True) -> A
     cached = {"small": "hub/small"} if small_cached else {}
     monkeypatch.setattr(transcribe, "cached_model", cached.get)
     monkeypatch.setattr(transcribe, "cuda_available", lambda: True)
+    monkeypatch.setattr(transcribe, "load_wav", lambda _p: None)
     monkeypatch.setattr(transcribe, "load_model", lambda *a: SimpleNamespace(args=a))
     monkeypatch.setattr(transcribe.Transcriber, "close", lambda self: setattr(self, "_model", None))
     return transcribe.Transcriber(model=model)
@@ -530,7 +532,7 @@ def test_without_small_downloaded_the_cpu_fallback_keeps_medium(mem, monkeypatch
 def _fake_run(monkeypatch, runs: list[str]) -> Any:
     from cutpoint import transcribe  # noqa: PLC0415
 
-    def run(self, wav, on_progress=None):
+    def run(self, wav, audio, on_progress=None):
         self._load()
         runs.append(self.model_name)
         return [{"start": 0.0, "end": 1.0, "text": self.model_name}]
@@ -670,7 +672,7 @@ def test_after_a_fallback_a_cached_medium_transcript_is_still_used(mem, monkeypa
 
     runs = []
 
-    def run(self, wav, on_progress=None):
+    def run(self, wav, audio, on_progress=None):
         self._load()
         runs.append(wav.name)
         return [{"start": 0.0, "end": 1.0, "text": wav.name}]
@@ -700,7 +702,7 @@ def test_a_gpu_run_reuses_only_a_small_transcript_of_a_fallback(
 
     runs = []
 
-    def run(self, wav, on_progress=None):
+    def run(self, wav, audio, on_progress=None):
         self._load()
         runs.append(self.model_name)
         return [{"start": 0.0, "end": 1.0, "text": self.model_name}]
