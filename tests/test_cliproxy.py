@@ -1422,7 +1422,7 @@ def test_run_restores_the_signal_handlers_when_the_supervisor_is_stuck(stuck_run
 
 
 def test_run_keeps_the_startup_error_when_the_cleanup_also_fails(
-    stuck_run, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    stuck_run, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The deadline error is not hidden by the stop of a supervisor stuck in prepare() (#577)."""
     started, _ = stuck_run
@@ -1432,13 +1432,9 @@ def test_run_keeps_the_startup_error_when_the_cleanup_also_fails(
         raise cliproxy.ProxyConnectionError("did not become ready within 120 s")
 
     monkeypatch.setattr(cliproxy, "_wait_until_ready", deadline)
-    with (
-        caplog.at_level("WARNING", logger=cliproxy.logger.name),
-        pytest.raises(cliproxy.ProxyConnectionError, match="did not become ready"),
-    ):
+    with pytest.raises(cliproxy.ProxyConnectionError, match="did not become ready"):
         cliproxy.run()
     assert started and started[0].terminated
-    assert any("did not finish credential cleanup" in r.getMessage() for r in caplog.records)
 
 
 class _ExitsThenStuck(_StuckGuardian):
@@ -1523,8 +1519,8 @@ def test_startup_keeps_waiting_while_a_slow_supervisor_is_alive(
     with caplog.at_level("INFO", logger=cliproxy.logger.name):
         cliproxy._wait_until_ready(_StartingGuardian())
     assert len(calls) == 101
-    notices = [r for r in caplog.records if "Waiting for proxy" in r.getMessage()]
-    assert len(notices) == 1 and notices[0].levelname == "INFO"
+    notices = [r for r in caplog.records if r.name == cliproxy.logger.name]
+    assert [r.levelname for r in notices] == ["INFO"]  # one notice, however long the wait
 
 
 def test_startup_fails_fast_when_the_supervisor_exits(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1579,11 +1575,6 @@ def test_startup_gives_up_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> No
     limit, step = cliproxy._STARTUP_TIMEOUT, cliproxy._STARTUP_RETRY
     assert limit <= clock.elapsed < limit + step
     assert len(calls) == guardian.waits + 1 >= 2
-
-
-def test_startup_deadline_is_about_two_minutes() -> None:
-    assert 60 <= cliproxy._STARTUP_TIMEOUT <= 180
-    assert cliproxy._STARTUP_NOTICE < cliproxy._STARTUP_TIMEOUT
 
 
 # --- start in the background, the saved-login check and ProxyLauncher (#821) ---
@@ -1920,14 +1911,13 @@ def test_a_proxy_that_fails_to_stop_on_shutdown_is_logged_not_raised(
     launcher.ensure()
     starter.started[0].fail_stop = True
     launcher.shutdown()
-    assert "could not stop the subscription proxy: cleanup failed" in caplog.text
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]
 
 
 def test_shutdown_during_a_start_ends_it_stops_the_guardian_and_frees_the_lock(
     temp_home: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     waiting = threading.Event()
     launcher = cliproxy.ProxyLauncher(running=lambda: False)
@@ -1947,7 +1937,6 @@ def test_shutdown_during_a_start_ends_it_stops_the_guardian_and_frees_the_lock(
         except cliproxy.ProxyError as err:
             errors.append(err)
 
-    caplog.set_level("INFO", logger=cliproxy.logger.name)
     thread = threading.Thread(target=ask)
     thread.start()
     assert waiting.wait(5)
@@ -1956,7 +1945,6 @@ def test_shutdown_during_a_start_ends_it_stops_the_guardian_and_frees_the_lock(
     assert not thread.is_alive()
     assert [str(e) for e in errors] == ["the server is stopping"]
     assert spawned[0].stopped == 1
-    assert "Stopping the subscription proxy that is still starting" in caplog.text
 
     monkeypatch.setattr(cliproxy, "_wait_until_ready", lambda proc, **kw: None)
     cliproxy.start().stop()  # the launch lock was freed

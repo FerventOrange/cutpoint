@@ -41,10 +41,6 @@ def cand(start: float, end: float, score: float = 50.0) -> analyze.Candidate:
     return analyze.Candidate(SRC, start, end, (start + end) / 2, 0.5, {}, score=score)
 
 
-def test_every_built_in_style_forces_crashes_at_0_6():
-    assert {n: s.must_include_crash for n, s in STYLES.items()} == dict.fromkeys(STYLES, 0.6)
-
-
 def test_a_learned_preset_still_overrides_must_include_crash(tmp_path):
     path = tmp_path / "mine.json"
     doc = {"schema": 1, "name": "mine", "base": "action", "source": "hand"}

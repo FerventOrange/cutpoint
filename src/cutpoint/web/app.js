@@ -708,6 +708,30 @@ async function refreshProject() {
   }
 }
 
+/**
+ * The proxy polls (A754): only the sources, not every moment and its transcript. A source whose
+ * status changed (a proxy finished or failed) or a changed list of sources refreshes the whole
+ * project once; otherwise the page takes the new sources as a whole refresh would, and nothing
+ * else: the page's review (saved since the project was read) stays. Other changes made outside
+ * the page meanwhile (busy or run from a CLI run, a highlights.json rewritten) arrive through the
+ * job poll or the next whole refresh, not this poll.
+ */
+async function pollSources() {
+  const id = S.id;
+  if (!id) return;
+  try {
+    const { sources } = await api(`/api/projects/${encodeURIComponent(id)}/sources`);
+    if (id !== S.id || S.project?.id !== id) return;
+    const old = S.project.sources ?? [];
+    const same = sources.length === old.length
+      && sources.every((s, i) => s.path === old[i].path && s.status === old[i].status);
+    if (!same) return refreshProject();
+    adopt({ ...S.project, sources }, false, true);
+  } catch (e) {
+    fail(e);
+  }
+}
+
 /** Forget the per-project edit state; ``segments`` and ``joins`` become the saved sequence. */
 function resetWorkspace(segments, joins = []) {
   seqStop('', false);
@@ -745,7 +769,9 @@ function closeProject() {
   loadAssistant();
 }
 
-function adopt(p, switched) {
+/** Show project ``p``; ``sourcesOnly``: only its ``sources`` are new (pollSources), the rest is the
+ * page's own, so the saved sequence is not taken from it again. */
+function adopt(p, switched, sourcesOnly = false) {
   const sig = S.project?.events_sig;
   S.project = p;
   if (switched) {
@@ -754,7 +780,7 @@ function adopt(p, switched) {
     resetWorkspace(structuredClone(p.review?.segments ?? []), structuredClone(p.review?.joins ?? []));
     renderProjectMenu();
     history.replaceState(null, '', `#${encodeURIComponent(p.id)}`);
-  } else if (!dirty()) {
+  } else if (!sourcesOnly && !dirty()) {
     // Polling must never clobber unsaved edits; saved ones follow the server.
     S.segments = structuredClone(p.review?.segments ?? []);
     S.joins = structuredClone(p.review?.joins ?? []);
@@ -2275,7 +2301,7 @@ function stageVideo(seekC) {
         forgetPrepared(src);
         prepareSource(src);
       }, 2000);
-    else S.prepTimer = setTimeout(refreshProject, 2000);
+    else S.prepTimer = setTimeout(pollSources, 2000);
     const mine = ofSource(src);
     const at = want ?? (mine ? playhead(c) : c.start);
     const p = playable(src, at);
@@ -4467,7 +4493,7 @@ async function seqQueue() {
   }
 }
 
-/** While a clip of the sequence has no ready file covering it, refresh the project every 2 s (the stage polls only its own). */
+/** While a clip of the sequence has no ready file covering it, poll the sources every 2 s (the stage polls only its own). */
 function seqPoll() {
   clearTimeout(S.seqTimer);
   const sp = S.seqPlay;
@@ -4478,7 +4504,7 @@ function seqPoll() {
   };
   if (!sp.order.some((id, j) => busy(seqSeg(j)))) return;
   S.seqTimer = setTimeout(async () => {
-    await refreshProject();
+    await pollSources();
     const now = S.seqPlay;
     if (!now) return;
     if (now.wait && srcOf(seqSeg(now.i)?.source)?.status === 'failed') seqGo(now.i); // skips it
@@ -6201,6 +6227,51 @@ function renderChatForm() {
   if (had === send && send.disabled) $('#chatInput').focus();
 }
 
+// The bubbles of each finished turn as last drawn (A755): turn id -> {key, items}. The chat is
+// drawn once a second while a turn runs and on every renderAll; a finished turn whose events and
+// the page state its bubbles show (chatDeps) are as they were keeps its nodes, so no reply is
+// parsed as Markdown again. A running turn is always drawn again.
+let turnCache = new Map();
+let turnCacheDeps = '';
+const objIds = new WeakMap();
+let objN = 0;
+/** A number for object ``o`` (the same object, the same number), or null. */
+function objId(o) {
+  if (!o || typeof o !== 'object') return null;
+  if (!objIds.has(o)) objIds.set(o, ++objN);
+  return objIds.get(o);
+}
+
+/** What turnItems reads besides the turn: a change draws every turn again. Whether a turn is
+ * being sent or answered matters only to a frames consent card (its Ask again). */
+const chatDeps = (turns) => JSON.stringify([
+  S.id, objId(S.chat), objId(S.project?.highlights), S.project?.highlights?.style ?? null,
+  S.project?.ranking_key ?? null, S.project?.ranking_undo ?? null, rankBusy(), !!S.active,
+  S.segments.map((s) => [s.id, s.label]), S.shown && [...S.shown], [...S.dismissed],
+  S.history.map((e) => e.proposal), S.proposal?.id ?? null, !!S.applying,
+  S.rankApplying ?? null, !!S.rankUndoing,
+  [...S.rankings].map(([id, r]) => [id, objId(r.payload), !!r.previewing, r.stale ?? null]),
+  S.chat?.frames ?? null, S.chat?.files ?? null, !!S.canReveal,
+  turns.some((t) => t.events.some((e) => e.kind === 'frames_consent')) && (!!S.turn || !!S.sending),
+]);
+
+/** The chat log's bubbles of ``turns``: a finished turn's kept ones when nothing it shows changed. */
+function chatItems(turns) {
+  const deps = chatDeps(turns);
+  const old = deps === turnCacheDeps ? turnCache : new Map();
+  turnCache = new Map(); // only the turns shown now
+  turnCacheDeps = deps;
+  return turns.flatMap((t) => {
+    if (t.status === 'running') return turnItems(t);
+    const key = JSON.stringify([t.events.length, t.status, t.error ?? null, t.ranking_key ?? null,
+      t.user]);
+    const hit = old.get(t.id);
+    const items = hit?.key === key ? hit.items : turnItems(t);
+    turnCache.set(t.id, { key, items });
+    return items;
+  });
+}
+
 function renderChat() {
   const c = S.chat;
   const prov = c?.provider;
@@ -6228,7 +6299,7 @@ function renderChat() {
     : '';
   $('#chatClear').disabled = !c?.turns.length;
   const log = $('#chatLog');
-  const items = c ? c.turns.flatMap(turnItems) : [];
+  const items = c ? chatItems(c.turns) : [];
   const col = log.closest('.col');
   const atEnd = !col || col.scrollHeight - col.scrollTop - col.clientHeight < 24;
   const count = log.children.length;

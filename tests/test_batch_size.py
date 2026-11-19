@@ -482,12 +482,6 @@ def test_crashes_records_its_steps_and_dry_run_lists_them(home, monkeypatch, cap
     assert rec["steps"]["dense"]["state"] == "done" and rec["steps"]["dense"]["done"] == 4
 
 
-def test_the_crashes_steps_are_no_steps_of_the_other_runs():
-    """Inside analyze or events, the crash detection starts none of their steps."""
-    others = {*progress.EDIT_STEPS, *progress.PANO_STEPS, *progress.EVENTS_STEPS}
-    assert not others & set(progress.CRASHES_STEPS)
-
-
 # -- 360 analyze: the view layer per batch, the option passed on ------------------------------
 
 

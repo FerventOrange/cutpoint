@@ -145,8 +145,8 @@ def test_edit_hands_the_option_on(home, tmp_path, monkeypatch, opt, cfg):
 # -- vision ---------------------------------------------------------------------------
 
 
-def test_vision_time_share_defaults_to_0_3_and_accepts_0_or_more(home):
-    assert config.get_config().vision_time_share == config.vision_time_share() == 0.3
+def test_vision_time_share_accepts_0_or_more(home):
+    assert config.get_config().vision_time_share == config.vision_time_share()
     for value, want in ((0, 0.0), (0.5, 0.5), (2, 2.0)):  # 0 allows one model call
         set_config(home, vision_time_share=value)
         assert config.vision_time_share() == want

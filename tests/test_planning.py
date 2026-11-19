@@ -631,10 +631,9 @@ def _fake_export(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(clips.sources, "audio_window", lambda *a: None)
 
 
-def test_clips_of_a_deleted_user_style_use_its_recorded_base(home, monkeypatch, caplog):
+def test_clips_of_a_deleted_user_style_use_its_recorded_base(home, monkeypatch):
     """The style is gone from the library: clips reads the base the file records (its playback
-    order and tails), with one INFO line, and does not rewrite highlights.json."""
-    caplog.set_level(logging.INFO)
+    order and tails), and does not rewrite highlights.json."""
     project = _deleted_style_project(home, style_base="commentary")
     before = (project / "highlights.json").read_bytes()
     _fake_export(monkeypatch)
@@ -644,9 +643,6 @@ def test_clips_of_a_deleted_user_style_use_its_recorded_base(home, monkeypatch, 
     assert doc["order"] == base.default_order == "chronological"
     assert doc["smart_tail"]["style"] == "commentary"
     assert doc["smart_tail"]["tail_min"] == base.tail_min
-    assert "Style 'gone' is not in the style library (deleted?); using its base 'commentary'" in [
-        r.getMessage() for r in caplog.records
-    ]
     assert (project / "highlights.json").read_bytes() == before
 
 

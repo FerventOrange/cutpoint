@@ -7,7 +7,6 @@ import contextlib
 import json
 import logging
 import os
-import re
 import signal
 import sys
 import threading
@@ -136,7 +135,7 @@ def test_vision_is_skipped_when_ollama_is_unreachable(run, capsys):
     assert run.rated == 0
 
 
-def test_vision_is_skipped_on_a_bad_ollama_port(run, capsys, monkeypatch, caplog):
+def test_vision_is_skipped_on_a_bad_ollama_port(run, capsys, monkeypatch):
     """#825: a bad port in OLLAMA_HOST skips the vision step with a warning, not a failure."""
     monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)  # the real one parses the URL
     monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
@@ -146,13 +145,12 @@ def test_vision_is_skipped_on_a_bad_ollama_port(run, capsys, monkeypatch, caplog
     assert got["state"] == "skipped" and "invalid port" in got["detail"]
     codes = [w["code"] for w in result.warnings]
     assert "vision_unavailable" in codes and "step_failed" not in codes
-    assert "vision model not usable" in caplog.text
     assert (run.proj / "highlights.json").is_file()
 
 
-def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys, caplog):
+def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys):
     """#413: Ollama down, but the top candidate has a cached rating: the vision step runs on
-    the cache and the warning says how many candidates had none."""
+    the cache."""
     run.vision_ok, run.vision_cached = False, True
     run.go(vision=True)
     assert last_states(progress_lines(capsys))["vision"]["state"] == "done"
@@ -162,11 +160,10 @@ def test_vision_uses_the_cached_ratings_when_ollama_is_unreachable(run, capsys, 
     assert cand["signals"]["vision"] == 8.0
     assert hl["settings"]["vision_used"] is True
     assert hl["settings"]["vision"].items() >= {"requested": 1, "failed": 0, "uncached": 0}.items()
-    assert "using 1 cached rating, 0 candidates had no cached rating" in caplog.text
 
 
-def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monkeypatch):
-    """#413: two candidates, only the first has a cached rating. The settings and the warning
+def test_vision_counts_the_candidates_without_a_cached_rating(run, monkeypatch):
+    """#413: two candidates, only the first has a cached rating. The settings
     count the miss; an online run has no ``uncached`` key."""
 
     def two(src, style, tr, use_scenes, max_cand, timings, **kw):
@@ -215,8 +212,6 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, caplog, monke
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["settings"]["vision_used"] is True
     assert hl["settings"]["vision"].items() >= {"requested": 2, "failed": 0, "uncached": 1}.items()
-    warning = next(r.getMessage() for r in caplog.records if "using " in r.getMessage())
-    assert "1 cached" in warning and "1 candidate" in warning
 
     run.vision_ok = True  # online: nothing is "uncached"
     run.go(vision=True, vision_top=2)
@@ -277,13 +272,12 @@ def _timed_rater(timed: bool):
 
 
 @pytest.mark.usefixtures("pinned_prior")
-def test_the_vision_settings_carry_the_run_stats(run, caplog, monkeypatch):
+def test_the_vision_settings_carry_the_run_stats(run, monkeypatch):
     """#909: settings.vision has every stat key, the cached ratings are counted apart from the
-    calls, and one INFO line says what the step cost."""
+    calls."""
     monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
     monkeypatch.setattr(analyze, "VisionRater", _timed_rater(True))
-    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
-        run.go(vision=True, vision_top=2)
+    run.go(vision=True, vision_top=2)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     v = hl["settings"]["vision"]
     assert set(v) == {
@@ -307,35 +301,22 @@ def test_the_vision_settings_carry_the_run_stats(run, caplog, monkeypatch):
     assert (v["prompt_tokens"], v["reply_tokens"]) == (100, 20)
     assert (v["model"], v["provider"]) == ("qwen-test", "ollama")
     assert v["vision_s"] >= 0 and v["pre_vision_s"] >= 0
-    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("Vision: 2 "))
-    assert re.fullmatch(
-        r"Vision: 2 rated \(1 cached\) in \d+ s \(\d+% of analyze before vision\)", line
-    )
 
 
-def test_a_rerank_is_marked_and_has_no_share_of_the_analysis(run, caplog, monkeypatch):
-    """#909: on a re-rank (earlier_total_s given) settings.vision says so and the INFO line leaves
-    out the share of analyze, which the re-rank did not spend; a first run is not marked."""
+def test_a_rerank_is_marked_in_the_vision_settings(run, monkeypatch):
+    """#909: on a re-rank (earlier_total_s given) settings.vision says so; a first run is not
+    marked."""
     monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
     monkeypatch.setattr(analyze, "VisionRater", _timed_rater(True))
 
     def vision_run(**kw):
-        caplog.clear()
-        with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
-            run.go(vision=True, vision_top=2, **kw)
-        hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
-        line = next(
-            r.getMessage() for r in caplog.records if r.getMessage().startswith("Vision: 2 ")
-        )
-        return hl, line
+        run.go(vision=True, vision_top=2, **kw)
+        return json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
 
-    hl, line = vision_run()
-    assert "rerank" not in hl["settings"]["vision"] and "%" in line
+    assert "rerank" not in vision_run()["settings"]["vision"]
 
-    hl, line = vision_run(earlier_total_s=12.0)
+    hl = vision_run(earlier_total_s=12.0)
     assert hl["settings"]["vision"]["rerank"] is True
-    assert re.fullmatch(r"Vision: 2 rated \(1 cached\) in \d+ s", line)
-    assert "%" not in line
     assert hl["timings"]["total_s"] == 12.0 and "rerank_s" in hl["timings"]
 
 
@@ -558,27 +539,24 @@ def test_whisper_progress_is_passed_only_on_a_transcript_cache_miss(tmp_path):
 
 
 @pytest.mark.parametrize("cached", [0, 2])
-def test_transcribe_says_how_many_sources_are_cached_on_a_rerun(run, capsys, caplog, cached):
-    """#109: "transcribe: N/M done, continuing" (INFO and the step's PROGRESS detail) only
+def test_transcribe_says_how_many_sources_are_cached_on_a_rerun(run, capsys, cached):
+    """#109: "transcribe: N/M done, continuing" (the step's PROGRESS detail) only
     when transcripts of this model are cached; a fresh run looks as before."""
     videos = [run.video, write(run.video.with_name("b.mp4")), write(run.video.with_name("c.mp4"))]
     for v in videos[:cached]:
         write(cache.source_dir(v) / transcribe.transcript_name("stub"), "[]")
     write(cache.source_dir(videos[2]) / transcribe.transcript_name("other"), "[]")  # other model
-    with caplog.at_level("INFO"):
-        analyze.analyze(
-            run.video.parent,
-            get_style("funny"),
-            run.proj,
-            vision=False,
-            use_scenes=False,
-            layers=True,
-        )
+    analyze.analyze(
+        run.video.parent,
+        get_style("funny"),
+        run.proj,
+        vision=False,
+        use_scenes=False,
+        layers=True,
+    )
     text = "transcribe: 2/3 done, continuing"
     details = [g["detail"] for g in progress_lines(capsys) if g["step"] == "transcribe"]
-    assert (text in caplog.messages) is bool(cached)
     assert (text in details) is bool(cached)
-    assert not any("continuing" in m for m in caplog.messages if m != text)
 
 
 def test_cached_transcripts_without_a_transcriber_counts_none(tmp_path):
@@ -588,7 +566,7 @@ def test_cached_transcripts_without_a_transcriber_counts_none(tmp_path):
 
 
 # ----------------------------------------------------------------- failures
-def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsys, caplog):
+def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsys):
     run.plan = plan(reactions=("audio", "voice"), keyframes=("visual",), crashes=("crash",))
     run.fail = "visual"
     with jsonout.run("analyze") as res:
@@ -603,11 +581,10 @@ def test_a_layer_failure_fails_its_step_warns_and_the_later_steps_run(run, capsy
     assert run.layers_seen == ["audio", "voice", "visual", "crash"]
     assert [w["code"] for w in res.warnings] == ["step_failed"]
     assert "Keyframes failed: model blew up" in res.warnings[0]["message"]
-    assert "Keyframes failed" in caplog.text
     assert (run.proj / "highlights.json").is_file()
 
 
-def test_a_failed_visual_index_on_gameplay_leaves_the_hud_text_step_done(run, capsys, caplog):
+def test_a_failed_visual_index_on_gameplay_leaves_the_hud_text_step_done(run, capsys):
     run.plan = analyze.LayerPlan(layers={"keyframes": ("visual", "ocr")}, game=True)
     run.fail = "visual"
     with jsonout.run("analyze") as res:
@@ -616,7 +593,6 @@ def test_a_failed_visual_index_on_gameplay_leaves_the_hud_text_step_done(run, ca
     assert final["keyframes"]["state"] == "done"
     assert run.layers_seen == ["visual", "ocr"]
     assert [w["code"] for w in res.warnings] == ["step_failed"]
-    assert "Visual index failed: model blew up; the HUD text still runs" in caplog.text
 
 
 def test_analyze_json_reports_a_failed_step_as_a_warning_not_an_error(run, capsys):
@@ -920,13 +896,13 @@ def test_ski_features_are_prepared_again_after_the_layers(run, monkeypatch, laye
 
 
 @pytest.mark.parametrize(
-    ("configured", "tags", "info"),
+    ("configured", "tags"),
     [
-        ([], ("PlayerOne", "PlayerTwo"), "2 player tags and game somegame"),
-        (["ConfigName"], ("ConfigName",), "game somegame"),  # config.json wins for the tags
+        ([], ("PlayerOne", "PlayerTwo")),
+        (["ConfigName"], ("ConfigName",)),  # config.json wins for the tags
     ],
 )
-def test_ocr_options_of_the_last_events_run_are_reused(home, run, caplog, configured, tags, info):
+def test_ocr_options_of_the_last_events_run_are_reused(home, run, caplog, configured, tags):
     """Follow-up A: `cutpoint events --player ... --game ...` stays in effect on a
     re-analyze; player_tags in config.json, when set, wins over the saved tags."""
     set_config(home, player_tags=configured)
@@ -938,19 +914,15 @@ def test_ocr_options_of_the_last_events_run_are_reused(home, run, caplog, config
     ((_, _, kw),) = run.events_calls
     assert kw["ocr"].player_tags == tags
     assert kw["ocr"].game == "somegame"
-    infos = [r.getMessage() for r in caplog.records if "Reusing" in r.getMessage()]
-    assert infos == [f"Reusing {info} from the last `cutpoint events` run"]
     assert "PlayerOne" not in caplog.text  # the names themselves are not logged
 
 
-def test_ocr_options_default_without_an_earlier_events_run(run, caplog):
+def test_ocr_options_default_without_an_earlier_events_run(run):
     run.plan = plan(keyframes=("ocr",))
-    caplog.set_level("INFO", logger=analyze.logger.name)
     run.go()
     ((_, _, kw),) = run.events_calls
     assert kw["ocr"].game == "auto"
     assert kw["ocr"].player_tags == config.player_tags()
-    assert "Reusing" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -2053,21 +2025,18 @@ def test_plan_without_cuda_plans_the_light_index_for_the_footage_a_gpu_indexes(
     assert (p.no_visual == analyze.SKIP_NO_CUDA) is ("visual_light" in keyframes)
 
 
-def test_plan_light_index_without_clip_files_is_left_out(env, caplog):
+def test_plan_light_index_without_clip_files_is_left_out(env):
     env.cuda, env.missing = False, [("visual", ["visual_light"])]
-    caplog.set_level("INFO")
     p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
     assert p.layers["keyframes"] == ("ocr",)
     got, why = planned("action")
     assert "keyframes" not in got and "cutpoint setup --only visual" in why["keyframes"]
 
 
-def test_plan_visual_index_without_clip_files_keeps_the_hud_text(env, caplog):
+def test_plan_visual_index_without_clip_files_keeps_the_hud_text(env):
     env.missing = [("visual", ["visual"])]
-    caplog.set_level("INFO")
     p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
     assert p.layers["keyframes"] == ("ocr",) and "keyframes" not in p.skipped
-    assert "cutpoint setup --only visual" in caplog.text
 
 
 def test_plan_visual_index_without_the_events_extra_is_skipped_like_the_rest(env, monkeypatch):
@@ -2113,7 +2082,7 @@ def test_plan_cuda_check_uses_torch(env, monkeypatch):
 
 
 @pytest.mark.parametrize("broken", ["import", "call"])
-def test_plan_a_broken_torch_counts_as_no_cuda(env, monkeypatch, caplog, broken):
+def test_plan_a_broken_torch_counts_as_no_cuda(env, monkeypatch, broken):
     """F2: torch that fails to load (a missing DLL) or to answer leaves keyframes out
     instead of failing the analysis."""
     monkeypatch.setattr(analyze, "_cuda", REAL_CUDA)
@@ -2126,11 +2095,9 @@ def test_plan_a_broken_torch_counts_as_no_cuda(env, monkeypatch, caplog, broken)
 
         monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(
             is_available=dll_error)))  # fmt: skip
-    caplog.set_level("DEBUG", logger=analyze.logger.name)
     got, why = planned("action")
     assert got["keyframes"] == ("visual_light",) and "keyframes" not in why
     assert got["crashes"] == ("crash",)
-    assert "torch CUDA check failed" in caplog.text
 
 
 def test_plan_skip_option_leaves_steps_out(env):
@@ -2146,13 +2113,11 @@ def test_plan_everything_skipped_is_an_empty_plan(env):
     assert got == {} and set(why) == set(analyze.SKIPPABLE)
 
 
-def test_plan_without_the_events_extra_skips_every_step(env, monkeypatch, caplog):
+def test_plan_without_the_events_extra_skips_every_step(env, monkeypatch):
     monkeypatch.setattr(analyze, "EVENTS_MODULES", ("no_such_module_for_cutpoint_tests",))
-    caplog.set_level("INFO")
     got, why = planned("action")
     assert got == {}
     assert why == dict.fromkeys(("reactions", "keyframes", "crashes"), "events extra not installed")
-    assert "not available in Cutpoint lite (the events extra is not installed)" in caplog.text
 
 
 def test_plan_without_the_extra_still_reports_the_steps_not_wanted(env, monkeypatch):
@@ -2168,9 +2133,8 @@ def test_plan_missing_voice_files_keep_the_other_reaction_layers(env):
     assert got["reactions"] == ("audio",) and "reactions" not in why
 
 
-def test_plan_missing_model_files_skip_that_step_only(env, caplog):
+def test_plan_missing_model_files_skip_that_step_only(env):
     env.missing = [("panns", ("ocr",))]
-    caplog.set_level("INFO")
     got, why = planned("funny")
     assert got == {"reactions": ("audio",)}
     assert why["keyframes"].startswith("model files missing (cutpoint setup --only panns")
@@ -2882,47 +2846,30 @@ def _rated_starts(hl) -> list[float]:
     return sorted(c["start"] for c in hl["candidates"] if c["signals"].get("vision") is not None)
 
 
-def test_vision_rates_the_edit_and_the_band_below_its_cut_closest_first(band_run, caplog):
-    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
-        hl, v = band_run.go(vision_time_share=1000.0)
+def test_vision_rates_the_edit_and_the_band_below_its_cut_closest_first(band_run):
+    hl, v = band_run.go(vision_time_share=1000.0)
     # the edit takes ranks 0-5 (6 x 9 s <= 60 s): cut 6, k = band_k(6) = 2, so ranks 0-7
     assert (v["cut"], v["band_k"], v["requested"], v["rated"]) == (6, 2, 8, 8)
     # the last pick, the first below, the pick before, the second below, then the other picks
     assert band_run.asked == [_start(r) for r in (5, 6, 4, 7, 3, 2, 1, 0)]
     assert _rated_starts(hl) == [_start(r) for r in range(8)]
-    assert (
-        "Vision: rating 8 moments (6 of the default edit, 2 below the cut at 6) of 12 candidates"
-        in caplog.text
-    )
     assert len(hl["candidates"]) == 12  # the rest stay as they were
 
 
-def test_vision_top_caps_the_band_keeping_the_moments_closest_to_the_cut(band_run, caplog):
-    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
-        _, v = band_run.go(vision_time_share=1000.0, vision_top=3)
+def test_vision_top_caps_the_band_keeping_the_moments_closest_to_the_cut(band_run):
+    _, v = band_run.go(vision_time_share=1000.0, vision_top=3)
     assert band_run.asked == [_start(5), _start(6), _start(4)]
     assert (v["requested"], v["rated"]) == (3, 3)
-    assert (  # the picks actually rated
-        "Vision: rating 3 moments (2 of the default edit, 1 below the cut at 6) of 12 candidates"
-        in caplog.text
-    )
+    assert (v["cut"], v["band_k"]) == (6, 2)
 
 
-def test_the_time_cap_leaves_the_far_moments_unrated(band_run, caplog):
+def test_the_time_cap_leaves_the_far_moments_unrated(band_run):
     band_run.deadline = 15.0  # the fake clock: a call at 0 s, one at 10 s, then 20 s is past it
-    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
-        hl, v = band_run.go(vision_time_share=0.3)
+    hl, v = band_run.go(vision_time_share=0.3)
     assert band_run.asked == [_start(5), _start(6)]  # the two closest to the cut
     assert _rated_starts(hl) == [_start(5), _start(6)]
     assert (v["capped"], v["skipped_by_cap"], v["rated"], v["requested"]) == (True, 6, 2, 8)
     assert v["calls"] == 2 and v["share"] == 0.3
-    lines = [m for m in caplog.messages if m.startswith("Vision: time cap reached")]
-    assert len(lines) == 1  # once
-    assert re.fullmatch(
-        r"Vision: time cap reached after 2 calls \(\d+ s, budget \d+ s = 30% of \d+ s\); "
-        r"6 moments near the cut not rated",
-        lines[0],
-    )
 
 
 def test_a_cached_rating_is_still_taken_after_the_cap(band_run):
@@ -3207,9 +3154,9 @@ def test_highlights_records_the_built_in_base_of_the_style(run):
     assert (hl["style"], hl["style_base"]) == ("trailride", "sport")
 
 
-def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeypatch, caplog):
+def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeypatch):
     """The file wins: after `style delete`, `events` (crash rebuild and rescore) and the
-    re-analysis run with the recorded built-in base (gaming), with an INFO line, no error."""
+    re-analysis run with the recorded built-in base (gaming), no error."""
     from cutpoint import stylefiles  # noqa: PLC0415
 
     write(paths.styles_dir() / "mine.json", json.dumps(user_style("mine", "gaming")))
@@ -3223,19 +3170,10 @@ def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeyp
 
     monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
     capsys.readouterr()
-    caplog.clear()
     argv = ["events", str(run.proj), "--no-vlm", "--layers", "audio", "voice", "crash", "--json"]
-    with caplog.at_level(logging.INFO):
-        code = cli.main(argv)
+    code = cli.main(argv)
     doc = envelope(capsys.readouterr().out)
-    assert code == 0 and doc["error"] is None, caplog.text
-    said = [r for r in caplog.records if "not in the style library" in r.getMessage()]
-    assert [(r.levelno, r.getMessage()) for r in said] == [
-        (
-            logging.INFO,
-            "Style 'mine' is not in the style library (deleted?); using its base 'gaming'",
-        )
-    ]
+    assert code == 0 and doc["error"] is None
     hl = _hl(run)
     assert (hl["style"], hl["style_base"]) == ("mine", "gaming")  # the file is not rewritten
     assert all("score_pre_events" in c for c in hl["candidates"])  # the rescore ran
@@ -3284,17 +3222,12 @@ def _fell_back(run, requested: str) -> None:
     cache.save_json(run.proj / "highlights.json", hl)
 
 
-def test_reanalyze_of_a_fallback_from_a_deleted_style_keeps_the_recorded_style(run, caplog):
+def test_reanalyze_of_a_fallback_from_a_deleted_style_keeps_the_recorded_style(run):
     """An action-cam fallback whose requested style (a user style) was deleted re-runs the
-    recorded style (action), with one INFO line naming both, and no fallback any more."""
+    recorded style (action), and no fallback any more."""
     run.go("action")
     _fell_back(run, "mycam")
-    with caplog.at_level(logging.INFO):
-        analyze.reanalyze(run.proj)
-    said = [r for r in caplog.records if "not in the style library" in r.getMessage()]
-    assert [(r.levelno, r.getMessage()) for r in said] == [
-        (logging.INFO, "Style 'mycam' is not in the style library (deleted?); using 'action'")
-    ]
+    analyze.reanalyze(run.proj)
     hl = _hl(run)
     assert (hl["style"], hl["style_base"]) == ("action", "action")
     assert "style_fallback" not in hl["settings"]

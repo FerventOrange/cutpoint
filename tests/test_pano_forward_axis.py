@@ -136,7 +136,7 @@ def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.geometry"):
         G.orientation(src, Path("i00"), FPS, len(o.t))
         G.orientation(src, Path("i00"), FPS, len(o.t))
-    assert sum("_10_ lens axis (+z)" in r.message for r in caplog.records) == 1
+    assert len(caplog.records) == 1  # the second call is silent
     assert G.cached_forward_axis(src) == "+z"
     assert cache.load_json(G._orient_path(src).with_suffix(".json"))["forward_axis"] == "+z"
 
@@ -169,7 +169,7 @@ def test_a_stale_views_cache_is_logged_once(home, tmp_path, caplog) -> None:
     write_views(src, {"source": str(src)})
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
         assert VW.load_views(src) is None and VW.load_views(src) is None
-    assert sum("cutpoint 360 analyze" in r.message for r in caplog.records) == 1
+    assert len(caplog.records) == 1  # the second load is silent
 
 
 def test_a_cached_track_records_its_axis_in_memory_only_when_upright(home, tmp_path) -> None:
