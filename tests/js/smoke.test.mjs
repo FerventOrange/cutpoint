@@ -106,11 +106,13 @@ test('an expired session stops every poll: the banner says so once and no timer 
   const mocked = globalThis.setTimeout;
   globalThis.setTimeout = (fn, ms, ...args) => mocked((...a) => { fired.push(fn.name); fn(...a); }, ms, ...args);
   const base = makeProject();
-  // the source builds its proxy: the page polls the project every 2 s; the job poll fails once, then expires
-  const project = () => structuredClone({ ...base, sources: [{ ...base.sources[0], status: 'preparing', progress: 0.1, windows: [], pending: [] }] });
+  // the source builds its proxy: the page polls its sources every 2 s; the job poll fails once, then expires
+  const source = () => ({ ...base.sources[0], status: 'preparing', progress: 0.1, windows: [], pending: [] });
+  const project = () => structuredClone({ ...base, sources: [source()] });
   let jobs = reply(500, { detail: 'busy' });
   const page = await boot({ project: project(), routes: {
     'GET /api/projects/p1': () => project(),
+    'GET /api/projects/p1/sources': () => ({ sources: [source()] }),
     'POST /api/projects/p1/sources/s1/prepare': {},
     'GET /api/jobs': () => jobs,
   } });
@@ -120,7 +122,7 @@ test('an expired session stops every poll: the banner says so once and no timer 
   const step = async () => { t.mock.timers.tick(1000); await page.settle(); };
   await step();
   await step();
-  assert.ok(fired.includes('refreshProject'), 'the project is polled while the proxy builds');
+  assert.ok(fired.includes('pollSources'), 'the sources are polled while the proxy builds');
   jobs = EXPIRED;
   for (let i = 0; i < 10 && $('#banner').hidden; i++) await step();
   assert.match($('#banner').textContent, /server restarted or this link expired/);
@@ -128,7 +130,8 @@ test('an expired session stops every poll: the banner says so once and no timer 
   const asked = page.requests.length;
   fired.length = 0;
   for (let i = 0; i < 60; i++) await step();
-  assert.deepEqual(fired.filter((n) => n === 'refreshProject' || n === 'pollJobs'), [], 'no poll ran after the session ended');
+  const POLLERS = ['pollSources', 'refreshProject', 'pollJobs'];
+  assert.deepEqual(fired.filter((n) => POLLERS.includes(n)), [], 'no poll ran after the session ended');
   assert.equal(page.requests.length, asked);
   assert.match($('#banner').textContent, /server restarted or this link expired/, 'the message stays');
 });
