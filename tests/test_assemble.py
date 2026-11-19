@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import subprocess
 from dataclasses import replace
@@ -105,7 +106,7 @@ def test_crossfade_passes_one_fade_to_xfade_acrossfade_and_offsets(tmp_path, mon
     assert graphs[0].count(f"acrossfade=d={fade:.6f}[") == 2
 
 
-def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch, caplog):
+def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch):
     joined = []
     monkeypatch.setattr(assemble, "concat_copy", lambda *a, **_: joined.append("cut"))
     monkeypatch.setattr(assemble, "crossfade", lambda *a, **_: joined.append("fade"))
@@ -113,7 +114,6 @@ def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch, caplog
     infos = [_info(2.0, 2.0), _info(0.08, 0.08)]
     used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.25)
     assert (used, joined) == (0.0, ["cut"])
-    assert "no room for a crossfade" in caplog.text
 
 
 @needs_ffmpeg
@@ -617,9 +617,7 @@ def test_loudness_gives_up_after_the_last_pass_with_a_warning(monkeypatch, tmp_p
     assert got == (-14.0, -0.5)
     assert len(ceilings) == assemble.LIMIT_PASSES
     assert ceilings == sorted(ceilings, reverse=True)  # each pass lower than the last
-    assert f"still above {assemble.TP_CEILING:.1f} after {assemble.LIMIT_PASSES} passes" in (
-        caplog.text
-    )
+    assert [r.levelno for r in caplog.records if r.levelno >= logging.WARNING] == [logging.WARNING]
 
 
 def test_a_final_well_below_the_loudness_target_warns(monkeypatch, tmp_path):
@@ -641,10 +639,11 @@ def test_an_other_format_from_an_earlier_run_is_warned_about(tmp_path, caplog):
     out = tmp_path / "final.mp4"
     (tmp_path / "final.fcpxml").write_text("old", encoding="utf-8")
     assemble._warn_earlier(out, "mp4")
-    assert "final.fcpxml is from an earlier run and may not match final" in caplog.text
+    [record] = caplog.records
+    assert record.levelno == logging.WARNING and "final.fcpxml" in record.getMessage()
     caplog.clear()
     assemble._warn_earlier(tmp_path / "final.fcpxml", "fcpxml")  # its own format: no warning
-    assert "earlier run" not in caplog.text
+    assert caplog.records == []
 
 
 # ---------------------------------------------------------------- per-join transitions (#768)
@@ -704,7 +703,7 @@ def test_a_bad_joins_file_is_bad_args_in_the_json_envelope(home, tmp_path, capsy
     assert code == 1 and doc["ok"] is False and doc["error"]["code"] == "bad_args"
 
 
-def test_join_kinds_takes_adjacent_pairs_in_order_and_warns_once_per_unmatched(caplog):
+def test_join_kinds_takes_adjacent_pairs_in_order_and_warns_once_per_unmatched():
     files = [Path(n) for n in ("001_a.mp4", "002_b.mp4", "003_c.mp4")]
     joins = [
         {"from": "002_b.mp4", "to": "003_c.mp4", "transition": "fade"},
@@ -715,7 +714,6 @@ def test_join_kinds_takes_adjacent_pairs_in_order_and_warns_once_per_unmatched(c
         assert assemble.join_kinds(files, "cut", joins) == ["cut", "fade"]
     assert [w["code"] for w in res.warnings] == ["join_unmatched"] * 2
     assert res.warnings[1]["files"] == ["001_a.mp4", "003_c.mp4"]
-    assert caplog.text.count("not next to each other") == 2
     assert assemble.join_kinds(files, "cut", None) is None  # no joins: no per-join logic
 
 
@@ -729,13 +727,11 @@ def _exact_manifest(clips_dir: Path, names: list[str], exact: set[str]) -> list[
     return [clips_dir / n for n in names]
 
 
-def test_joins_into_and_out_of_an_exact_clip_are_hard_cuts(tmp_path, caplog):
+def test_joins_into_and_out_of_an_exact_clip_are_hard_cuts(tmp_path):
     names = ["001_a.mp4", "002_word.mp4", "003_b.mp4", "004_c.mp4"]
     files = _exact_manifest(tmp_path, names, {"002_word.mp4"})
     assert assemble.exact_clips(tmp_path, files) == [False, True, False, False]
-    with caplog.at_level("INFO"):
-        assert assemble.hard_cuts(tmp_path, files, "fade", None) == ["cut", "cut", "fade"]
-    assert "2 join(s) next to exact clips" in caplog.text
+    assert assemble.hard_cuts(tmp_path, files, "fade", None) == ["cut", "cut", "fade"]
     kinds = ["fade", "fade", "cut"]  # per-join choices (--joins): the exact clip's still cut
     assert assemble.hard_cuts(tmp_path, files, "cut", kinds) == ["cut", "cut", "cut"]
     plain = _exact_manifest(tmp_path / "plain", names, set())

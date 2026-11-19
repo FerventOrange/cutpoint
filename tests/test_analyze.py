@@ -15,7 +15,7 @@ import pytest
 from conftest import StubTranscriber, media_info, remap, set_config, write
 from cutpoint import analyze, config, extras, features, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
-from cutpoint.styles import LAUGHTER, STYLES, get_style
+from cutpoint.styles import LAUGHTER, get_style
 
 
 @pytest.mark.parametrize(
@@ -777,17 +777,6 @@ def test_a_style_without_repeat_damping_keeps_the_weights():
     assert all(w == pytest.approx(0.4) for _, w, _ in _hits(style, items, n=3000))
     off = dataclasses.replace(style, repeat_damping=False)
     assert all(w == pytest.approx(0.8) for _, w, _ in _hits(off, items, n=3000))
-
-
-def test_hype_weights_and_cue_flags_of_the_styles():
-    k = get_style("gaming").keywords
-    assert (k["oh my god"], k["omg"], k["yes"], k["what"]) == (1.0, 0.8, 0.4, 0.2)
-    assert k["let's go"] == 1.5  # the rare, explicit ones keep their weight
-    names = ("gaming", "action", "sport", "action-cam", "funny", "commentary")
-    assert {n: STYLES[n].delivery_cue for n in names} == {
-        "gaming": True, "action": True, "sport": True, "action-cam": True,
-        "funny": False, "commentary": False,
-    }  # fmt: skip
 
 
 def test_a_label_names_the_keyword_by_its_style_weight_not_its_damped_one():

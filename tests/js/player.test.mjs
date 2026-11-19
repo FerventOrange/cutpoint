@@ -421,3 +421,41 @@ test('Play sequence: a clip of another file inside the playing window\'s times p
   await s.wait();
   assert.equal(active.__media.currentTime, 12);
 });
+
+test('preview volume and mute apply to every preview video and are remembered per browser; the default stores nothing', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const open = async (storage = {}) => {
+    const page = await boot({ storage });
+    t.after(() => page.close());
+    const d = page.document;
+    const vids = [...d.querySelectorAll('video')];
+    return { page, d, vids, range: d.querySelector('.vol input[type=range]'), mute: d.querySelector('.vol button'), stored: () => page.window.localStorage.getItem('cutpoint.volume') };
+  };
+  let p = await open();
+  assert.ok(p.vids.length >= 2 && p.vids.some((v) => v.id === 'finalVideo'), 'the stage and the final video');
+  assert.equal(p.range.value, '100');
+  p.range.value = '40';
+  p.range.dispatchEvent(new p.page.window.Event('input'));
+  assert.deepEqual(JSON.parse(p.stored()), { volume: 0.4, muted: false });
+  p.mute.click();
+  assert.deepEqual(JSON.parse(p.stored()), { volume: 0.4, muted: true });
+  assert.equal(p.mute.getAttribute('aria-pressed'), 'true');
+  assert.ok(p.vids.every((v) => v.volume === 0.4 && v.muted), 'every preview video follows');
+  p.page.close();
+
+  p = await open({ 'cutpoint.volume': JSON.stringify({ volume: 0.25, muted: true }) });
+  assert.equal(p.range.value, '25', 'a reload keeps the setting');
+  assert.ok(p.vids.every((v) => v.volume === 0.25 && v.muted));
+  p.mute.click();
+  p.range.value = '100';
+  p.range.dispatchEvent(new p.page.window.Event('input'));
+  assert.equal(p.stored(), null, 'back at the default: nothing stored');
+  p.page.close();
+
+  for (const bad of ['not json', JSON.stringify({ volume: 7, muted: 'yes' })]) {
+    p = await open({ 'cutpoint.volume': bad });
+    assert.equal(p.range.value, '100', `unreadable setting ${bad}: the default`);
+    assert.ok(p.vids.every((v) => v.volume === 1 && !v.muted));
+    p.page.close();
+  }
+});

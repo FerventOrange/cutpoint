@@ -121,6 +121,50 @@ test('the 360 note is one permanent status region: its text changes, the node st
   assert.equal(m.$('#panoNote .pano-status'), status);
 });
 
+test('a 360 director preview is asked for once, its render is polled with Cancel, and a cancelled one is offered again', async (t) => {
+  const p = makeProject({ kind: '360' });
+  for (const c of p.highlights.candidates) c.pano = { path: `/p/${c.cli_id}.json`, reasons: [] };
+  let preview = null; // what the server lists for h001 now
+  const project = () => {
+    const now = structuredClone(p);
+    now.highlights.candidates[0].pano.preview = preview;
+    return now;
+  };
+  const posts = [];
+  const m = await open(t, { project: project(), routes: {
+    'GET /api/projects/p1': () => project(),
+    'POST /api/projects/p1/director/h001': (req) => { posts.push(req.path); preview = { state: 'rendering', progress: 0.5, seconds: 8 }; return {}; },
+    'POST /api/projects/p1/director/h001/cancel': (req) => { posts.push(req.path); preview = { state: 'cancelled' }; return {}; },
+  } });
+  const status = () => m.$('#panoNote .pano-status').textContent;
+  const button = () => m.$('#panoNote .pano-act button');
+  const gets = () => m.page.requests.filter((r) => r.method === 'GET' && r.path === '/api/projects/p1').length;
+  const tick = async (ms) => { t.mock.timers.tick(ms); await m.page.settle(); };
+  await tick(16); // the first status shows on the next frame
+  assert.deepEqual(posts, ['/api/projects/p1/director/h001'], 'the open moment\'s preview is asked for');
+  assert.equal(status(), 'Rendering the director view; the raw 360 preview plays meanwhile.');
+  assert.equal(m.$('#panoNote .pano-time').textContent, ' 50% (about 8 s of video)');
+  assert.equal(button().textContent, 'Cancel');
+
+  const before = gets();
+  preview = { state: 'rendering', progress: 0.75, seconds: 8 };
+  await tick(1000);
+  assert.equal(gets(), before + 1, 'a render is polled every second');
+  assert.equal(m.$('#panoNote .pano-time').textContent, ' 75% (about 8 s of video)');
+  assert.equal(posts.length, 1, 'polling does not ask again');
+
+  await m.click(button());
+  assert.deepEqual(posts.slice(1), ['/api/projects/p1/director/h001/cancel']);
+  assert.equal(status(), 'Raw 360 preview: the director view was cancelled.');
+  const stopped = gets();
+  await tick(5000);
+  assert.equal(gets(), stopped, 'a cancelled render is not polled');
+
+  await m.click(button());
+  assert.equal(button().textContent, 'Cancel', 'Render director view asks again');
+  assert.deepEqual(posts.slice(2), ['/api/projects/p1/director/h001']);
+});
+
 // ---------- 360 empty state ----------
 
 for (const [n, text] of [[2, '360 footage: 2 recordings found'], [1, '360 footage: 1 recording found'], [0, 'No 360 recordings found']]) {

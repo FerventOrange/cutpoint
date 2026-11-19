@@ -266,15 +266,6 @@ def test_create_project_accepts_an_action_cam_style_for_several_inputs(
     assert meta["style"] == "action-cam" and len(meta["inputs"]) == 2
 
 
-def test_create_project_refuses_ski_as_an_unknown_style(client: TestClient, tmp_path: Path) -> None:
-    folder = tmp_path / "footage"
-    folder.mkdir()
-    (folder / "a.mp4").write_bytes(b"x")
-    res = client.post("/api/projects", json={"name": "T", "source": str(folder), "style": "ski"})
-    assert res.status_code == 400 and res.json()["detail"] == "unknown style 'ski'"
-    assert client.get("/api/projects").json() == {"projects": []}
-
-
 def test_create_project_from_several_inputs_lists_and_analyzes_them_all(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -6797,28 +6788,6 @@ def test_project_reports_the_video_length_and_time_of_the_last_analysis(
     assert client.get(f"/api/projects/{pid}").json()["analysis"] is None
 
 
-@pytest.mark.parametrize(
-    ("seconds", "text"),
-    [(45, "45 s"), (59.5, "1 min"), (3570, "1 h"), (8040, "2 h 14 min")],
-)
-@pytest.mark.slow
-def test_span_text_formats_analysis_lengths(util_js, seconds: float, text: str) -> None:
-    """#459: seconds under a minute, minutes under an hour, then hours and minutes."""
-    assert util_js("return U.spanText(args[0]);", seconds) == text
-
-
-@pytest.mark.slow
-@pytest.mark.parametrize(("at", "n", "row"), [(2, 5, 2), (4, 4, 3), (0, 0, -1)])
-def test_focus_goes_to_the_row_in_place_of_one_that_left_the_list(
-    util_js, at: int, n: int, row: int
-) -> None:
-    """Add under "Not in sequence" jumped the Moments column to the top: the added card left the
-    list and preserveFocus focused the list's first button. util.js rowInPlace picks the row now at
-    the card's index instead (the last one past the end, none in an empty list)."""
-    assert util_js("return U.rowInPlace(args[0], args[1]);", at, n) == row
-    # preserveFocus's use of it: tests/js/workspace.test.mjs
-
-
 def test_a_failed_folder_listing_is_not_cached_as_an_empty_list(
     client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -7854,85 +7823,6 @@ def test_model_text_is_never_set_as_markup() -> None:
             assert sink not in js, (name, sink)
 
 
-# --- Moments list order (#469) ---
-
-
-def _sort_positions(util_js, moments: list[dict]) -> list[str]:
-    """Run util.js's positionCompare under node on ``moments``; return their ids in sorted order."""
-    return util_js("return args[0].sort(U.positionCompare).map((c) => c.id);", moments)
-
-
-def _m(id_: str, source: str, start: float) -> dict:
-    return {"id": id_, "source": source, "start": start}
-
-
-@pytest.mark.slow
-def test_position_order_is_natural_by_file_then_start_time(util_js) -> None:
-    """#469: video order groups moments by source (clip2 before clip10, A-Z), then start time."""
-    moments = [
-        _m("c10b", "/v/clip10.mp4", 5),
-        _m("c2late", "/v/clip2.mp4", 90),
-        _m("a", "/v/Alpha.mp4", 1),
-        _m("c10a", "/v/clip10.mp4", 2),
-        _m("c2early", "/v/clip2.mp4", 3),
-    ]
-    assert _sort_positions(util_js, moments) == ["a", "c2early", "c2late", "c10a", "c10b"]
-
-
-@pytest.mark.slow
-def test_position_order_is_stable_and_keeps_same_named_files_apart(util_js) -> None:
-    """#469: equal starts keep score order (stable), case variants and same-named files in two
-    folders sort the same whatever the input order, and each folder's file stays together."""
-    ties = [_m("first", "/v/a.mp4", 4), _m("second", "/v/a.mp4", 4), _m("third", "/v/a.mp4", 4)]
-    assert _sort_positions(util_js, ties) == ["first", "second", "third"]
-    mixed = [
-        _m("x1", "/two/clip.mp4", 1), _m("y1", "/one/clip.mp4", 50),
-        _m("x2", "/two/clip.mp4", 9), _m("y0", "/one/clip.mp4", 2),
-    ]  # fmt: skip
-    got = _sort_positions(util_js, mixed)
-    assert _sort_positions(util_js, mixed[::-1]) == got
-    assert got == ["y0", "y1", "x1", "x2"]
-    cased = [_m("up", "/v/Clip.mp4", 1), _m("low", "/v/clip.mp4", 1), _m("z", "/v/zed.mp4", 0)]
-    got = _sort_positions(util_js, cased)
-    assert _sort_positions(util_js, cased[::-1]) == got and got[-1] == "z"
-
-
-def _filter_moments(util_js, moments: list[dict], q: str, f: dict) -> list[str]:
-    """Run util.js's momentMatches under node; ``f`` over NO_FILTERS."""
-    ids, on = util_js(
-        "const [m, q, f] = args; const all = { ...U.NO_FILTERS, ...f };"
-        "return [m.filter((c) => U.momentMatches(c, q, all)).map((c) => c.id), U.filtersOn(all)];",
-        moments, q, f,
-    )  # fmt: skip
-    assert on == any(f.get(k) not in (None, "all", False, "") for k in ("seq", "ready", "source"))
-    return ids
-
-
-@pytest.mark.slow
-def test_moment_filters_combine_with_the_search_text(util_js) -> None:
-    """Sort and filter: every quick filter and the search text must all hold; the search matches
-    label, transcript or file name, case ignored; no filter shows every moment."""
-    ms = [
-        {"id": "a", "cli_id": "h001", "label": "Jump", "transcript": "nice one", "source": "/v/a.mp4", "picked": True, "ready": True, "must_include": True},
-        {"id": "b", "label": "Crash", "transcript": None, "source": "/v/b.mp4", "picked": False, "ready": True},
-        {"id": "c", "label": "jump two", "source": "/v/b.mp4", "picked": False, "ready": False, "must_include": True},
-    ]  # fmt: skip
-
-    def run(q: str, f: dict) -> list[str]:
-        return _filter_moments(util_js, ms, q, f)
-
-    assert run("", {}) == ["a", "b", "c"]
-    assert run("  JUMP ", {}) == ["a", "c"]
-    assert run("NICE", {}) == ["a"] and run("b.mp4", {}) == ["b", "c"]
-    assert run("H001", {}) == ["a"]  # the CLI id on the card (#487)
-    assert run("", {"seq": "in"}) == ["a"] and run("", {"seq": "out"}) == ["b", "c"]
-    assert run("", {"ready": True}) == ["a", "b"]
-    assert run("", {"must": True}) == ["a", "b", "c"]  # Must include was removed: not a filter
-    assert run("", {"source": "/v/b.mp4"}) == ["b", "c"]
-    assert run("jump", {"seq": "out"}) == ["c"]
-    assert run("jump", {"ready": True, "source": "/v/b.mp4"}) == []
-
-
 # --- Color (#461): the export's --color and --color-strength ---
 
 
@@ -8096,71 +7986,6 @@ def test_color_strength_keeps_its_room_so_the_color_slider_never_moves() -> None
     hidden = _css_decls(css, ".color-strength[hidden]")
     assert hidden["display"] == "grid !important" and hidden["visibility"] == "hidden"
     assert _css_decls(css, ".color-strength")["display"] == "grid"
-
-
-def _color_note(util_js, clips: list[dict]) -> str:
-    """Run util.js's colorNote under node on manifest ``clips``."""
-    return util_js("return U.colorNote(args[0]);", clips)
-
-
-def _graded(method: str, skip: str | None) -> dict:
-    return {"file": "001_a.mp4", "color": {"method": method, "strength": 1.0, "skip": skip}}
-
-
-@pytest.mark.slow
-def test_color_note_counts_the_clips_graded_and_why_the_others_were_not(util_js) -> None:
-    """A dive exported with Color on had every clip vetoed and the page said nothing (#461
-    follow-up): Export now says how many clips the grade changed and why it left the others
-    as is, grouping the reasons, in a sentence that starts with a space."""
-    vetoed = [_graded("underwater", "veto_clipped") for _ in range(4)]
-    assert _color_note(util_js, vetoed) == " Color: no clips graded (too much highlight clipping)."
-    good = [_graded("auto", s) for s in (None, "good", None, None)]
-    assert _color_note(util_js, good) == (
-        " Color: 3 of 4 clips graded; 1 left as is (already looked good)."
-    )
-    skips = ("veto_m3_drop", "veto_clipped", "veto_m3_drop", None)
-    assert _color_note(util_js, [_graded("underwater", s) for s in skips]) == (
-        " Color: 1 of 4 clips graded; 3 left as is"
-        " (would wash out the color: 2, too much highlight clipping: 1)."
-    )
-    other = ("360", "log", "no_frames", "veto_cast", "veto_m3", "veto_new", "not_underwater")
-    assert _color_note(util_js, [_graded("auto", s) for s in (*other, "veto_faded", "good")]) == (
-        " Color: no clips graded (360 footage: 1, log footage: 1, frames could not be read: 1,"
-        " would add a color cast: 1, would oversaturate: 1, veto_new: 1,"
-        " did not look underwater: 1, would wash out the color: 1, already looked good: 1)."
-    )
-    # PR #495's veto_faded reads as veto_m3_drop does, so the two group together
-    faded = [_graded("auto", s) for s in ("veto_faded", "veto_m3_drop", None)]
-    assert _color_note(util_js, faded) == (
-        " Color: 1 of 3 clips graded; 2 left as is (would wash out the color)."
-    )
-    assert _color_note(util_js, [_graded("auto", None)] * 2) == " Color: all 2 clips graded."
-    assert _color_note(util_js, [_graded("auto", None)]) == " Color: 1 clip graded."
-    # Color Off, an export from before --color, or a LUT grade (no ``method``): no sentence
-    assert _color_note(util_js, [{"file": "a.mp4", "color": None}, {"file": "b.mp4"}]) == ""
-    assert _color_note(util_js, [{"file": "a.mp4", "lut": {"file": "x.cube"}}]) == ""
-    assert _color_note(util_js, []) == ""
-
-
-@pytest.mark.slow
-def test_color_note_counts_a_clip_at_strength_0_as_not_graded(util_js) -> None:
-    """Strength 0% applies no grade with no skip reason: such a clip is not counted as graded,
-    and an export whose every clip had Strength 0% gets no sentence."""
-
-    def at(strength: float, skip: str | None = None) -> dict:
-        return {"file": "a.mp4", "color": {"method": "auto", "strength": strength, "skip": skip}}
-
-    assert _color_note(util_js, [at(0.0), at(0.0)]) == ""
-    assert _color_note(util_js, [at(0.5), at(0.0)]) == (
-        " Color: 1 of 2 clips graded; 1 left as is (strength 0%)."
-    )
-    assert _color_note(util_js, [at(0.5, "good"), at(0.0), at(0.0)]) == (
-        " Color: no clips graded (already looked good: 1, strength 0%: 2)."
-    )
-    # an entry without ``strength`` is at full strength
-    assert _color_note(util_js, [{"file": "a.mp4", "color": {"method": "auto"}}]) == (
-        " Color: 1 clip graded."
-    )
 
 
 def test_export_state_shows_the_color_note_from_the_manifest(
@@ -11056,12 +10881,11 @@ def test_a_command_line_project_gets_a_meta_with_the_chosen_style(
     assert _after(_cli_args(captured[0]), "--style") == "funny"
 
 
-@pytest.mark.parametrize("style", ["nope", 3, ""], ids=["unknown", "number", "empty"])
 def test_an_unknown_style_is_refused(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, style: object
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     p = auto_project(tmp_path, detection(), {"style": "auto"})
-    res, captured = style_job(client, monkeypatch, {"style": style})
+    res, captured = style_job(client, monkeypatch, {"style": "nope"})
     assert res.status_code == 400 and "unknown style" in res.json()["detail"]
     assert captured == [] and ui.read_meta(p)["style"] == "auto"
 

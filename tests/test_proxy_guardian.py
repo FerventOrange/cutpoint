@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import io
 import json
 import os
@@ -115,22 +114,6 @@ def _wait_for(path: Path, process: subprocess.Popen[bytes]) -> None:
             break
         time.sleep(0.02)
     assert path.exists(), "daemon fixture did not reach its ready point"
-
-
-def _stored_snapshot(state_path: Path) -> dict[str, str]:
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    key, manifest_raw = next(
-        (key, value)
-        for key, value in state.items()
-        if key.startswith("cutpoint:") and key.endswith("-manifest")
-    )
-    manifest = json.loads(manifest_raw)
-    prefix = key[: -len("manifest")]
-    encoded = "".join(
-        state[f"{prefix}generation-{manifest['generation']}-{index}"]
-        for index in range(manifest["count"])
-    )
-    return json.loads(base64.b64decode(encoded).decode("utf-8"))
 
 
 @pytest.mark.slow

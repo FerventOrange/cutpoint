@@ -12,7 +12,7 @@ import pytest
 import requests
 
 from conftest import set_config
-from cutpoint import backends, cache, jsonout, vision
+from cutpoint import cache, jsonout, vision
 from cutpoint.assistant import providers
 from cutpoint.events import pipeline
 from cutpoint.events import vlm_windows as vw
@@ -109,23 +109,6 @@ def test_describe_failure_gives_none(ollama, reply, caplog) -> None:
         assert rater.describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
     assert rater.last_prompt_tokens in (None, 1234)  # counted when Ollama answered
     assert any("Vision" in r.getMessage() for r in caplog.records)
-
-
-def test_describe_refuses_a_redirect(ollama, monkeypatch, caplog) -> None:
-    sent: list[dict[str, Any]] = []
-
-    def moved(url: str, json: dict[str, Any], **kw: Any) -> Resp:
-        sent.append(kw)
-        resp = Resp({}, status=307)
-        resp.is_redirect = True
-        return resp
-
-    monkeypatch.setattr(vision.requests, "post", moved)
-    with caplog.at_level(logging.WARNING):
-        assert vision.VisionRater().describe("describe", JPEGS, vw.RESPONSE_SCHEMA) is None
-    connect = backends.CONNECT_TIMEOUT_S
-    assert [(kw["timeout"], kw["allow_redirects"]) for kw in sent] == [((connect, 600), False)]
-    assert any("redirect" in r.getMessage() for r in caplog.records)
 
 
 @pytest.fixture

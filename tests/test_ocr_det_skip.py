@@ -11,8 +11,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from conftest import set_config, write
-from cutpoint import cli, edit
+from conftest import set_config
+from cutpoint import edit
 from cutpoint.events import cli as events_cli
 from cutpoint.events import killfeed, ocr_raw
 from cutpoint.events.killfeed import OcrParams, OcrReader, scaled
@@ -164,65 +164,14 @@ def test_resumed_skip_read_equals_the_whole_one(tmp_path: Path, monkeypatch) -> 
 # ----------------------------------------------------------------- config and flags
 
 
-@pytest.mark.parametrize(
-    ("data", "want"),
-    [({}, False), ({"ocr_det_skip": None}, False), ({"ocr_det_skip": True}, True)],
-)
-def test_config_default_is_off_unless_true(home, data, want) -> None:
-    from cutpoint import config  # noqa: PLC0415
-
-    set_config(home, **data)
-    assert config.ocr_det_skip_default() is want
-
-
-def test_config_value_must_be_a_boolean(home) -> None:
-    from cutpoint import config  # noqa: PLC0415
-
-    set_config(home, ocr_det_skip="yes")
-    with pytest.raises(ValueError, match=r"ocr_det_skip must be true or false"):
-        config.get_config()
-
-
-FLAG_CASES = [
-    (None, [], False),
-    (False, ["--ocr-det-skip"], True),
-    (True, [], True),
-    (True, ["--no-ocr-det-skip"], False),
-]
-
-
-@pytest.mark.parametrize(("cfg", "argv", "want"), FLAG_CASES)
-def test_analyze_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want) -> None:
-    import cutpoint.analyze  # noqa: PLC0415
-
-    if cfg is not None:
-        set_config(home, ocr_det_skip=cfg)
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(
-        cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["ocr_det_skip"])
-    )
-    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
-    assert seen == [want]
-
-
-@pytest.mark.parametrize(("cfg", "argv", "want"), FLAG_CASES)
-def test_edit_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want) -> None:
-    if cfg is not None:
-        set_config(home, ocr_det_skip=cfg)
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["ocr_det_skip"]))
-    assert cli.main(["edit", str(video), "--out", "p", *argv]) == 0
-    assert seen == [want]
-
-
 class _Ran(Exception):
     """run_events was reached."""
 
 
-@pytest.mark.parametrize(("cfg", "argv", "want"), FLAG_CASES)
-def test_events_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want) -> None:
+@pytest.mark.parametrize(
+    ("cfg", "argv"), [(None, ["--ocr-det-skip"]), (True, [])], ids=["flag", "config"]
+)
+def test_events_hands_the_option_on(home, tmp_path, monkeypatch, cfg, argv) -> None:
     import argparse  # noqa: PLC0415
 
     if cfg is not None:
@@ -238,7 +187,7 @@ def test_events_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, wa
     events_cli.add_arguments(parser)
     with pytest.raises(_Ran):
         events_cli.run_args(parser.parse_args([str(tmp_path), *argv]))
-    assert seen == [want]
+    assert seen == [True]
 
 
 @pytest.mark.parametrize("on", [True, False])

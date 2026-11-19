@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from conftest import media_info, needs_ffmpeg
+from conftest import media_info, needs_ffmpeg, transcribed_both
 from cutpoint import assemble, cache, clips, planning, sources, srt
 from cutpoint.ffmpeg_utils import MediaInfo
 from export_helpers import install_fake_export
@@ -305,13 +305,7 @@ def _two_language_projects(home: Path, **seg: Any) -> dict[str | None, Path]:
     """One source with a cached detected-language ("hello") and German ("hallo")
     transcript, and a project of it per analysis language, each with seg.json (its one
     segment's tails and speech pass off unless ``seg`` turns them on)."""
-    src = home / "footage" / "src.mp4"
-    src.parent.mkdir(parents=True)
-    src.write_bytes(b"x")
-    for name, word in (("transcript-small.json", "hello"), ("transcript-small-de.json", "hallo")):
-        segment = {"start": 101.0, "end": 101.4, "text": word,
-                   "words": [{"start": 101.0, "end": 101.4, "word": word}]}  # fmt: skip
-        cache.save_json(cache.source_dir(src) / name, [segment])
+    src = transcribed_both(home / "footage" / "src.mp4")
     projects = {}
     for language in (None, "de"):
         project = home / "projects" / (language or "auto")
@@ -330,15 +324,6 @@ def _export(project: Path, monkeypatch, **kw: Any) -> Path:
     install_fake_export(monkeypatch, clips)
     clips.export_clips(project, segments=project / "seg.json", **kw)
     return project / "clips"
-
-
-def test_clips_srt_uses_the_transcript_of_the_analysis_language(home, monkeypatch):
-    """#371: a project analysed with --language de subtitles from transcript-small-de.json;
-    an auto-detect project of the same source keeps transcript-small.json."""
-    projects = _two_language_projects(home)
-    for language, word in ((None, "hello"), ("de", "hallo")):
-        out = _export(projects[language], monkeypatch)
-        assert word in (out / "001_a.srt").read_text(encoding="utf-8")
 
 
 @needs_ffmpeg

@@ -6,8 +6,10 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, NamedTuple
 
 import pytest
 
@@ -31,27 +33,120 @@ def test_player_tags_normalised(home, value, want):
     assert config.player_tags() == want
 
 
-# -- vision ---------------------------------------------------------------------------
+# -- boolean options: vision, visual_index, vision_detect_all, ocr_det_skip -------------------
 
 
-@pytest.mark.parametrize(
-    ("data", "want"),
-    [({}, None), ({"vision": None}, None), ({"vision": True}, True), ({"vision": False}, False)],
-)
-def test_vision_is_none_unless_set(home, data, want):
-    set_config(home, **data)
-    assert config.get_config().vision is want
+class Option(NamedTuple):
+    """A true/false option of config.json that ``--<flag>`` / ``--no-<flag>`` override."""
+
+    key: str
+    read: Callable[[], Any]  # its reader in cutpoint.config
+    unset: Any  # what the reader gives when config.json has no value
+    flag: str
+    no_flag: str
+
+
+OPTIONS = [
+    Option("vision", lambda: config.get_config().vision, None, "--vision", "--no-vision"),
+    Option(
+        "visual_index",
+        config.visual_index_default,
+        False,
+        "--visual-index",
+        "--no-visual-index",
+    ),
+    Option(
+        "vision_detect_all",
+        config.vision_detect_all_default,
+        False,
+        "--vision-detect-all",
+        "--no-vision-detect-all",
+    ),
+    Option(
+        "ocr_det_skip",
+        config.ocr_det_skip_default,
+        False,
+        "--ocr-det-skip",
+        "--no-ocr-det-skip",
+    ),
+]
+OPTION_IDS = [o.key for o in OPTIONS]
+# the options the edit command hands on (its --vision is covered through analyze)
+EDIT_OPTIONS = [o for o in OPTIONS if o.key != "vision"]
+
+
+def _set(home: Path, opt: Option, value: Any) -> None:
+    if value is not None:
+        set_config(home, **{opt.key: value})
+
+
+def _handed_on(monkeypatch, command: str, video: Path, argv: list[str], kw: str) -> list:
+    """What ``cutpoint <command> VIDEO ARGV`` hands to its work as ``kw``, the work stubbed."""
+    seen: list = []
+    if command == "analyze":
+        import cutpoint.analyze  # noqa: PLC0415
+
+        monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **k: seen.append(k[kw]))
+    else:
+        monkeypatch.setattr(cli, "run_edit", lambda *a, **k: seen.append(k[kw]))
+    assert cli.main([command, str(video), "--out", "p", *argv]) == 0
+    return seen
+
+
+@pytest.mark.parametrize("opt", OPTIONS, ids=OPTION_IDS)
+def test_option_is_off_unless_true(home, opt):
+    for data, want in (
+        ({}, opt.unset),
+        ({opt.key: None}, opt.unset),
+        ({opt.key: True}, True),
+        ({opt.key: False}, False),
+    ):
+        set_config(home, **data)
+        config.get_config.cache_clear()
+        assert opt.read() is want, data
 
 
 @pytest.mark.parametrize("value", ["true", 1, [True]])
-def test_vision_must_be_a_boolean(home, value):
-    set_config(home, vision=value)
-    with pytest.raises(ValueError, match=r"vision must be true or false"):
+@pytest.mark.parametrize("opt", OPTIONS, ids=OPTION_IDS)
+def test_option_must_be_a_boolean(home, opt, value):
+    set_config(home, **{opt.key: value})
+    with pytest.raises(ValueError, match=rf"{opt.key} must be true or false"):
         config.get_config()
 
 
-def test_vision_time_share_defaults_to_0_3_and_accepts_0_or_more(home):
-    assert config.get_config().vision_time_share == config.vision_time_share() == 0.3
+@pytest.mark.parametrize(
+    ("cfg", "use", "want"),
+    [
+        (None, None, "unset"),
+        (False, "flag", True),
+        (True, None, True),
+        (True, "no_flag", False),  # the flag wins over the config
+    ],
+)
+@pytest.mark.parametrize("opt", OPTIONS, ids=OPTION_IDS)
+def test_analyze_option_flag_wins_else_config(home, tmp_path, monkeypatch, opt, cfg, use, want):
+    _set(home, opt, cfg)
+    argv = [getattr(opt, use)] if use else []
+    video = write(tmp_path / "a.mp4")
+    seen = _handed_on(monkeypatch, "analyze", video, argv, opt.key)
+    assert seen == [opt.unset if want == "unset" else want]
+
+
+@pytest.mark.parametrize("cfg", [None, True], ids=["flag", "config"])
+@pytest.mark.parametrize("opt", EDIT_OPTIONS, ids=[o.key for o in EDIT_OPTIONS])
+def test_edit_hands_the_option_on(home, tmp_path, monkeypatch, opt, cfg):
+    """The flag and the config value reach ``edit`` (the same resolver as ``analyze``)."""
+    _set(home, opt, cfg)
+    video = write(tmp_path / "a.mp4")
+    seen = _handed_on(monkeypatch, "edit", video, [] if cfg else [opt.flag], opt.key)
+    assert seen == [True]
+
+
+# -- vision ---------------------------------------------------------------------------
+
+
+def test_vision_time_share_accepts_0_or_more(home):
+    assert config.get_config().vision_time_share == config.vision_time_share()
     for value, want in ((0, 0.0), (0.5, 0.5), (2, 2.0)):  # 0 allows one model call
         set_config(home, vision_time_share=value)
         assert config.vision_time_share() == want
@@ -75,88 +170,6 @@ def test_vision_is_read_from_cutpoint_config(home, tmp_path, monkeypatch):
     monkeypatch.setenv("CUTPOINT_CONFIG", str(other))
     config.get_config.cache_clear()
     assert config.get_config().vision is True
-
-
-@pytest.mark.parametrize(
-    ("cfg", "argv", "vision"),
-    [
-        (None, [], None),
-        (False, ["--vision"], True),
-        (True, [], True),
-        (True, ["--no-vision"], False),
-    ],
-)
-def test_analyze_vision_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, vision):
-    import cutpoint.analyze  # noqa: PLC0415
-
-    if cfg is not None:
-        set_config(home, vision=cfg)
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["vision"]))
-    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
-    assert seen == [vision]
-
-
-# -- visual_index ---------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("data", "want"),
-    [({}, False), ({"visual_index": None}, False), ({"visual_index": True}, True)],
-)
-def test_visual_index_default_is_off_unless_true(home, data, want):
-    set_config(home, **data)
-    assert config.visual_index_default() is want
-
-
-@pytest.mark.parametrize("value", ["true", 1, [True]])
-def test_visual_index_must_be_a_boolean(home, value):
-    set_config(home, visual_index=value)
-    with pytest.raises(ValueError, match=r"visual_index must be true or false"):
-        config.get_config()
-
-
-@pytest.mark.parametrize(
-    ("cfg", "argv", "want"),
-    [
-        (None, [], False),
-        (False, ["--visual-index"], True),
-        (True, [], True),
-        (True, ["--no-visual-index"], False),
-    ],
-)
-def test_analyze_visual_index_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want):
-    import cutpoint.analyze  # noqa: PLC0415
-
-    if cfg is not None:
-        set_config(home, visual_index=cfg)
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(
-        cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["visual_index"])
-    )
-    assert cli.main(["analyze", str(video), "--out", "p", *argv]) == 0
-    assert seen == [want]
-
-
-@pytest.mark.parametrize(
-    ("cfg", "argv", "want"),
-    [
-        (None, [], False),
-        (True, [], True),
-        (True, ["--no-visual-index"], False),
-        (None, ["--visual-index"], True),
-    ],
-)
-def test_edit_visual_index_flag_wins_else_config(home, tmp_path, monkeypatch, cfg, argv, want):
-    if cfg is not None:
-        set_config(home, visual_index=cfg)
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["visual_index"]))
-    assert cli.main(["edit", str(video), "--out", "p", *argv]) == 0
-    assert seen == [want]
 
 
 # -- pano_config ----------------------------------------------------------------------
@@ -394,55 +407,6 @@ def test_analyze_and_edit_hand_the_context_on(home, tmp_path, monkeypatch):
 # -- vision_detect_all (#1069) ----------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("data", "want"),
-    [({}, False), ({"vision_detect_all": None}, False), ({"vision_detect_all": True}, True)],
-)
-def test_vision_detect_all_default_is_off_unless_true(home, data, want):
-    set_config(home, **data)
-    assert config.vision_detect_all_default() is want
-
-
-@pytest.mark.parametrize("value", ["true", 1, [True]])
-def test_vision_detect_all_must_be_a_boolean(home, value):
-    set_config(home, vision_detect_all=value)
-    with pytest.raises(ValueError, match=r"vision_detect_all must be true or false"):
-        config.get_config()
-
-
-# (config vision_detect_all, config vision, argv) -> what the command hands on
-DETECT_ALL_CASES = [
-    (None, None, [], False),
-    (None, None, ["--vision-detect-all"], True),
-    (True, None, [], True),  # the config's default applies
-    (True, None, ["--no-vision-detect-all"], False),  # the flag wins over the config
-    (False, None, ["--vision-detect-all"], True),
-    (None, None, ["--vision-detect-all", "--no-vision"], False),  # --no-vision wins
-    (True, False, [], False),  # "vision": false wins over the config's option
-    (None, False, ["--vision-detect-all"], False),
-]
-
-
-@pytest.mark.parametrize(("cfg", "vision", "argv", "want"), DETECT_ALL_CASES)
-def test_analyze_vision_detect_all_flag_wins_else_config(
-    home, tmp_path, monkeypatch, cfg, vision, argv, want
-):
-    import cutpoint.analyze  # noqa: PLC0415
-
-    set_config(
-        home,
-        **({} if cfg is None else {"vision_detect_all": cfg}),
-        **({} if vision is None else {"vision": vision}),
-    )
-    video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(
-        cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["vision_detect_all"])
-    )
-    assert cli.main(["analyze", str(video), "--out", "p", "--style", "auto", *argv]) == 0
-    assert seen == [want]
-
-
 def test_analyze_vision_detect_all_is_for_auto_only(home, tmp_path, monkeypatch):
     import cutpoint.analyze  # noqa: PLC0415
 
@@ -456,33 +420,30 @@ def test_analyze_vision_detect_all_is_for_auto_only(home, tmp_path, monkeypatch)
     assert seen == [False]
 
 
-@pytest.mark.parametrize(("cfg", "vision", "argv", "want"), DETECT_ALL_CASES)
-def test_edit_vision_detect_all_flag_wins_else_config(
-    home, tmp_path, monkeypatch, cfg, vision, argv, want
-):
+@pytest.mark.parametrize(
+    ("cfg", "vision", "argv"),
+    [
+        (None, None, ["--vision-detect-all", "--no-vision"]),  # --no-vision wins
+        (True, False, []),  # "vision": false wins over the config's option
+        (None, False, ["--vision-detect-all"]),
+    ],
+)
+def test_vision_detect_all_yields_to_vision_off(home, tmp_path, monkeypatch, cfg, vision, argv):
     set_config(
         home,
         **({} if cfg is None else {"vision_detect_all": cfg}),
         **({} if vision is None else {"vision": vision}),
     )
     video = write(tmp_path / "a.mp4")
-    seen: list = []
-    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["vision_detect_all"]))
-    assert cli.main(["edit", str(video), "--out", "p", *argv]) == 0
-    assert seen == [want]
+    assert _handed_on(monkeypatch, "analyze", video, argv, "vision_detect_all") == [False]
 
 
-@pytest.mark.parametrize(("cfg", "vision", "argv", "want"), DETECT_ALL_CASES)
-def test_detect_vision_detect_all_flag_wins_else_config(
-    home, tmp_path, monkeypatch, cfg, vision, argv, want
-):
+@pytest.mark.parametrize("cfg", [None, True], ids=["flag", "config"])
+def test_detect_hands_vision_detect_all_on(home, tmp_path, monkeypatch, cfg):
     from cutpoint import category  # noqa: PLC0415
 
-    set_config(
-        home,
-        **({} if cfg is None else {"vision_detect_all": cfg}),
-        **({} if vision is None else {"vision": vision}),
-    )
+    if cfg:
+        set_config(home, vision_detect_all=True)
     video = write(tmp_path / "a.mp4")
     seen: list = []
     real = category.footage_vision
@@ -497,8 +458,8 @@ def test_detect_vision_detect_all_flag_wins_else_config(
         "probe_source",
         lambda src, vision=None: category.SourceProbe(str(src), 60.0, True),
     )
-    assert cli.main(["detect", str(video), *argv]) == 0
-    assert seen == [want]
+    assert cli.main(["detect", str(video), *([] if cfg else ["--vision-detect-all"])]) == 0
+    assert seen == [True]
 
 
 @pytest.mark.parametrize("argv", [["--no-vision"], []])

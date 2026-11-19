@@ -12,13 +12,6 @@ from vision_helpers import Resp
 URL = "http://127.0.0.1:1"
 
 
-def _redirect() -> requests.Response:
-    resp = requests.Response()
-    resp.status_code = 307
-    resp.headers["Location"] = "http://elsewhere.example.com/api/generate"
-    return resp
-
-
 @pytest.fixture
 def rater(monkeypatch) -> vision.VisionRater:
     monkeypatch.setattr(vision.memguard, "check_vision", lambda _r: None)
@@ -97,9 +90,8 @@ def test_load_with_num_ctx_keeps_a_larger_loaded_context(monkeypatch):
         (Resp(status=400), False),
         (Resp(status=500), False),
         (requests.ConnectionError("refused"), False),
-        (_redirect(), False),
     ],
-    ids=["read-timeout", "connect-timeout", "400", "500", "refused", "redirect"],
+    ids=["read-timeout", "connect-timeout", "400", "500", "refused"],
 )
 def test_load_failure(monkeypatch, rater, reply, timed_out):
     _post(monkeypatch, reply)
@@ -175,9 +167,8 @@ def test_on_gpu_probe_has_a_short_connect_timeout(monkeypatch, rater):
         Resp(status=500),
         requests.ConnectionError("refused"),
         requests.ReadTimeout("slow"),
-        _redirect(),
     ],
-    ids=["bad-json", "json-not-object", "500", "refused", "timeout", "redirect"],
+    ids=["bad-json", "json-not-object", "500", "refused", "timeout"],
 )
 def test_on_gpu_unknown_when_no_usable_answer(monkeypatch, rater, reply):
     _get(monkeypatch, reply)

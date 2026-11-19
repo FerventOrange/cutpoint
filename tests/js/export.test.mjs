@@ -234,6 +234,11 @@ test('a hidden advanced field is still sent, is named under the options, and one
   await type(x, '#optMaxTotal', '60');
   assert.equal(x.$('#advInUse').hidden, false);
   assert.match(x.$('#advInUse').textContent, /^Advanced options in use: Top moments\./);
+  await x.change('#setAdvExport', true);
+  assert.equal(x.$('#advInUse').hidden, true, 'shown options need no note');
+  assert.equal(x.$('#advInUse').textContent, '');
+  await x.change('#setAdvExport', false);
+  assert.equal(x.$('#advInUse').hidden, false, 'hidden again: the note is back');
   x.$('#clipsBtn').click();
   await x.page.settle();
   assert.equal(jobs.length, 1);
