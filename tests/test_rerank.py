@@ -274,6 +274,62 @@ def test_ranked_never_drops_a_source_without_a_grid(home, tmp_path, monkeypatch)
     ]
 
 
+def test_a_source_with_a_later_part_read_in_parts_needs_analyze(home, tmp_path):
+    """A122: the first entry of a source is clean but a later one has an offset; it gets no
+    grid (cached_grid_parts skips every part of it), so readiness names it as recovered."""
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    hl["sources"].append({**hl["sources"][0], "offset": 120.0, "analyzed_s": 120.0})
+    (missing,) = rerank.readiness(project, hl, get_style("funny")).missing
+    assert (missing.feature, missing.source) == ("recovered", hl["sources"][0]["path"])
+    assert [p.index for p in analyze.cached_grid_parts(hl, get_style("funny"))] == [1]
+
+
+def test_readiness_names_every_source_cached_grid_parts_gives_no_grid(home, tmp_path, monkeypatch):
+    """A122: one rule (analyze.cached_sources) for both: recovered, offline, no length and
+    nothing cached (scene detection off) are each named, and only those lack a grid."""
+    project = make_project(home, tmp_path, n=5, scenes=False)
+    hl = read(project)
+    srcs = [e["path"] for e in hl["sources"]]
+    hl["sources"][0]["read_errors"] = [{"failure_time": 60}]
+    Path(srcs[1]).unlink()
+    del hl["sources"][2]["duration"]
+    for f in cache.source_dir(Path(srcs[3])).iterdir():
+        f.unlink()
+    monkeypatch.setattr(rerank, "_has_audio", lambda s: False)
+    style = get_style("funny")
+    gaps = [(m.feature, m.source) for m in rerank.readiness(project, hl, style).missing]
+    assert gaps == [
+        ("recovered", srcs[0]),
+        ("offline", srcs[1]),
+        ("length", srcs[2]),
+        ("caches", srcs[3]),
+    ]
+    assert [p.index for p in analyze.cached_grid_parts(hl, style)] == [4]
+    assert [(c.index, c.gap) for c in analyze.cached_sources(hl, style)] == [
+        (0, "recovered"),
+        (1, "offline"),
+        (2, "length"),
+        (3, "caches"),
+        (4, None),
+    ]
+
+
+def test_ranked_refuses_a_source_whose_cache_files_cannot_be_read(home, tmp_path):
+    """Readiness looks for the cache files only; files there that do not load leave the source
+    no grid, and ranked refuses it rather than drop its candidates."""
+    project = make_project(home, tmp_path)
+    hl = read(project)
+    src = Path(hl["sources"][0]["path"])
+    for f in cache.source_dir(src).iterdir():
+        f.write_text("{not json", encoding="utf-8")
+    style = get_style("gaming")  # weighs scenes: no edge windows stand in for the cuts
+    assert rerank.readiness(project, hl, style).ready
+    with pytest.raises(NeedsAnalyzeError) as got:
+        rerank.ranked(project, hl, style)
+    assert [(m["feature"], m["source"]) for m in got.value.missing] == [("caches", str(src))]
+
+
 def test_scenes_are_needed_only_by_a_style_that_weighs_them(home, tmp_path):
     project = make_project(home, tmp_path)
     src = Path(read(project)["sources"][0]["path"])
