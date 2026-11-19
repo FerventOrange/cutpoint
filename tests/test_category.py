@@ -1663,6 +1663,27 @@ def test_vision_detect_all_without_a_usable_answer_decides_as_today(answer):
         assert decided(p, answer) == decided(p, answer, every=False)
 
 
+@pytest.mark.parametrize("every", [False, True])
+@pytest.mark.parametrize("answer", ["action", "camera", "gameplay"])
+@pytest.mark.parametrize("extra", [CAMERA, UNSURE, {**GAME, "hud_text": 0}])
+def test_one_source_is_decided_without_deciding_itself_again(monkeypatch, every, answer, extra):
+    """#1085 A123: the decision with the vision answer or --vision-detect-all reuses the
+    decision without them; it does not call _source (or needs_vision) again."""
+    calls = []
+    real = category._source
+
+    def counted(*args, **kw):
+        calls.append(args)
+        return real(*args, **kw)
+
+    monkeypatch.setattr(category, "_source", counted)
+    monkeypatch.setattr(
+        category, "needs_vision", lambda *a, **kw: pytest.fail("needs_vision called")
+    )
+    category.decide([probe(**extra, vision=answer)], {"a.mp4": 0.7}, every_source=every)
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize(
     ("anchors", "answer", "expect"),
     [
