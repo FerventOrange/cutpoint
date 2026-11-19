@@ -1160,3 +1160,99 @@ def test_the_reaction_prefers_words_said_once_the_view_is_back_to_normal():
     clip = crash.plan_clip(inp, _C, crash.CrashParams())
     assert clip["reaction"]["text"] == "fine"
     assert clip["reaction"]["start"] == pytest.approx(39.6)
+
+
+# --------------------------------------------------------------------------- sheets and helpers
+def test_write_sheet_tiles_the_window_in_order_and_marks_the_candidate_red(
+    tmp_path: Path, monkeypatch
+):
+    import cv2  # noqa: PLC0415
+
+    h, w = 48, 64
+    ts = np.array([0.0, 1.0, 2.0, 3.0, 4.0])  # the candidate is 1.0-2.0 s
+    frames = np.stack([np.full((h, w, 3), v, np.uint8) for v in (10, 60, 110, 160, 210)])
+    monkeypatch.setattr(crash, "decode_window", lambda *a, **k: (ts, frames))
+    c = {"source": "a.mp4", "t0": 1.0, "t1": 2.0, "caption": "c001 title"}
+    out = crash.write_sheet(c, tmp_path / "s.jpg", cols=3, width=w)
+    sheet = cv2.imread(str(out))
+    # a title strip (26 px) above two rows of three tiles, the last one blank
+    assert sheet.shape == (26 + 2 * h, 3 * w, 3)
+    assert (sheet[:26].max(axis=2) > 200).any()
+
+    def tile(i: int) -> np.ndarray:
+        y, x = 26 + h * (i // 3), w * (i % 3)
+        return sheet[y : y + h, x : x + w]
+
+    centres = [int(tile(i)[5:15, 20:40].mean()) for i in range(6)]
+    assert centres == pytest.approx([10, 60, 110, 160, 210, 0], abs=6)
+
+    def band(i: int) -> np.ndarray:  # the caption band's left edge, clear of the text
+        return tile(i)[-3:-1, :2].reshape(-1, 3).mean(axis=0)
+
+    assert band(1)[2] > 120 and band(1)[0] < 40 and band(2)[2] > 120  # red: 1.0 and 2.0 s
+    assert band(0).max() < 40 and band(3).max() < 40  # black
+
+
+def test_write_sheet_without_frames_writes_nothing(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(crash, "decode_window", lambda *a, **k: (np.array([]), np.array([])))
+    assert crash.write_sheet({"source": "a.mp4", "t0": 1.0, "t1": 2.0}, tmp_path / "s.jpg") is None
+    assert not (tmp_path / "s.jpg").exists()
+
+
+def test_source_failed_names_the_file_and_warns_unless_told_not_to(caplog, monkeypatch):
+    from cutpoint import jsonout  # noqa: PLC0415
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
+    guard = SourceGuard("crash dense check", log=crash.logger)
+    warned: list[str] = []
+    monkeypatch.setattr(jsonout, "warn", lambda code, message, files=(): warned.append(code))
+    with caplog.at_level("WARNING"):
+        crash._source_failed(guard, "D:/v/a.mp4", OSError("gone"))
+        crash._source_failed(guard, Path("b.mp4"), OSError("gone"), warn=False)
+    assert "a.mp4: crash dense check skipped this source (gone)" in caplog.text
+    assert "b.mp4" not in caplog.text
+    assert list(guard.failed) == ["D:/v/a.mp4", "b.mp4"]
+    assert warned == ["step_failed"]
+
+
+def _candidate(source: str, k: int) -> dict:
+    scores = {"telemetry": 0.5, "visual": 0.5, "audio": 0.1, "words": 0.2}
+    return {
+        "id": f"c{k:03d}", "name": Path(source).name, "source": source, "t0": 10.0 * k,
+        "t1": 10.0 * k + 2, "confidence": 0.9, "scores": scores,
+    }  # fmt: skip
+
+
+def test_write_sheets_captions_the_top_candidates_and_skips_a_failed_source(
+    tmp_path: Path, monkeypatch
+):
+    cands = [
+        _candidate("a.mp4", 1),
+        _candidate("bad.mp4", 2),
+        _candidate("bad.mp4", 3),
+        _candidate("a.mp4", 4),
+    ]
+    out_dir = tmp_path / "crash_check"
+    out_dir.mkdir()
+    (out_dir / "old.jpg").write_bytes(b"x")
+    bad_calls: list[str] = []
+
+    def write(c, path):
+        if c["source"] == "bad.mp4":
+            bad_calls.append(c["id"])
+            raise OSError("unreadable")
+        path.write_bytes(b"jpg")
+        return path
+
+    monkeypatch.setattr(crash, "write_sheet", write)
+    written = crash._write_sheets(cands, out_dir, 3, {})
+    assert [p.name for p in written] == ["c001_a_10.jpg"]
+    assert not (out_dir / "old.jpg").exists()
+    assert cands[0]["sheet"] == str(written[0]) and "sheet" not in cands[1]
+    assert cands[0]["caption"].startswith("c001 a.mp4 10.0-12.0s conf 0.90 tel 0.50")
+    assert "caption" not in cands[3]  # beyond the first three
+    # a failed source is not tried again: bad.mp4 was written once, its second candidate none
+    assert bad_calls == ["c002"] and "sheet" not in cands[2]
+    # sheets=0 keeps the old files and writes none
+    assert crash._write_sheets(cands, out_dir, 0, {}) == []
+    assert (out_dir / "c001_a_10.jpg").exists()

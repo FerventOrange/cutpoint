@@ -18,9 +18,9 @@ from typing import Any
 
 import numpy as np
 
+from cutpoint import cache
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import grab_images
-from cutpoint.imageio import write_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -37,22 +37,31 @@ def grab(path: Path, t: float, width: int = 480) -> np.ndarray | None:
 
 
 def contact_sheet(
-    items: list[dict[str, Any]], out: Path, cols: int = 4, width: int = 480
+    items: list[dict[str, Any]],
+    out: Path,
+    cols: int = 4,
+    width: int = 480,
+    title: str | None = None,
 ) -> Path | None:
     """Tile frames with captions and optional boxes into one JPEG.
 
     Args:
         items: ``{"path", "t", "caption", "boxes": [(x1, y1, x2, y2, kept), ...]}``
-            with box coordinates normalised to 0-1.
-        out: Output JPEG.
+            with box coordinates normalised to 0-1. ``"frame"`` (a BGR image of the tile's
+            size, ``width`` is then not used; drawn on) replaces ``path`` and ``t``: the frame is
+            already decoded. ``"highlight"`` (a BGR colour) fills the caption band, black
+            without it.
+        out: Output JPEG (written like every file of a held folder, see
+            :func:`cutpoint.cache.save_bytes`).
         cols: Tiles per row.
         width: Tile width (px).
+        title: A line of text on a black strip above the grid (None: no strip).
     """
     import cv2  # noqa: PLC0415
 
     tiles = []
     for it in items:
-        img = grab(Path(it["path"]), it["t"], width)
+        img = it["frame"] if "frame" in it else grab(Path(it["path"]), it["t"], width)
         if img is None:
             continue
         h, w = img.shape[:2]
@@ -64,7 +73,7 @@ def contact_sheet(
                 (0, 220, 0) if kept else (0, 0, 255),
                 2,
             )
-        cv2.rectangle(img, (0, h - 22), (w, h), (0, 0, 0), -1)
+        cv2.rectangle(img, (0, h - 22), (w, h), it.get("highlight") or (0, 0, 0), -1)
         cv2.putText(
             img,
             it["caption"][:70],
@@ -84,8 +93,23 @@ def contact_sheet(
     while len(tiles) % cols:
         tiles.append(blank)
     grid = np.vstack([np.hstack(tiles[i : i + cols]) for i in range(0, len(tiles), cols)])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    write_jpeg(out, grid, 85)
+    if title is not None:
+        strip = np.zeros((26, grid.shape[1], 3), np.uint8)
+        cv2.putText(
+            strip,
+            title[:150],
+            (6, 18),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        grid = np.vstack([strip, grid])
+    # the bytes cv2.imwrite gives, written atomically (held back while `analyze` runs)
+    ok, buf = cv2.imencode(".jpg", grid, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if ok:
+        cache.save_bytes(out, buf.tobytes(), parents=True)
     return out
 
 

@@ -1261,7 +1261,7 @@ def test_the_standalone_writers_still_write_at_once(tmp_path, monkeypatch):
     monkeypatch.setattr(cv2, "imencode", encode)
     crash.write_sheet(c, tmp_path / "again.jpg")
     plain = tmp_path / "plain.jpg"
-    cv2.imwrite(str(plain), images[0], [cv2.IMWRITE_JPEG_QUALITY, 82])
+    cv2.imwrite(str(plain), images[0], [cv2.IMWRITE_JPEG_QUALITY, 85])
     assert sheet.read_bytes() == plain.read_bytes() == (tmp_path / "again.jpg").read_bytes()
 
 

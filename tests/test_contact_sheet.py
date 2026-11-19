@@ -140,3 +140,35 @@ def test_grab_gives_none_when_ffmpeg_fails(monkeypatch) -> None:
 
     monkeypatch.setattr(sheets, "grab_images", boom)
     assert sheets.grab(Path("a.mp4"), 1.0) is None
+
+
+# --------------------------------------------------------------------------- frames and title
+def test_a_decoded_frame_replaces_the_grab_and_a_highlight_colours_the_band(
+    tmp_path: Path, grabs
+) -> None:
+    out = tmp_path / "s.jpg"
+    frame = np.full((H, W, 3), 120, np.uint8)
+    hot = {"frame": frame, "caption": "hot", "highlight": (0, 0, 160)}
+    cold = {"frame": frame.copy(), "caption": "cold"}
+    sheets.contact_sheet([hot, cold], out, cols=2, width=999)
+    sheet = decode(out)
+    assert grabs == []  # nothing was grabbed
+    assert sheet.shape == (H, 2 * W, 3)
+    band = sheet[H - 6 : H - 1, :]
+    left, right = band[:, W - 12 : W - 2].mean(axis=(0, 1)), band[:, -12:-2].mean(axis=(0, 1))
+    assert left[2] > 120 and left[0] < 40  # red (BGR) band
+    assert right.max() < 40  # black band
+
+
+def test_a_title_adds_a_strip_above_the_grid_and_no_title_adds_none(tmp_path: Path, grabs) -> None:
+    plain, titled, empty = (tmp_path / n for n in ("p.jpg", "t.jpg", "e.jpg"))
+    sheets.contact_sheet([item(100)], plain, cols=1, width=W)
+    sheets.contact_sheet([item(100)], titled, cols=1, width=W, title="HELLO " * 40)
+    sheets.contact_sheet([item(100)], empty, cols=1, width=W, title="")
+    assert decode(plain).shape == (H, W, 3)
+    assert decode(titled).shape == (H + 26, W, 3)
+    assert decode(empty).shape == (H + 26, W, 3)  # an empty title still has its strip
+    strip = decode(titled)[:26]
+    assert (strip.max(axis=2) > 200).any()  # white text on black
+    assert np.median(strip) < 40
+    assert decode(empty)[:26].max() < 40

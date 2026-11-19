@@ -99,6 +99,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, jsonout, paths, projectfiles, state
+from cutpoint import library as libfiles  # the shared file rules; ``library`` is the profiles
 from cutpoint.config import remap_source
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events.common import load_highlights
@@ -473,14 +474,12 @@ def save_to_library(profile: dict[str, Any], footage: list[str] | None = None) -
                     f,
                     name,
                 )
-        from cutpoint.stylefiles import NAME_RE  # noqa: PLC0415
-
         # the base is trimmed so the suffixed name fits NAME_RE's 64 characters; a name that
         # is no file name at all (``../x`` from a hand-edited cache, A655) is slugified first
         tag = f"-{cache.params_hash(profile, 6)}"
         stem = (
             name
-            if isinstance(name, str) and NAME_RE.fullmatch(name)
+            if isinstance(name, str) and libfiles.NAME_RE.fullmatch(name)
             else slugify(str(name), 40, "custom")
         )
         name, n = f"{stem[: 64 - len(tag)].rstrip('-_')}{tag}", 1
@@ -1351,19 +1350,13 @@ def resolve(
         activity = None
         request = {"activity": None, "context": context}
     rec: dict[str, Any] = {"version": PROFILE_VERSION, "request": request}
-    seed, emb, refs = None, np.zeros((0, 768), np.float32), []
-    if activity:
-        seed, rec["source"] = activity, "flag"
-    else:
-        emb, refs = keyframes(project, warn_unreachable=warn_unreachable)
-        rec["scores"] = match_scores(emb, lib)
-        seed = pick(rec["scores"])
-        rec["source"] = "library" if seed else "fallback"
-    profile = full(lib[seed or nearest(rec["scores"])])
+    match, emb, refs = _library_match(project, lib, activity, rec, warn_unreachable)
+    profile = full(lib[match or nearest(rec["scores"])])
     new = None
+    anchor = match  # the library profile the result builds on (None: none, nothing near)
     why = "the local models are disabled"  # why ``context`` was not applied
     quiet = llm == AUTO and not (context or ollama_url)  # nobody asked for the model
-    if (seed is None or context) and llm:
+    if (match is None or context) and llm:
         rec["source"] = "fallback"  # until the LLM delivers (retried on the next run)
         model = None
         if ask is None:
@@ -1372,89 +1365,23 @@ def resolve(
             ask, model = default_ask(**{k: v for k, v in flags.items() if v})
             why = "the Ollama model is unavailable (see the line above)"
         if ask is not None:
-            why = "the LLM gave no usable profile"
-            try:
-                # Examples: the seed, else the floor and generic (no activity's slang to copy).
-                floor = [builtin(k) for k in BUILTIN_NAMES]
-                if seed and context and not activity:
-                    # The seed may be this footage's own earlier discovery, saved to the library
-                    # (the first project had no match): reuse that, the same profile as then.
-                    first = discovery_key(project, _model_id(ask, model), context, floor)
-                    hit = None if first is None else _load_discovery(first)
-                    if hit is not None and "profile" in hit:
-                        seed = None
-                examples = [lib[seed]] if seed else floor
-                key = discovery_key(project, _model_id(ask, model), context, examples)
-                hit = None if refresh or key is None else _load_discovery(key)
-                if hit is not None:  # this footage's discovery from an earlier run
-                    desc, how, new = (
-                        hit.get("description"),
-                        hit.get("described_by"),
-                        hit.get("profile"),
-                    )
-                    rec.update(description=desc, described_by=how, model=hit.get("model"))
-                    rec["discovery"] = {"cached": True}
-                    if new is None:
-                        why = f"the LLM gave no usable profile for this footage before ({hit['failed']})"
-                        logger.info(
-                            "activity: %s; not asked again (--refresh-profile asks it again)", why
-                        )
-                    else:
-                        logger.info("activity: discovered profile of this footage reused (%s)", key)
-                else:
-                    stats: dict[str, Any] = {"cached": False}
-                    t0 = time.perf_counter()
-                    if seed:
-                        desc, how = lib[seed]["description"], "profile"
-                    else:
-                        desc, how = describe(emb, refs, ask)
-                    stats["describe_s"] = round(time.perf_counter() - t0, 1)
-                    new = None
-                    if desc or context:
-                        new = synthesize(desc, context, ask, examples, stats)
-                        if new is not None:
-                            new = self_check(new, profile if seed else base(), emb)
-                    rec.update(description=desc, described_by=how, model=model)
-                    rec["discovery"] = stats
-                    entry = {"description": desc, "described_by": how, "model": model}
-                    if key is not None and new is not None:
-                        _save_discovery(key, {**entry, "profile": new})
-                    elif key is not None and stats.get("failed"):  # asked, nothing usable
-                        _save_discovery(key, {**entry, "failed": stats["failed"]})
-            except LowMemoryError as err:
-                if not quiet:
-                    raise
-                logger.info("activity: %s; detecting it without the vision model", err)
-            finally:
-                if isinstance(ask, OllamaAsk):
-                    ask.unload()  # done with it: VRAM for the CLIP steps, other models stay
-            if new is not None:  # LLM words add phrases, never re-weight known ones
-                known = (profile if seed else base())["incident"]["words"]
-                new["incident"]["words"] = {
-                    k: w for k, w in new["incident"]["words"].items() if k not in known
-                }
-            if new is not None and seed:
-                profile = merge(
-                    profile, {**new, **{k: profile[k] for k in ("name", "description", "detect")}}
-                )
-                rec["source"] = "context"
-            elif new is not None:
-                seed = save_to_library(new, _footage_id(project))
-                profile = full({**new, "name": seed})
-                rec["source"] = "synthesized"
-    named = _named_profile(context, lib) if context and new is None and seed is None else None
-    if named:
-        profile = full(lib[named])
-    if context and new is None:
-        used = f"; using the library profile {named!r} named in it" if named else ""
-        message = f"activity: --context not applied: {why}{used}"
-        logger.warning("%s", message)
-        jsonout.warn("context_not_applied", message)
-    if seed is None and new is None and not named and profile["name"] == "generic":
-        # no model, nothing near in the library: generic, with what CLIP saw for the record
-        seen = vocab_description(emb)
-        if seen is not None and not rec.get("description"):
-            rec.update(description=seen, described_by="clip")
+            new, anchor, why = _discover(
+                project,
+                rec,
+                lib,
+                profile,
+                match,
+                (emb, refs),
+                ask,
+                model,
+                context,
+                activity,
+                refresh,
+                quiet,
+            )
+            profile = _adopt(rec, project, new, anchor, profile)
+    if new is None:
+        profile = _fallback(rec, lib, profile, anchor, emb, context, why)
     rec["name"] = profile["name"]
     rec["profile"] = profile
     cache.save_json(path, rec)
@@ -1462,23 +1389,170 @@ def resolve(
     return rec
 
 
+def _library_match(
+    project: Path,
+    lib: dict[str, dict[str, Any]],
+    activity: str | None,
+    rec: dict[str, Any],
+    warn_unreachable: bool,
+) -> tuple[str | None, np.ndarray, list[tuple[Path, float]]]:
+    """The library profile the project is: ``activity`` as asked (``rec["source"]`` "flag"), else
+    the footage's best match (``"library"``, or ``"fallback"`` and None when nothing is near;
+    ``rec["scores"]`` then holds the match scores). Also the keyframes read for it (none for
+    ``activity``)."""
+    if activity:
+        rec["source"] = "flag"
+        return activity, np.zeros((0, 768), np.float32), []
+    emb, refs = keyframes(project, warn_unreachable=warn_unreachable)
+    rec["scores"] = match_scores(emb, lib)
+    match = pick(rec["scores"])
+    rec["source"] = "library" if match else "fallback"
+    return match, emb, refs
+
+
+def _discover(
+    project: Path,
+    rec: dict[str, Any],
+    lib: dict[str, dict[str, Any]],
+    profile: dict[str, Any],
+    match: str | None,
+    frames: tuple[np.ndarray, list[tuple[Path, float]]],
+    ask: Ask,
+    model: str | None,
+    context: str | None,
+    activity: str | None,
+    refresh: bool,
+    quiet: bool,
+) -> tuple[dict[str, Any] | None, str | None, str]:
+    """Ask the model for a profile of the footage (its cached discovery, or a new one).
+
+    ``rec`` gets the description, ``described_by``, ``model`` and ``discovery`` (the stats).
+    Returns the new profile (None when the model gave no usable one), the library profile it
+    builds on (``match``, or None when the footage's own earlier discovery, saved to the
+    library, is the example) and why ``context`` was not applied.
+    """
+    emb, refs = frames
+    anchor = match
+    new = None
+    why = "the LLM gave no usable profile"
+    try:
+        # Examples: the anchor, else the floor and generic (no activity's slang to copy).
+        floor = [builtin(k) for k in BUILTIN_NAMES]
+        if anchor and context and not activity:
+            # The match may be this footage's own earlier discovery, saved to the library
+            # (the first project had no match): reuse that, the same profile as then.
+            first = discovery_key(project, _model_id(ask, model), context, floor)
+            hit = None if first is None else _load_discovery(first)
+            if hit is not None and "profile" in hit:
+                anchor = None
+        examples = [lib[anchor]] if anchor else floor
+        key = discovery_key(project, _model_id(ask, model), context, examples)
+        hit = None if refresh or key is None else _load_discovery(key)
+        if hit is not None:  # this footage's discovery from an earlier run
+            desc, how, new = (
+                hit.get("description"),
+                hit.get("described_by"),
+                hit.get("profile"),
+            )
+            rec.update(description=desc, described_by=how, model=hit.get("model"))
+            rec["discovery"] = {"cached": True}
+            if new is None:
+                why = f"the LLM gave no usable profile for this footage before ({hit['failed']})"
+                logger.info("activity: %s; not asked again (--refresh-profile asks it again)", why)
+            else:
+                logger.info("activity: discovered profile of this footage reused (%s)", key)
+        else:
+            stats: dict[str, Any] = {"cached": False}
+            t0 = time.perf_counter()
+            if anchor:
+                desc, how = lib[anchor]["description"], "profile"
+            else:
+                desc, how = describe(emb, refs, ask)
+            stats["describe_s"] = round(time.perf_counter() - t0, 1)
+            new = None
+            if desc or context:
+                new = synthesize(desc, context, ask, examples, stats)
+                if new is not None:
+                    new = self_check(new, profile if anchor else base(), emb)
+            rec.update(description=desc, described_by=how, model=model)
+            rec["discovery"] = stats
+            entry = {"description": desc, "described_by": how, "model": model}
+            if key is not None and new is not None:
+                _save_discovery(key, {**entry, "profile": new})
+            elif key is not None and stats.get("failed"):  # asked, nothing usable
+                _save_discovery(key, {**entry, "failed": stats["failed"]})
+    except LowMemoryError as err:
+        if not quiet:
+            raise
+        logger.info("activity: %s; detecting it without the vision model", err)
+    finally:
+        if isinstance(ask, OllamaAsk):
+            ask.unload()  # done with it: VRAM for the CLIP steps, other models stay
+    return new, anchor, why
+
+
+def _adopt(
+    rec: dict[str, Any],
+    project: Path,
+    new: dict[str, Any] | None,
+    anchor: str | None,
+    profile: dict[str, Any],
+) -> dict[str, Any]:
+    """The profile once the model has answered: ``new`` merged over the ``anchor`` profile
+    (``rec["source"]`` "context"), or saved to the library as the footage's own
+    ("synthesized"); ``profile`` as it was when there is no ``new``."""
+    if new is None:
+        return profile
+    # LLM words add phrases, never re-weight known ones
+    known = (profile if anchor else base())["incident"]["words"]
+    new["incident"]["words"] = {k: w for k, w in new["incident"]["words"].items() if k not in known}
+    if anchor:
+        rec["source"] = "context"
+        return merge(profile, {**new, **{k: profile[k] for k in ("name", "description", "detect")}})
+    name = save_to_library(new, _footage_id(project))
+    rec["source"] = "synthesized"
+    return full({**new, "name": name})
+
+
+def _fallback(
+    rec: dict[str, Any],
+    lib: dict[str, dict[str, Any]],
+    profile: dict[str, Any],
+    anchor: str | None,
+    emb: np.ndarray,
+    context: str | None,
+    why: str,
+) -> dict[str, Any]:
+    """The profile when the model delivered none: the library profile named in ``context``
+    (a ``context_not_applied`` warning says ``context`` was not used), else ``profile``;
+    generic with nothing near gets what CLIP saw as its description."""
+    named = _named_profile(context, lib) if context and anchor is None else None
+    if named:
+        profile = full(lib[named])
+    if context:
+        used = f"; using the library profile {named!r} named in it" if named else ""
+        message = f"activity: --context not applied: {why}{used}"
+        logger.warning("%s", message)
+        jsonout.warn("context_not_applied", message)
+    if anchor is None and not named and profile["name"] == "generic":
+        # no model, nothing near in the library: generic, with what CLIP saw for the record
+        seen = vocab_description(emb)
+        if seen is not None and not rec.get("description"):
+            rec.update(description=seen, described_by="clip")
+    return profile
+
+
 # --------------------------------------------------------------------------- library commands
 # ``cutpoint profile list | show | create | validate | delete`` (the user library).
 def name_problem(name: object) -> str | None:
     """Why ``name`` cannot name a library profile, or None: a safe file name (as a style
     name) that is not ``base`` or ``generic`` (compared ignoring case)."""
-    from cutpoint.stylefiles import _RESERVED_STEMS, NAME_RE  # noqa: PLC0415
-
-    if not isinstance(name, str) or not NAME_RE.fullmatch(name):
-        return (
-            f"{name!r} is not a usable profile name: use up to 64 letters, digits, '-' and "
-            "'_', starting with a letter or digit"
-        )
+    if msg := libfiles.format_problem(name, "profile"):
+        return msg
+    assert isinstance(name, str)
     if name.lower() in BUILTIN_NAMES:
         return f"{name!r} is a built-in profile name; choose another name"
-    if name.lower() in _RESERVED_STEMS:
-        return f"{name!r} cannot be a file name on Windows; choose another name"
-    return None
+    return libfiles.reserved_problem(name)
 
 
 def _file_source(raw: Any) -> str | None:
@@ -1634,19 +1708,20 @@ def list_profiles() -> list[dict[str, Any]]:
     ]
 
 
+def _missing(name: str) -> str:
+    return (
+        f"no profile named {name!r} in your library ({paths.profiles_dir()}); "
+        "`cutpoint profile list` shows the profiles"
+    )
+
+
 def _find(name: str) -> Path:
     """The library file of the profile ``name``.
 
     Raises:
         FileNotFoundError: If the library has no such file.
     """
-    path = user_files().get(name)
-    if path is None:
-        raise FileNotFoundError(
-            f"no profile named {name!r} in your library ({paths.profiles_dir()}); "
-            "`cutpoint profile list` shows the profiles"
-        )
-    return path
+    return libfiles.find(user_files(), name, _missing(name))
 
 
 def show_profile(name: str) -> dict[str, Any]:
@@ -1688,12 +1763,8 @@ def create_profile(name: str, data: Any, *, force: bool = False) -> tuple[Path, 
     if problems:
         raise jsonout.ArgumentError(f"profile {name!r} not saved: {'; '.join(problems)}")
     files = user_files()
-    clash = next((s for s in files if s.lower() == name.lower() and s != name), None)
-    if clash is not None:
-        raise jsonout.ArgumentError(
-            f"a profile named {clash!r} exists; names that differ only in case clash on "
-            "Windows and macOS"
-        )
+    if msg := libfiles.case_clash_problem(files, name, "profile"):
+        raise jsonout.ArgumentError(msg)
     path = paths.profiles_dir() / f"{name}.json"
     if name in files and not force:
         raise FileExistsError(
@@ -1718,7 +1789,7 @@ def validate_profile(target: str) -> dict[str, Any]:
     Raises:
         FileNotFoundError: For an unknown profile name or a missing file.
     """
-    as_file = target.endswith(".json") or "/" in target or "\\" in target
+    as_file = libfiles.looks_like_path(target)
     if not as_file and target in BUILTIN_NAMES and target not in user_files():
         return {
             "name": target,
@@ -1729,12 +1800,7 @@ def validate_profile(target: str) -> dict[str, Any]:
             "warnings": [],
             "notes": [f"{target!r} is a built-in profile"],
         }
-    if as_file or Path(target).is_file():
-        path = Path(target)
-        if not path.is_file():
-            raise FileNotFoundError(f"{target}: file not found")
-    else:
-        path = _find(target)
+    path = libfiles.file_target(target) if as_file or Path(target).is_file() else _find(target)
     problems, warnings = check_profile(cache.load_json(path))
     in_library = path.parent.resolve() == paths.profiles_dir().resolve()
     notes = []
@@ -1760,7 +1826,6 @@ def delete_profile(name: str) -> Path:
     """
     if name in BUILTIN_NAMES and name not in user_files():
         raise jsonout.ArgumentError(f"{name!r} is a built-in profile and cannot be deleted")
-    path = _find(name)
-    path.unlink()
+    path = libfiles.delete(user_files(), name, _missing(name))
     _FILES.pop(str(path), None)
     return path

@@ -1187,49 +1187,22 @@ def write_sheet(
     import cv2  # noqa: PLC0415
 
     from cutpoint.config import remap_source  # noqa: PLC0415
+    from cutpoint.events.sheets import contact_sheet  # noqa: PLC0415
 
     a, b = span if span else (max(0.0, c["t0"] - pre_s), c["t1"] + post_s)
     ts, frames = decode_window(remap_source(c["source"]), a, b, fps, width)
     if not len(ts):
         return None
-    tiles = []
-    for t, fr in zip(ts, frames, strict=True):
-        img = cv2.cvtColor(np.ascontiguousarray(fr), cv2.COLOR_RGB2BGR)
-        h, w = img.shape[:2]
-        rel = t - c["t0"]
-        hot = c["t0"] - 0.05 <= t <= c["t1"] + 0.05
-        cv2.rectangle(img, (0, h - 18), (w, h), (0, 0, 160) if hot else (0, 0, 0), -1)
-        cv2.putText(
-            img,
-            f"{t:.1f}s ({rel:+.1f})",
-            (3, h - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.42,
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        tiles.append(img)
-    blank = np.zeros_like(tiles[0])
-    while len(tiles) % cols:
-        tiles.append(blank)
-    grid = np.vstack([np.hstack(tiles[i : i + cols]) for i in range(0, len(tiles), cols)])
-    title = np.zeros((26, grid.shape[1], 3), np.uint8)
-    cv2.putText(
-        title,
-        c.get("caption", "")[:150],
-        (6, 18),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (255, 255, 255),
-        1,
-        cv2.LINE_AA,
-    )
-    # the bytes cv2.imwrite gives, written atomically (held back while `analyze` runs)
-    ok, buf = cv2.imencode(".jpg", np.vstack([title, grid]), [cv2.IMWRITE_JPEG_QUALITY, 82])
-    if ok:
-        cache.save_bytes(out, buf.tobytes(), parents=True)
-    return out
+    items = [
+        {
+            "frame": cv2.cvtColor(np.ascontiguousarray(fr), cv2.COLOR_RGB2BGR),
+            "caption": f"{t:.1f}s ({t - c['t0']:+.1f})",
+            # the tiles of the candidate itself have a red caption band
+            "highlight": (0, 0, 160) if c["t0"] - 0.05 <= t <= c["t1"] + 0.05 else None,
+        }
+        for t, fr in zip(ts, frames, strict=True)
+    ]
+    return contact_sheet(items, out, cols=cols, title=c.get("caption", ""))
 
 
 # --------------------------------------------------------------------------- project
@@ -1305,6 +1278,219 @@ def load_crashes(project: Path) -> dict[str, Any] | None:
     return cache.load_json(project / CRASHES_FILE)
 
 
+def _source_failed(guard: Any, src: Path | str, err: Exception, *, warn: bool = True) -> None:
+    """One source failed in the step of ``guard`` (:class:`~cutpoint.events.pipeline.SourceGuard`,
+    which holds the step's wording): skip it, naming its file; ``warn=False``: logged at DEBUG
+    only (the caller warned for it already).
+
+    Raises:
+        LowMemoryError: Too little memory (also an out-of-memory error): the run stops.
+    """
+    guard.skip(err, Path(src).name, src, warn=warn)
+
+
+def _load_all_inputs(
+    project: Path,
+    sources: list[tuple[Path, float]],
+    p: CrashParams,
+    prompts: activity.Prompts | None,
+    force: bool,
+    tmp_dir: Path | None,
+    language: str | None,
+) -> dict[str, SourceInputs]:
+    """The :class:`SourceInputs` of every source (by path), warning of the layers each lacks.
+
+    ``prompts``: the profile's (None: the project's). A source whose inputs fail to load is
+    skipped (:func:`_source_failed`); when every source fails, the last error is raised.
+    """
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
+    inputs: dict[str, SourceInputs] = {}
+    progress.start("inputs")
+    guard = SourceGuard("crash detection", debug_what="crash inputs", log=logger)
+    with activity.use_prompts(prompts or activity.project_prompts(project)):
+        for src, dur in sources:
+            try:
+                if force:
+                    _, failed = _telemetry_or_none(
+                        lambda s=src, d=dur: imu_grids(s, d, force=True, tmp_dir=tmp_dir),
+                        src,
+                        warn=False,
+                    )
+                    if failed:
+                        # not the old grids: load_inputs below reads again and warns
+                        cache.remove(_imu_cache(src))
+                inp = load_inputs(src, dur, p, tmp_dir, language)
+            except Exception as err:  # noqa: BLE001 - one unreadable source, logged
+                _source_failed(guard, src, err)
+                continue
+            inputs[str(src)] = inp
+            if inp.imu is None:
+                jsonout.warn(
+                    "no_telemetry",
+                    f"{src.name}: no IMU telemetry; crashes are found from the transcript only",
+                    [src],
+                )
+            if inp.visual is None:
+                reason = _NO_VISUAL_REASON.get()
+                jsonout.warn(
+                    "no_visual_layer",
+                    f"{src.name}: no visual layer ({reason}); crashes are found without what "
+                    "the camera sees"
+                    if reason
+                    else f"{src.name}: no visual layer; run `cutpoint events` first to score "
+                    "what the camera sees",
+                    [src],
+                )
+    if guard.all_failed(len(sources)):  # no source loaded: not one bad file, the step failed
+        last_src, last = list(guard.failed.items())[-1]
+        logger.warning(
+            "crash detection failed for every source (last: %s: %s)", Path(last_src).name, last
+        )
+        guard.raise_if_all_failed(len(sources))  # unchanged: cli.py maps its type (missing_extra)
+    return inputs
+
+
+def _dense_confirm(
+    cands: list[dict[str, Any]],
+    inputs: dict[str, SourceInputs],
+    p: CrashParams,
+    *,
+    dense: bool,
+    force: bool,
+    encoder: ClipEncoder | None,
+    batch_size: int,
+) -> tuple[set[int], dict[str, Exception]]:
+    """The dense confirm of the best candidates (``c["dense"]``, None when it failed), the
+    windows cached per source. Returns ``id`` of the candidates that reached the check through
+    the speed-drop bypass (it may confirm them, never lower their confidence) and the
+    sources whose check failed (path: error; their candidates stay unconfirmed).
+
+    ``encoder`` (and any model loaded here) is closed at the end; with ``batch_size`` it is
+    closed and loaded again after that many windows. When every source with dense windows
+    fails, the last error is raised.
+    """
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
+    todo = [c for c in cands if c["pre_score"] >= p.prefilter][: p.dense_top] if dense else []
+    if dense:
+        drops = [c for c in cands if c["pre_score"] < p.prefilter and _speed_drop(c, p)]
+        for c in drops[: p.drop_top]:
+            tel = c["telemetry"]
+            logger.debug(
+                "%s %.1fs: pre-score %.3f < prefilter, %.1f -> %.1f km/h: dense check",
+                c["name"],
+                c["t0"],
+                c["pre_score"],
+                tel["speed_before_kmh"],
+                tel["speed_min_after_kmh"],
+            )
+        todo += drops[: p.drop_top]
+    # Speed-drop candidates only reach the dense check through the bypass:
+    # it may confirm them but never lower their confidence.
+    bypass = {id(c) for c in todo if c["pre_score"] < p.prefilter}
+    enc = encoder
+    stores: dict[str, dict[str, Any]] = {}
+    windows: set[tuple[str, str]] = set()
+    # a source whose dense check failed: warned, its candidates unconfirmed (other windows skipped)
+    dense_guard = SourceGuard("crash dense check", oom_what="the crash dense check", log=logger)
+    dense_failed = dense_guard.failed  # source: its error
+
+    for c in todo:
+        src = c["source"]
+        if src not in stores:
+            try:  # the cache folder stats the file: one gone since its inputs loaded fails
+                stores[src] = {} if force else _load_dense(Path(src), p)
+            except OSError as err:
+                _source_failed(dense_guard, src, err)
+                stores[src] = {}
+        windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
+    if dense:
+        progress.start("dense")
+        progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
+    seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
+    try:
+        for c in todo:
+            src = c["source"]
+            if src in dense_failed:
+                c["dense"] = None
+                continue
+            store = stores[src]
+            a, b = dense_window(c, p)
+            key = f"{a:.1f}-{b:.1f}"
+            if batch_size and seen and (src, key) not in seen and not len(seen) % batch_size:
+                if enc is not None:  # a batch boundary: CLIP is loaded again for the next ones
+                    enc.close()
+                    enc = None
+                progress.continuing("dense check", len(seen), len(windows))
+            seen.add((src, key))
+            if enc is None and key not in store:
+                enc = ClipEncoder()
+            new = key not in store
+            try:
+                c["dense"] = dense_feature(enc, inputs[src], c, p, store)
+            except Exception as err:  # noqa: BLE001 - one bad source, logged
+                _source_failed(dense_guard, src, err)
+                c["dense"] = None
+                continue
+            if new and key in store:  # saved at once: an interrupted run keeps its windows
+                cache.save_json(_dense_cache(Path(src), p), store)
+        dense_guard.raise_if_all_failed(len(stores))  # not one bad file: it failed
+    finally:
+        if enc is not None:
+            enc.close()
+    for src, store in stores.items():
+        if src not in dense_failed:  # a failed source may be gone: its windows were saved
+            cache.save_json(_dense_cache(Path(src), p), store)
+    return bypass, dense_failed
+
+
+def _write_sheets(
+    cands: list[dict[str, Any]],
+    out_dir: Path,
+    sheets: int,
+    dense_failed: dict[str, Exception],
+) -> list[Path]:
+    """The contact sheets of the first ``sheets`` candidates in ``out_dir`` (the ones of an
+    earlier run are removed first), each candidate's ``caption`` and ``sheet`` set; the
+    paths written. A source whose sheets fail gets none (warned once, unless its dense check
+    failed and was warned for); an out-of-memory error stops the run."""
+    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
+
+    written: list[Path] = []
+    if sheets:
+        for f in out_dir.glob("*.jpg"):
+            cache.remove(f)
+    sheet_failed: set[str] = set(dense_failed)  # sources whose frames cannot be read
+    sheet_guard = SourceGuard(
+        "crash contact sheets",
+        oom_what="the crash contact sheets",
+        debug_what="crash contact sheet",
+        log=logger,
+    )
+    for c in cands[:sheets]:
+        c["caption"] = (
+            f"{c['id']} {c['name']} {c['t0']:.1f}-{c['t1']:.1f}s "
+            f"conf {c['confidence']:.2f} tel {c['scores']['telemetry']:.2f} "
+            f"vis {c['scores']['visual']:.2f} "
+            f"dense {c['scores'].get('dense', 0):.2f} "
+            f"aud {c['scores']['audio']:.2f} words {c['scores']['words']:.2f}"
+        )
+        if c["source"] in sheet_failed:
+            continue
+        try:
+            path = write_sheet(c, out_dir / f"{c['id']}_{Path(c['name']).stem}_{c['t0']:.0f}.jpg")
+        except Exception as err:  # noqa: BLE001 - a sheet is a by-product: crashes.json is written
+            # warned once per source (a source whose dense check failed was warned for then)
+            _source_failed(sheet_guard, c["source"], err, warn=c["source"] not in dense_failed)
+            sheet_failed.add(c["source"])
+            continue
+        if path:
+            c["sheet"] = str(path)
+            written.append(path)
+    return written
+
+
 def detect_project(
     project: Path,
     params: CrashParams | None = None,
@@ -1366,8 +1552,6 @@ def detect_project(
     Returns:
         Path of crashes.json.
     """
-    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
-
     sources = []
     for src, dur in _project_sources(project):
         try:
@@ -1405,53 +1589,11 @@ def detect_project(
     t_start = time.perf_counter()
     # the profile (a discovery asks the local models: often the slowest part of a run)
     timings: dict[str, float] = {"profile_s": round(t_start - t_profile, 1)}
-    inputs: dict[str, SourceInputs] = {}
     language = _project_language(project)
     t0 = time.perf_counter()
     # The 360 lift rides of load_inputs are found with this profile's lift captions.
     prompts = activity.prompts(full_prof) if full_prof else None
-    progress.start("inputs")
-    guard = SourceGuard("crash detection", debug_what="crash inputs", log=logger)
-    with activity.use_prompts(prompts or activity.project_prompts(project)):
-        for src, dur in sources:
-            try:
-                if force:
-                    _, failed = _telemetry_or_none(
-                        lambda s=src, d=dur: imu_grids(s, d, force=True, tmp_dir=tmp_dir),
-                        src,
-                        warn=False,
-                    )
-                    if failed:
-                        # not the old grids: load_inputs below reads again and warns
-                        cache.remove(_imu_cache(src))
-                inp = load_inputs(src, dur, p, tmp_dir, language)
-            except Exception as err:  # noqa: BLE001 - one unreadable source, logged
-                guard.skip(err, src.name, src)
-                continue
-            inputs[str(src)] = inp
-            if inp.imu is None:
-                jsonout.warn(
-                    "no_telemetry",
-                    f"{src.name}: no IMU telemetry; crashes are found from the transcript only",
-                    [src],
-                )
-            if inp.visual is None:
-                reason = _NO_VISUAL_REASON.get()
-                jsonout.warn(
-                    "no_visual_layer",
-                    f"{src.name}: no visual layer ({reason}); crashes are found without what "
-                    "the camera sees"
-                    if reason
-                    else f"{src.name}: no visual layer; run `cutpoint events` first to score "
-                    "what the camera sees",
-                    [src],
-                )
-    if guard.all_failed(len(sources)):  # no source loaded: not one bad file, the step failed
-        last_src, last = list(guard.failed.items())[-1]
-        logger.warning(
-            "crash detection failed for every source (last: %s: %s)", Path(last_src).name, last
-        )
-        guard.raise_if_all_failed(len(sources))  # unchanged: cli.py maps its type (missing_extra)
+    inputs = _load_all_inputs(project, sources, p, prompts, force, tmp_dir, language)
     timings["inputs_s"] = round(time.perf_counter() - t0, 1)
     cands = []
     for inp in inputs.values():
@@ -1459,76 +1601,9 @@ def detect_project(
     cands.sort(key=lambda c: -c["pre_score"])
     w = dict(p.weights)
     t0 = time.perf_counter()
-    todo = [c for c in cands if c["pre_score"] >= p.prefilter][: p.dense_top] if dense else []
-    if dense:
-        drops = [c for c in cands if c["pre_score"] < p.prefilter and _speed_drop(c, p)]
-        for c in drops[: p.drop_top]:
-            tel = c["telemetry"]
-            logger.debug(
-                "%s %.1fs: pre-score %.3f < prefilter, %.1f -> %.1f km/h: dense check",
-                c["name"],
-                c["t0"],
-                c["pre_score"],
-                tel["speed_before_kmh"],
-                tel["speed_min_after_kmh"],
-            )
-        todo += drops[: p.drop_top]
-    # Speed-drop candidates only reach the dense check through the bypass:
-    # it may confirm them but never lower their confidence.
-    bypass = {id(c) for c in todo if c["pre_score"] < p.prefilter}
-    enc = encoder
-    stores: dict[str, dict[str, Any]] = {}
-    windows: set[tuple[str, str]] = set()
-    # a source whose dense check failed: warned, its candidates unconfirmed (other windows skipped)
-    dense_guard = SourceGuard("crash dense check", oom_what="the crash dense check", log=logger)
-    dense_failed = dense_guard.failed  # source: its error
-
-    for c in todo:
-        src = c["source"]
-        if src not in stores:
-            try:  # the cache folder stats the file: one gone since its inputs loaded fails
-                stores[src] = {} if force else _load_dense(Path(src), p)
-            except OSError as err:
-                dense_guard.skip(err, Path(src).name, src)
-                stores[src] = {}
-        windows.add((src, "{:.1f}-{:.1f}".format(*dense_window(c, p))))
-    if dense:
-        progress.start("dense")
-        progress.continuing("dense check", sum(k in stores[s] for s, k in windows), len(windows))
-    seen: set[tuple[str, str]] = set()  # the dense windows of this loop so far
-    try:
-        for c in todo:
-            src = c["source"]
-            if src in dense_failed:
-                c["dense"] = None
-                continue
-            store = stores[src]
-            a, b = dense_window(c, p)
-            key = f"{a:.1f}-{b:.1f}"
-            if batch_size and seen and (src, key) not in seen and not len(seen) % batch_size:
-                if enc is not None:  # a batch boundary: CLIP is loaded again for the next ones
-                    enc.close()
-                    enc = None
-                progress.continuing("dense check", len(seen), len(windows))
-            seen.add((src, key))
-            if enc is None and key not in store:
-                enc = ClipEncoder()
-            new = key not in store
-            try:
-                c["dense"] = dense_feature(enc, inputs[src], c, p, store)
-            except Exception as err:  # noqa: BLE001 - one bad source, logged
-                dense_guard.skip(err, Path(src).name, src)
-                c["dense"] = None
-                continue
-            if new and key in store:  # saved at once: an interrupted run keeps its windows
-                cache.save_json(_dense_cache(Path(src), p), store)
-        dense_guard.raise_if_all_failed(len(stores))  # not one bad file: it failed
-    finally:
-        if enc is not None:
-            enc.close()
-    for src, store in stores.items():
-        if src not in dense_failed:  # a failed source may be gone: its windows were saved
-            cache.save_json(_dense_cache(Path(src), p), store)
+    bypass, dense_failed = _dense_confirm(
+        cands, inputs, p, dense=dense, force=force, encoder=encoder, batch_size=batch_size
+    )
     timings["dense_s"] = round(time.perf_counter() - t0, 1)
     for c in cands:
         d = c.get("dense")
@@ -1544,39 +1619,7 @@ def detect_project(
         c["id"] = f"c{k:03d}"
     t0 = time.perf_counter()
     progress.start("result")  # the contact sheets and crashes.json
-    written = []
-    out_dir = project / CHECK_DIR
-    if sheets:
-        for f in out_dir.glob("*.jpg"):
-            cache.remove(f)
-    sheet_failed: set[str] = set(dense_failed)  # sources whose frames cannot be read
-    sheet_guard = SourceGuard(
-        "crash contact sheets",
-        oom_what="the crash contact sheets",
-        debug_what="crash contact sheet",
-        log=logger,
-    )
-    for c in cands[:sheets]:
-        c["caption"] = (
-            f"{c['id']} {c['name']} {c['t0']:.1f}-{c['t1']:.1f}s "
-            f"conf {c['confidence']:.2f} tel {c['scores']['telemetry']:.2f} "
-            f"vis {c['scores']['visual']:.2f} "
-            f"dense {c['scores'].get('dense', 0):.2f} "
-            f"aud {c['scores']['audio']:.2f} words {c['scores']['words']:.2f}"
-        )
-        if c["source"] in sheet_failed:
-            continue
-        try:
-            path = write_sheet(c, out_dir / f"{c['id']}_{Path(c['name']).stem}_{c['t0']:.0f}.jpg")
-        except Exception as err:  # noqa: BLE001 - a sheet is a by-product: crashes.json is written
-            # warned once per source (a source whose dense check failed was warned for then)
-            warn = c["source"] not in dense_failed
-            sheet_guard.skip(err, Path(c["source"]).name, c["source"], warn=warn)
-            sheet_failed.add(c["source"])
-            continue
-        if path:
-            c["sheet"] = str(path)
-            written.append(path)
+    written = _write_sheets(cands, project / CHECK_DIR, sheets, dense_failed)
     timings["sheets_s"] = round(time.perf_counter() - t0, 1)
     timings["total_s"] = round(time.perf_counter() - t_start, 1)
     data = {

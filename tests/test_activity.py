@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import HOP, SLED, add_profile, set_config
-from cutpoint import activity, backends, jsonout, paths, stylefiles, vision
+from cutpoint import activity, backends, jsonout, library, paths, vision
 from cutpoint.errors import LowMemoryError
 from overlap import Overlap
 
@@ -1228,7 +1228,7 @@ def test_describe_surfaces_a_failed_grab_from_the_pool(monkeypatch, fake_clip):
 
 def test_a_long_discovered_name_keeps_its_suffixes_within_the_name_limit(home):
     long = "a" * 56 + "-pack-xy"  # 64 characters, a valid name
-    assert stylefiles.NAME_RE.fullmatch(long)
+    assert library.NAME_RE.fullmatch(long)
 
     def make(description: str) -> dict:
         return {**activity.validate({**PACK_RAFTING, "description": description}), "name": long}
@@ -1240,7 +1240,7 @@ def test_a_long_discovered_name_keeps_its_suffixes_within_the_name_limit(home):
     names = [first, second, third]
     assert len(set(names)) == 3
     for n in names:
-        assert len(n) <= 64 and stylefiles.NAME_RE.fullmatch(n)
+        assert len(n) <= 64 and library.NAME_RE.fullmatch(n)
     for n in names:
         assert activity.name_problem(n) is None
 
@@ -1428,3 +1428,117 @@ def test_the_discovery_key_has_the_version_and_the_words(same_footage, monkeypat
     assert [p["v"] for p in seen] == [activity.DISCOVERY_VERSION] * 2
     assert [p["context"] for p in seen] == [None, "chest mount"]
     assert all("context_block" not in p for p in seen)  # the version marks the delimited words
+
+
+# --------------------------------------------------------------------------- resolve's parts
+def test_library_match_takes_the_flag_without_reading_the_footage(
+    tmp_path: Path, footage, monkeypatch
+):
+    monkeypatch.setattr(activity, "keyframes", lambda *a, **k: pytest.fail("footage read"))
+    rec: dict = {}
+    match, emb, refs = activity._library_match(
+        tmp_path, activity.library(), "puddle-hop", rec, True
+    )
+    assert (match, emb.shape, refs, rec) == ("puddle-hop", (0, 768), [], {"source": "flag"})
+
+
+def test_library_match_records_the_scores_and_whether_something_is_near(
+    tmp_path: Path, footage, fake_clip
+):
+    lib = activity.library()
+    rec: dict = {}
+    match, emb, _ = activity._library_match(tmp_path, lib, None, rec, True)
+    assert (match, rec["source"], emb.shape) == ("glacier-sled", "library", (1, 768))
+    assert rec["scores"] == activity.match_scores(emb, lib)
+    footage["v"] = fake_clip(_vocab("kayaking"))
+    rec = {}
+    assert activity._library_match(tmp_path, lib, None, rec, True)[0] is None
+    assert rec["source"] == "fallback" and "scores" in rec
+
+
+def test_fallback_uses_the_profile_named_in_the_context_and_warns(tmp_path: Path, footage, caplog):
+    lib = activity.library()
+    generic = activity.full(lib["generic"])
+    rec: dict = {}
+    with caplog.at_level(logging.WARNING):
+        got = activity._fallback(
+            rec, lib, generic, None, np.zeros((0, 768), np.float32), "race on puddle-hop", "why"
+        )
+    assert got == activity.full(lib["puddle-hop"])
+    assert "--context not applied: why; using the library profile 'puddle-hop' named in it" in (
+        caplog.text
+    )
+    assert rec == {}  # a named profile needs no CLIP description
+
+
+def test_fallback_without_context_or_name_keeps_the_profile_and_describes_generic(
+    footage, monkeypatch, caplog
+):
+    lib = activity.library()
+    generic = activity.full(lib["generic"])
+    monkeypatch.setattr(activity, "vocab_description", lambda emb: "a seen thing")
+    rec: dict = {}
+    with caplog.at_level(logging.WARNING):
+        got = activity._fallback(rec, lib, generic, None, np.zeros((1, 768)), None, "why")
+    assert got is generic and not caplog.text
+    assert rec == {"description": "a seen thing", "described_by": "clip"}
+    rec = {"description": "kept"}  # a description the model gave stays
+    activity._fallback(rec, lib, generic, None, np.zeros((1, 768)), None, "why")
+    assert rec == {"description": "kept"}
+    rec = {}
+    activity._fallback(rec, lib, generic, "glacier-sled", np.zeros((1, 768)), None, "why")
+    assert rec == {}  # built on a library profile: nothing to describe
+
+
+def test_adopt_merges_over_the_anchor_or_saves_the_footages_own_profile(tmp_path: Path, footage):
+    lib = activity.library()
+    sled = activity.full(lib["glacier-sled"])
+    rec: dict = {}
+    assert activity._adopt(rec, tmp_path, None, "glacier-sled", sled) is sled and rec == {}
+    extra = {
+        "name": "x",
+        "incident": {"pos": ["a sled hitting a gate"], "words": {"ice in my face": 0.1}},
+    }
+    merged = activity._adopt(rec, tmp_path, extra, "glacier-sled", sled)
+    assert rec["source"] == "context" and merged["name"] == "glacier-sled"
+    assert merged["incident"]["words"]["ice in my face"] == 0.8  # known words are not re-weighted
+    assert "a sled hitting a gate" in merged["incident"]["pos"]
+    rec = {}
+    own = activity._adopt(rec, tmp_path, dict(PACK_RAFTING), None, activity.full(lib["generic"]))
+    assert rec["source"] == "synthesized"
+    assert own["name"].startswith("pack-rafting") and own["name"] in activity.library()
+
+
+def test_discover_returns_the_new_profile_its_anchor_and_fills_the_record(tmp_path: Path, footage):
+    lib = activity.library()
+    rec: dict = {}
+    ask = _stub(PACK_RAFTING)
+    new, anchor, why = activity._discover(
+        tmp_path, rec, lib, activity.full(lib["glacier-sled"]), "glacier-sled",
+        (footage["v"], []), ask, "m", "a race", None, True, False,
+    )  # fmt: skip
+    assert new is not None and new["name"] and anchor == "glacier-sled"
+    assert why == "the LLM gave no usable profile"
+    assert rec["description"] == lib["glacier-sled"]["description"]
+    assert (rec["described_by"], rec["model"], rec["discovery"]["cached"]) == (
+        "profile",
+        "m",
+        False,
+    )
+
+
+def test_discover_stops_on_low_memory_unless_nobody_asked(tmp_path: Path, footage, monkeypatch):
+    def boom(*a, **k):
+        raise LowMemoryError("not enough memory", "1 GB free")
+
+    monkeypatch.setattr(activity, "synthesize", boom)
+    lib = activity.library()
+    args = (tmp_path, {}, lib, activity.full(lib["glacier-sled"]), "glacier-sled")
+    rest = ((footage["v"], []), _stub({}), None, "a race", None, False)
+    with pytest.raises(LowMemoryError):
+        activity._discover(*args, *rest, False)
+    assert activity._discover(*args, *rest, True) == (
+        None,
+        "glacier-sled",
+        "the LLM gave no usable profile",
+    )
