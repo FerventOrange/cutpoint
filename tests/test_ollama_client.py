@@ -284,3 +284,63 @@ def test_every_ollama_request_connects_within_the_connect_timeout(monkeypatch, q
     ]
     assert seen[6] == ("generate", (connect, 30))
     assert seen[-1] == ("show", (5.0, 5.0))
+
+
+# --------------------------------------------------------------------------- A329
+
+
+@pytest.mark.parametrize(
+    ("name", "same"),
+    [("qwen", True), ("qwen:latest", True), ("qwen:7b", False), ("other", False), (None, False)],
+)
+def test_same_model_takes_the_latest_tag_ollama_adds(name: Any, same: bool) -> None:
+    assert backends.same_model(name, "qwen") is same
+
+
+def _ps(monkeypatch: pytest.MonkeyPatch, answer: Any) -> list[tuple[str, str, Any]]:
+    """``backends.ollama_get`` answers ``answer`` (raised when an exception); records calls."""
+    asked: list[tuple[str, str, Any]] = []
+
+    def get(url: str, path: str, *, timeout: Any) -> Any:
+        asked.append((url, path, timeout))
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(backends, "ollama_get", get)
+    return asked
+
+
+def test_ollama_loaded_entry_finds_the_model_by_name_or_model_field(monkeypatch) -> None:
+    models = [
+        "junk",
+        {"name": "other", "size_vram": 1},
+        {"model": "qwen:latest", "size_vram": 2},
+        {"name": "qwen", "size_vram": 3},
+    ]
+    asked = _ps(monkeypatch, {"models": models})
+    assert backends.ollama_ps("http://h:1") == models[1:]  # entries of another shape left out
+    assert backends.ollama_loaded_entry("http://h:1", "qwen") == {
+        "model": "qwen:latest",
+        "size_vram": 2,
+    }
+    assert backends.ollama_loaded_entry("http://h:1", "llava") is None
+    assert asked[0] == ("http://h:1", "/api/ps", (1, 3))  # a short probe
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        requests.ConnectionError("refused"),
+        backends.OllamaReplyError("a list"),
+        requests.JSONDecodeError("bad", "x", 0),
+        {"models": "nonsense"},
+        {"models": None},
+        {},
+    ],
+    ids=["refused", "not-an-object", "bad-json", "not-a-list", "null", "no-models"],
+)
+def test_ollama_loaded_entry_is_none_without_a_usable_answer(monkeypatch, answer) -> None:
+    _ps(monkeypatch, answer)
+    assert backends.ollama_ps("http://h:1") == []
+    assert backends.ollama_loaded_entry("http://h:1", "qwen") is None

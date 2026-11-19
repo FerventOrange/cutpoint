@@ -436,6 +436,33 @@ def _fsync_dir(folder: Path) -> None:
             os.close(fd)
 
 
+@contextlib.contextmanager
+def atomic_path(path: Path, *, match: bool = True) -> Iterator[Path]:
+    """Yield a temp file beside ``path`` to write (``<name>.<random>.tmp``, unique, created
+    empty), renamed onto ``path`` when the block ends, so a reader never sees a half-written
+    ``path``. ``match``: give it the mode a plain write would (:func:`match_mode`) first;
+    False keeps the mode the block gave it (a copy's). The rename is retried while another
+    process holds ``path`` (Windows, :func:`retry_locked`); on any failure, Ctrl+C included,
+    the temp file is removed and ``path`` is left as it was.
+
+    Raises:
+        PermissionError: If ``path`` stays locked through all attempts (:func:`retry_locked`).
+    """
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    os.close(fd)
+    tmp = Path(name)
+    try:
+        yield tmp
+        if match:
+            match_mode(tmp, path)
+        # os.replace, not Path.replace: tests patch cache.os.replace
+        retry_locked(partial(os.replace, tmp, path), path, "replace")
+    except BaseException:
+        with contextlib.suppress(OSError):  # still locked (Windows): keep the real error
+            tmp.unlink(missing_ok=True)
+        raise
+
+
 def save_bytes(path: Path, data: bytes, *, parents: bool = False, durable: bool = False) -> None:
     """Atomically write ``data`` (unique temp file, then rename), with the mode a plain
     write would give (:func:`match_mode`); ``parents``: create the missing folders first.
@@ -463,20 +490,11 @@ def save_bytes(path: Path, data: bytes, *, parents: bool = False, durable: bool 
         return
     if parents:
         path.parent.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
-    os.close(fd)
-    tmp = Path(name)
-    try:
+    with atomic_path(path) as tmp:
         tmp.write_bytes(data)
         if durable:
             with tmp.open("r+b") as f:  # Windows flushes only a handle open for writing
                 os.fsync(f.fileno())
-        match_mode(tmp, path)
-        # os.replace, not Path.replace: tests patch cache.os.replace
-        retry_locked(partial(os.replace, tmp, path), path, "replace")
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
     if durable:
         _fsync_dir(path.parent)
 
