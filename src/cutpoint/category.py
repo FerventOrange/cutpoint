@@ -1034,8 +1034,7 @@ def needs_vision(p: SourceProbe, every_source: bool = False) -> bool:
         return False
     if every_source and not p.equirect:
         return True
-    found = _source(replace(p, vision=None), None)
-    return found.ambiguous or (found.decided_by == "camera tags" and not p.equirect)
+    return _asks_vision(p, _decide(_unseen(p), None))
 
 
 def _with_vision(
@@ -1276,11 +1275,49 @@ def _text_count(p: SourceProbe) -> int | None:
     return p.hud_text if p.hud_text is not None else p.screen_anchors
 
 
-def _as_default(p: SourceProbe) -> SourceProbe:
-    """``p`` as probed without ``--vision-detect-all``: the HUD text only when
-    :func:`needs_text` and the vision answer only when :func:`needs_vision` say so."""
-    p = p if needs_text(p) else _bare(p)
-    return p if needs_vision(p) else replace(p, vision=None)
+def _texted(p: SourceProbe) -> SourceProbe:
+    """``p`` with the HUD text check's and the screen-text cue's results only when
+    :func:`needs_text` says they were needed (without ``--vision-detect-all``)."""
+    return p if needs_text(p) else _bare(p)
+
+
+def _unseen(p: SourceProbe) -> SourceProbe:
+    """``p`` as decided without the vision model: :func:`_texted`, without its answer."""
+    return replace(_texted(p), vision=None)
+
+
+def _asks_vision(p: SourceProbe, quiet: SourceDecision) -> bool:
+    """Whether the vision model is asked about ``p`` (a frame probe, no telemetry) without
+    ``--vision-detect-all``, given ``quiet``, its decision without the answer and the speech:
+    unsure, or camera tags alone make it general (never a 360 source)."""
+    return quiet.ambiguous or (quiet.decided_by == "camera tags" and not p.equirect)
+
+
+def _evidence(p: SourceProbe) -> tuple[float, list[str]]:
+    """:func:`gameplay_score` of ``p``, its evidence followed by the vision model's answer."""
+    score, why = gameplay_score(p)
+    if p.vision in VISION_ANSWERS:
+        why.append(f"vision: {p.vision}")
+    return score, why
+
+
+def _tags_stand(p: SourceProbe, plain: SourceDecision, quiet: SourceDecision) -> bool:
+    """A vision answer about camera-tagged ``p`` was asked only because the tags decide
+    (:func:`needs_vision`): it can make it action, nothing else. True when the decision
+    without the answer stands: ``plain`` (with the speech) and ``quiet`` (without it) are
+    :func:`_unseen`'s decisions."""
+    if p.vision is None or not p.camera_marks:
+        return False
+    action = p.vision == V_ACTION and plain.decided_by == "camera tags" and not p.equirect
+    return quiet.decided_by == "camera tags" and not action
+
+
+def _answered(
+    p: SourceProbe, speech: float | None, plain: SourceDecision, quiet: SourceDecision
+) -> SourceDecision:
+    """The decision of :func:`_texted` ``p`` with its vision answer, without
+    ``--vision-detect-all``; ``plain`` and ``quiet`` as for :func:`_tags_stand`."""
+    return plain if _tags_stand(p, plain, quiet) else _decide(p, speech)
 
 
 def _source(p: SourceProbe, speech: float | None, every_source: bool = False) -> SourceDecision:
@@ -1291,8 +1328,9 @@ def _source(p: SourceProbe, speech: float | None, every_source: bool = False) ->
     carry the tags too, #958).
 
     ``every_source`` (``--vision-detect-all``, #1069): every source was shown to the vision
-    model and had the HUD text check. It only settles sources (:func:`_as_default` is the
-    decision without it). With an answer other than ``other``: a source sure without the
+    model and had the HUD text check. It only settles sources (the decision without it
+    keeps the HUD text only when :func:`needs_text` and the answer only when
+    :func:`needs_vision` say so). With an answer other than ``other``: a source sure without the
     option stays as decided, except sure gameplay that the answer (not ``gameplay``) and the
     checked HUD text (fewer than :data:`TEXT_ANCHORS` places) both contradict: unsure
     gameplay. A source unsure without it is decided as there, with the answer. Without such
@@ -1302,30 +1340,37 @@ def _source(p: SourceProbe, speech: float | None, every_source: bool = False) ->
             p.path, p.duration, ACTION_CAM, False, "camera telemetry", None, speech, "telemetry"
         )
     every = every_source and p.vision in (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN)
-    if not every and not needs_text(p):
-        p = _bare(p)  # checked only for --vision-detect-all: counts only with its answer
-    if p.vision is not None and p.camera_marks:
-        # asked only because the tags decide (needs_vision): the answer can make it action,
-        # nothing else; the speech (talk) is weighed as without it
-        plain = _source(replace(p, vision=None), speech)
-        by_tags = _source(replace(p, vision=None), None).decided_by == "camera tags"
-        action = p.vision == V_ACTION and plain.decided_by == "camera tags" and not p.equirect
-        if by_tags and not action:
-            return plain
-    score, why = gameplay_score(p)
+    if not every and (p.vision is None or not p.camera_marks):
+        # the text checked only for --vision-detect-all counts only with its answer
+        return _decide(_texted(p), speech)
+    unseen = _unseen(p)
+    plain = _decide(unseen, speech)
+    quiet = plain if speech is None else _decide(unseen, None)
+    if not every:
+        return _answered(_texted(p), speech, plain, quiet)
+    if _tags_stand(p, plain, quiet):
+        return plain
+    # it only settles: a sure decision without it stays, unless both disagree; without it
+    # the answer counts only where needs_vision would have asked
+    asked = p.frames >= MIN_FRAMES and _asks_vision(p, quiet)
+    base = _answered(_texted(p) if asked else unseen, speech, plain, quiet)
+    if not base.ambiguous:
+        text = _text_count(p)
+        doubted = p.vision != V_GAMEPLAY and text is not None and text < TEXT_ANCHORS
+        if base.category == GAMEPLAY and doubted:  # the answer and the text see no game
+            score, why = _evidence(p)
+            return SourceDecision(
+                p.path, p.duration, GAMEPLAY, True, ", ".join(why), score, speech, None
+            )
+        return base
+    return _decide(p, speech)
+
+
+def _decide(p: SourceProbe, speech: float | None) -> SourceDecision:
+    """The decision of ``p`` (no telemetry) as it stands: the HUD text, the screen-text cue
+    and the vision answer counted as given (see :func:`_source`)."""
+    score, why = _evidence(p)
     seen = p.vision if p.vision in (V_GAMEPLAY, V_ACTION, V_CAMERA, V_SCREEN) else None
-    if p.vision in VISION_ANSWERS:
-        why.append(f"vision: {p.vision}")
-    if every:  # it only settles: a sure decision without it stays, unless both disagree
-        base = _source(_as_default(p), speech)
-        if not base.ambiguous:
-            text = _text_count(p)
-            doubted = seen != V_GAMEPLAY and text is not None and text < TEXT_ANCHORS
-            if base.category == GAMEPLAY and doubted:  # the answer and the text see no game
-                return SourceDecision(
-                    p.path, p.duration, GAMEPLAY, True, ", ".join(why), score, speech, None
-                )
-            return base
     if (score >= GAMEPLAY_MIN) if seen is None else seen == V_GAMEPLAY:
         ambiguous = seen is None and (score < GAMEPLAY_SURE or _text_alone(p) or _cue_lifted(p))
         decided = None if ambiguous else "vision" if seen else _gameplay_evidence(p)
