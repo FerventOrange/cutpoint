@@ -556,6 +556,10 @@ def test_cmd_director_keeps_stale_stem_until_its_files_are_gone(
     assert "002_run" not in json.loads((out / "director_stems.json").read_text())
 
 
+# a reused path's keys (a usable camera path, A215)
+KEPT = [{"t": 20.0, "yaw": 5.0, "pitch": -8.0, "fov": 86.0}]
+
+
 def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backed_up(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -570,7 +574,7 @@ def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backe
         "vertical": False,
         "params": asdict(D.params_for(None)),
         "prompts": prompts_key(),  # the default (generic) profile's captions
-        "keys": ["kept"],
+        "keys": KEPT,
     }
     (out / "002_x.json").write_text(json.dumps(old))  # was segment B, now 003_x
     (out / "director_stems.json").write_text('["002_x"]')
@@ -581,7 +585,7 @@ def test_cmd_director_renumbered_path_taken_over_by_another_segment_is_not_backe
         force=False,
         segments=[seg(1.0, "z"), seg(10.0, "x"), seg(20.0, "x")],
     )
-    assert json.loads((out / "003_x.json").read_text())["keys"] == ["kept"]
+    assert json.loads((out / "003_x.json").read_text())["keys"] == KEPT
     assert not list(out.glob("002_*.bak"))
     assert "re-planned" not in caplog.text
 
@@ -601,13 +605,13 @@ def test_cmd_director_replans_a_path_of_another_forward_axis(
         "vertical": False,
         "params": asdict(D.params_for(None)),
         "prompts": prompts_key(),  # the default (generic) profile's captions
-        "keys": ["kept"],
+        "keys": KEPT,
     }
     (out / "001_laugh.json").write_text(json.dumps(old))
     monkeypatch.setattr(G, "cached_forward_axis", lambda src: axis)
     _, seen = _run_director(tmp_path, monkeypatch, out_name="mix", force=False)
     assert bool(seen) is replanned
-    assert (json.loads((out / "001_laugh.json").read_text())["keys"] == ["kept"]) is not replanned
+    assert (json.loads((out / "001_laugh.json").read_text())["keys"] == KEPT) is not replanned
 
 
 def test_cmd_director_preview_without_lrv_renders_from_insv(

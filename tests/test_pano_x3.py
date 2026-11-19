@@ -198,6 +198,27 @@ def test_scan_records_an_unreadable_trailer(home, camera, monkeypatch, caplog) -
     assert "trailer unreadable (bad trailer)" in caplog.text
 
 
+def test_an_unreadable_trailer_is_read_again_next_run(home, camera, monkeypatch) -> None:
+    """A210: a failed trailer read (a network share hiccup) is not cached, and an older
+    cache file holding one is read again."""
+    folder, _, _ = camera
+    calls: list[Path] = []
+
+    def broken(insv00: Path) -> dict:
+        calls.append(insv00)
+        raise Exception("bad trailer")
+
+    monkeypatch.setattr(x3, "read_trailer_meta", broken)
+    [clip, *_] = x3.scan(folder)
+    mpath = x3.cache.source_dir(Path(clip.source)) / f"x3-meta-v{x3.META_VERSION}.json"
+    assert not mpath.exists()
+    x3.cache.save_json(mpath, {"error": "an older run's failure"})
+    monkeypatch.setattr(x3, "read_trailer_meta", lambda insv00: {"camera": "synthetic"})
+    [clip, *_] = x3.scan(folder)
+    assert clip.meta == {"camera": "synthetic"}
+    assert x3.cache.load_json(mpath) == {"camera": "synthetic"}
+
+
 def test_scan_refuses_a_missing_or_foreign_folder(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match="Not a folder"):
         x3.scan(tmp_path / "missing")

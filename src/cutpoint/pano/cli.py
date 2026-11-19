@@ -509,7 +509,13 @@ def cmd_status(a: argparse.Namespace) -> None:
     for c in _clips(project):
         sdk = sdk_output(c)
         studio, why = find_studio_export(c)
-        mode = "sdk" if sdk.is_file() else "studio" if studio else "dfisheye (preview)"
+        # The same precedence as resolve_source("auto"): sdk > studio > dfisheye.
+        if sdk.is_file():
+            mode, render_file = "sdk", sdk
+        elif studio:
+            mode, render_file = "studio", Path(studio)
+        else:
+            mode, render_file = "dfisheye (preview)", None
         pv = load_views(Path(c.source)) if c.lrv else None
         report.append(
             {
@@ -518,7 +524,7 @@ def cmd_status(a: argparse.Namespace) -> None:
                 "duration": round(c.duration, 3),
                 "views": pv is not None,
                 "render": mode.split(" ")[0],
-                "render_file": Path(studio) if studio else sdk if sdk.is_file() else None,
+                "render_file": render_file,
             }
         )
         logger.info(
@@ -528,7 +534,7 @@ def cmd_status(a: argparse.Namespace) -> None:
             c.duration,
             "yes" if pv is not None else "no",
             mode,
-            studio or (sdk if sdk.is_file() else why),
+            render_file or why,
         )
     jsonout.output("clips", report)
 
@@ -571,13 +577,28 @@ def _plan_key(
     p: Any,
     fwd: Any = None,
     prompts: str | None = None,
+    inputs: Any = None,
 ) -> str:
-    """What a director path depends on (besides the clip's cached layers); ``fwd``: the
-    clip's forward axis when not the default (an upright clip); ``prompts``: the activity
-    captions' key (:func:`cutpoint.pano.candidates.prompts_key`)."""
+    """What a director path depends on; ``fwd``: the clip's forward axis when not the
+    default (an upright clip); ``prompts``: the activity captions' key
+    (:func:`cutpoint.pano.candidates.prompts_key`); ``inputs``: the identity of the cached
+    layers it was planned on (:func:`_layer_inputs`), so a recomputed view, voice or
+    orientation cache plans it anew (A212)."""
     seg = [clip_id, round(start, 3), round(end, 3), kind, vertical]
     extra = ([fwd] if fwd is not None else []) + ([{"prompts": prompts}] if prompts else [])
+    extra += [{"inputs": inputs}] if inputs is not None else []
     return json.dumps([seg, p, *extra], sort_keys=True)
+
+
+def _layer_inputs(source: str) -> Any:
+    """:func:`cutpoint.pano.candidates._inputs` of a clip's source (JSON-normalised, as read
+    back from a path file), or None when the source is not reachable."""
+    from cutpoint.pano.candidates import _inputs  # noqa: PLC0415
+
+    try:
+        return json.loads(json.dumps(_inputs(Path(source))))
+    except OSError:
+        return None
 
 
 def _axis_key(fwd: Any, det_frame: Any, wearer: Any) -> Any:
@@ -589,12 +610,17 @@ def _axis_key(fwd: Any, det_frame: Any, wearer: Any) -> Any:
 
 def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
     """Plan key -> ``(stem, path)`` of the current-version path JSONs in ``out_dir``."""
-    from cutpoint.pano.director import PATH_VERSION  # noqa: PLC0415
+    from cutpoint.pano.director import PATH_VERSION, validate_path  # noqa: PLC0415
 
     found = {}
     for f in sorted(out_dir.glob("[0-9][0-9][0-9]_*.json")):
         path = cache.load_json(f)
         if not isinstance(path, dict) or path.get("version") != PATH_VERSION or "vl" in path:
+            continue
+        try:
+            validate_path(path)
+        except ValueError as err:  # planned anew; the file is kept as a backup
+            logger.warning("%s: not a usable camera path (%s); planned anew", f, err)
             continue
         seg = path.get("segment") or {}
         key = _plan_key(
@@ -606,6 +632,7 @@ def _reusable(out_dir: Path) -> dict[str, tuple[str, dict[str, Any]]]:
             path.get("params"),
             _axis_key(path.get("forward_axis"), path.get("det_frame"), path.get("wearer_model")),
             path.get("prompts"),
+            path.get("inputs"),
         )
         found[key] = (f.stem, path)
     return found
@@ -798,8 +825,9 @@ def _direct(
             if fwd != G.axis_name(G.FORWARD_V)
             else None
         )
+        inputs = _layer_inputs(clip.source)
         key = _plan_key(
-            clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd, prompts
+            clip.clip_id, m["start"], m["end"], m.get("kind"), a.vertical, p, fwd, prompts, inputs
         )
         segs.append((f"{i:03d}_{slugify(m.get('label', ''), 40)}", m, clip, key))
     stems = {stem for stem, *_ in segs}
@@ -835,6 +863,10 @@ def _direct(
             )
             if prompts:  # read back by _reusable
                 path["prompts"] = prompts
+            # read back by _reusable: the layers as planning left them (it may cache the
+            # orientation track first)
+            if (inputs := _layer_inputs(clip.source)) is not None:
+                path["inputs"] = inputs
             if "forward_axis" in path and _upright_views(clip, views_ok):
                 path["wearer_model"] = G.UPRIGHT_WEARER  # planned with that model's views
 
@@ -933,6 +965,13 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     from cutpoint.pano.project import clip_for, load  # noqa: PLC0415
     from cutpoint.pano.stitch import stitch_clips  # noqa: PLC0415
 
+    picked = "--clips" if a.clips else "--from-clips" if a.from_clips else "--segments"
+    if (a.clips or a.from_clips or a.segments) and (a.top or a.max_total):
+        # --top / --max-total pick moments of highlights.json, which these replace (A219)
+        raise jsonout.ArgumentError(
+            f"{'--top' if a.top else '--max-total'} picks from highlights.json; "
+            f"drop it with {picked}"
+        )
     project = _project(a.project)
     jsonout.set_project(project)
     clips = load(project)
@@ -940,7 +979,13 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     if a.clips:
         from cutpoint.pano.x3 import select  # noqa: PLC0415
 
-        for c in select(list(clips.values()), a.clips, "--clips"):
+        every = list(clips.values())
+        unknown = [w for w in a.clips if not select(every, [w], "--clips")]
+        if unknown:  # as clips --ids: an unknown name is an error, not skipped (A219)
+            raise jsonout.ArgumentError(
+                f"Unknown --clips: {', '.join(unknown)} (see cutpoint 360 status {a.project})"
+            )
+        for c in select(every, a.clips, "--clips"):
             chosen[c.source] = c
     else:
         sources: list[str] = []
@@ -956,10 +1001,21 @@ def cmd_stitch(a: argparse.Namespace) -> None:
 
             sel, _ = select_moments(project, top=a.top, max_total=a.max_total)
             sources = [m["source"] for m in sel]
+        others = []
         for s in sources:
             c = clip_for(clips, s)
             if c is not None:
                 chosen[c.source] = c
+            elif s not in others:
+                others.append(s)
+        if others:  # as 360 director: named, not skipped silently (A219)
+            names = ", ".join(Path(s).name for s in others)
+            logger.warning("not 360 clips of the project, not stitched: %s", names)
+            jsonout.warn(
+                "not_a_360_clip",
+                f"not 360 clips of the project, not stitched: {names}",
+                [Path(s) for s in others],
+            )
     if not chosen:
         raise ValueError(
             "No 360 clips selected (use --clips ID ..., --from-clips DIR, --segments FILE or "
@@ -983,8 +1039,14 @@ def cmd_stitch(a: argparse.Namespace) -> None:
                 f"clip {r['clip']}: the stitch failed; see its log file",
                 [Path(r["log_file"])] if r.get("log_file") else [],
             )
+        elif r.get("verify"):
+            jsonout.warn(
+                "stitch_unverified",
+                f"clip {r['clip']}: the stitched file failed its check: {r['verify']}",
+                [Path(r["output"])],
+            )
     # Never the SDK's own output (``sdk``, ``log``, ``error``) or command line.
-    keys = ("clip", "output", "status", "seconds", "log_file", "estimated_gb")
+    keys = ("clip", "output", "status", "verify", "seconds", "log_file", "estimated_gb")
     path_keys = ("output", "log_file")  # Path, so the envelope has them absolute
     jsonout.output(
         "clips",
@@ -993,24 +1055,44 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     jsonout.output("dry_run", a.dry_run)
 
 
+QA_FPS = 2.0  # 360 qa --fps default
+QA_SIZE = "640x360"  # 360 qa --size default
+
+
 def cmd_qa(a: argparse.Namespace) -> None:
     """Rendered-frame direction QA (occlusion, close-ups, edge cuts, pans, horizon)."""
     from cutpoint.pano.qa import log_report, run_qa  # noqa: PLC0415
 
+    # options the mode does nothing with are refused, as --compare refuses --paths (A219)
+    unused = {"--fps": a.fps is not None, "--size": a.size is not None}
+    unused["--json-only"] = a.json_only
+    if a.compare:
+        unused["--paths"] = a.paths
+        given = [k for k, v in unused.items() if v]
+        if given:
+            raise jsonout.ArgumentError(
+                f"--compare takes the two qa.json files; drop {', '.join(given)}"
+            )
+    elif a.paths:
+        given = [k for k in ("--size", "--json-only") if unused[k]]
+        if given:
+            raise jsonout.ArgumentError(
+                f"--paths decodes no frames and writes no sheets; drop {', '.join(given)}"
+            )
     qa_dir = _folder(a.dir)
     _set_folder_project(qa_dir)
     if a.compare:
-        if a.paths:
-            raise jsonout.ArgumentError("--compare takes the two qa.json files; drop --paths")
         _compare_qa(qa_dir, a.compare)
         return
+    fps = QA_FPS if a.fps is None else a.fps
     if a.paths:
         from cutpoint.pano.qa_paths import run_paths_qa  # noqa: PLC0415
 
-        report = run_paths_qa(qa_dir, fps=a.fps)
+        report = run_paths_qa(qa_dir, fps=fps)
     else:
         _require_detector()  # before the CLIP load and the qa folder
-        report = run_qa(qa_dir, fps=a.fps, size=a.size, json_only=a.json_only)
+        size = parse_size(QA_SIZE) if a.size is None else a.size
+        report = run_qa(qa_dir, fps=fps, size=size, json_only=a.json_only)
     log_report(report)
     if jsonout.active():
         _report_qa(qa_dir, report)
@@ -1285,15 +1367,23 @@ def add_parser(sub: Any) -> None:
         "(--paths: geometric, from the paths only)",
     )
     qa.add_argument("dir")
-    qa.add_argument("--fps", type=float, default=2.0, help="frames checked per second")
+    qa.add_argument(
+        "--fps", type=float, help=f"frames checked per second (default {QA_FPS:g}; not --compare)"
+    )
     qa.add_argument(
         "--paths",
         action="store_true",
         help="geometric QA from the director paths and the 360 view layer, no rendering "
         "(also on pano_paths/<name>); writes <dir>_paths_qa/",
     )
-    qa.add_argument("--size", type=parse_size, default="640x360", help="decode size WIDTHxHEIGHT")
-    qa.add_argument("--json-only", action="store_true", help="skip the contact sheets")
+    qa.add_argument(
+        "--size",
+        type=parse_size,
+        help=f"decode size WIDTHxHEIGHT (default {QA_SIZE}; rendered QA only)",
+    )
+    qa.add_argument(
+        "--json-only", action="store_true", help="skip the contact sheets (rendered QA only)"
+    )
     qa.add_argument(
         "--compare",
         nargs=2,

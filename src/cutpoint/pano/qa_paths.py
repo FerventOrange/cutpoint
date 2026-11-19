@@ -48,6 +48,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, folders
+from cutpoint.pano import boxes as B
 from cutpoint.pano import geometry as G
 from cutpoint.pano import qa as Q
 from cutpoint.utils import natural_key
@@ -260,27 +261,9 @@ def sliver_subject_frames(
     return out
 
 
-def _iou(a: np.ndarray, b: np.ndarray) -> float:
-    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
-    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
-    inter = ix * iy
-    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
-    return inter / union if union > 0 else 0.0
-
-
 def _nms(det: np.ndarray, iou: float = NMS_IOU) -> np.ndarray:
     """Rows kept by per-frame non-maximum suppression (as the detector on a rendered frame)."""
-    keep = np.ones(len(det), bool)
-    order = np.lexsort((-det[:, 2], det[:, 0])) if len(det) else np.zeros(0, int)
-    for a_i, a in enumerate(order):
-        if not keep[a]:
-            continue
-        for b in order[a_i + 1 :]:
-            if det[b, 0] != det[a, 0]:
-                break
-            if keep[b] and _iou(det[a, 3:7], det[b, 3:7]) > iou:
-                keep[b] = False
-    return keep
+    return B.nms(det[:, 0], det[:, 2], det[:, 3:7], iou)
 
 
 def geo_frames(
@@ -379,6 +362,8 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
     Returns:
         :func:`qa.find_inputs`-like items plus ``duration`` (no ``video``).
     """
+    from cutpoint.pano.director import validate_path  # noqa: PLC0415
+
     manifest = cache.load_json(qa_dir / "manifest.json")
     out = []
     if manifest is not None:
@@ -406,6 +391,11 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
         except (OSError, ValueError):
             continue
         if not isinstance(path, dict) or "keys" not in path or "segment" not in path:
+            continue
+        try:
+            validate_path(path)
+        except ValueError as err:
+            logger.warning("%s: not a usable camera path (%s); skipped", js, err)
             continue
         seg = path["segment"]
         video = js.with_suffix(".mp4")

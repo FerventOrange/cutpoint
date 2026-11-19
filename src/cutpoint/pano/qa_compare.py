@@ -90,6 +90,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.pano import boxes as B
 from cutpoint.pano import qa as Q
 
 logger = logging.getLogger(__name__)
@@ -182,14 +183,6 @@ def cut_boxes(fr: dict[str, Any], th: Q.QAThresholds) -> np.ndarray:
     return rows[Q.edge_candidates(rows, sel, th) & Q.edge_hit(rows, th), 3:7]
 
 
-def _iou(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    lo = np.maximum(a[:, None, :2], b[None, :, :2])
-    hi = np.minimum(a[:, None, 2:], b[None, :, 2:])
-    inter = np.clip(hi - lo, 0.0, None).prod(2)
-    aa, ab = ((x[:, 2:] - x[:, :2]).prod(1) for x in (a, b))
-    return inter / np.maximum(aa[:, None] + ab[None, :] - inter, 1e-9)
-
-
 def join_frames(
     rendered: list[dict[str, Any]], paths: list[dict[str, Any]], fps: float
 ) -> list[tuple[dict[str, Any] | None, dict[str, Any] | None]]:
@@ -223,7 +216,7 @@ def median_dx(
         a, b = _boxes(r, th, own=False), _boxes(p, th, own=False)
         if not len(a) or not len(b):
             continue
-        iou = _iou(a, b)
+        iou = B.iou(a, b)
         for i in range(len(a)):
             j = int(iou[i].argmax())
             if iou[i, j] >= MATCH_IOU:
@@ -247,7 +240,7 @@ def size_ratios(
         a, b = _boxes(r, th, own=False), _boxes(p, th, own=False) + shift
         if not len(a) or not len(b):
             continue
-        iou = _iou(a, b)
+        iou = B.iou(a, b)
         for i in range(len(a)):
             j = int(iou[i].argmax())
             wb, hb = b[j, 2] - b[j, 0], b[j, 3] - b[j, 1]

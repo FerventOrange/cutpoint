@@ -67,6 +67,9 @@ So do these combinations:
 
 - `extend` with no padding and `--no-speech-aware`
 - `360 qa --compare` with `--paths`
+- `360 stitch --top` or `--max-total` with `--clips`, `--from-clips` or `--segments`, and an unknown `--clips` name
+- `360 qa --paths` with `--size` or `--json-only`
+- `360 qa --compare` with `--fps`, `--size` or `--json-only`
 - `assemble <project> --force` with `--format mp4`
 - `assemble <clips_dir>` with an option that only works from a project
 - `edit --format fcpxml|otio` with `--no-keep-clips`
@@ -125,9 +128,10 @@ So do these combinations:
 | `stale_timings_kept` | `360 analyze` | The run failed after `highlights.json` changed and the earlier run's `pano_timings.json` could not be removed (held open by another program); `files` names it. It does not describe the analysis in the project: delete it, or rerun `360 analyze` |
 | `duplicate_clip_numbers` | `360 scan`, `360 analyze --scan` | More than one recording of the project (this scan's or an earlier one's) has the same clip number (a formatted card, two cameras, merged days); the message names the numbers and their ids, `files` the sources. Each is a clip of its own with the id `YYYYMMDD_HHMMSS_NNN`: name it so in `--clips` and `--only` |
 | `events_not_in_highlights` | `360 analyze` | A source was not reachable, so `highlights.json` lacks the events |
-| `not_a_360_clip` | `360 director` | A selected moment is not a 360 clip and was skipped |
+| `not_a_360_clip` | `360 director`, `360 stitch` | A selected moment is not a 360 clip and was skipped |
 | `vl_check_unavailable` | `360 director` | `--vl-check` could not run or stopped answering |
 | `stitch_failed` | `360 stitch` | A clip's stitch failed; `files` names its log |
+| `stitch_unverified` | `360 stitch` | A stitched file has another frame count than the clip or is not 2:1; it is kept and used for renders (`verify` in its record names the problem); `files` names it. Restitch it with `--force` |
 | `qa_clips_skipped` | `360 qa` | Clips that could not be checked |
 | `qa_clips_unmatched` | `360 qa --compare` | Clips in only one of the two `qa.json` files |
 | `qa_source_mismatch` | `360 qa --compare` | A `qa.json` was written for another folder than `<dir>` |
@@ -161,7 +165,7 @@ So do these combinations:
 | `360 analyze` | `timings` (`pano_timings.json`: this run's `views`, `analyze_s`, `events_s`, `paths_s`, `scan_s` with `--scan` and `total_s`; with `--views-only` the earlier file's keys stay, with this run's `views` and `views_only_s`; `analyze_total_s` was removed, older files may still have it; see [360 video](workflows/360.md#commands); `null` in the envelope of a run that failed after `highlights.json` changed, as the earlier run's file was removed, or kept with a `stale_timings_kept` warning), `views` (`cached`, `computed`); with `--scan`, also those of `360 scan`; unless `--views-only`, also the outputs of `analyze` (`highlights`, `transcript`, `candidates`, `visual_candidates`, `suggested_top`, `style`); unless `--views-only` or `--no-events`, also `events`; unless `--views-only`, also `candidate_paths` (`dir`, `candidates`, `computed`, `cached`, `skipped`, `failed`, `seconds`, `flags`: candidates per flag code; see [360 video](workflows/360.md#camera-paths-of-the-candidates)) |
 | `360 status` | `sdk` (`exe`, `origin`, `found`, `runs`, `version`); with a project, `clips` (each `id`, `mode`, `duration`, `views`, `render`, `render_file`) |
 | `360 director` | `paths_dir`, `paths` (each `path`, `preview`), `count`, `vl_check` |
-| `360 stitch` | `clips` (each `clip`, `output`, `status`, `seconds`, `log_file`, `estimated_gb`), `dry_run`. Never the SDK's own output |
+| `360 stitch` | `clips` (each `clip`, `output`, `status` (`ok`, `failed`, `exists` or `dry-run`), `seconds`, `log_file`, `estimated_gb`, and `verify`, only when an `ok` stitch failed its check: what did not match), `dry_run`. Never the SDK's own output |
 | `360 qa` | `qa_dir`, `report`, `mode`, `sheets`, `clips` (each `file`, `score`, `pass`, `fails`), `count`, `passed`, `score`, `by_mode` and `by_self_method` (the `qa.json` edit's `edge_cut` breakdowns: per render `mode` or `self_method`, its `clips`, `frames`, `duration` and `edge_cut` share; `{}` without a checked clip). With `--compare`: `edge_gap` (its path), `mode` (`compare`), `rendered` and `paths` (the two `qa.json`), `clips` (each `file`, `rendered_only`, `causes`, `other_detail`), `count`, `rendered_only`, `causes`, `other_detail`, `by_mode` and `by_self_method` (`edge_gap.json`'s frame counts per rendered `mode` or `self_method`: `clips`, `frames`, `rendered_edge`, `paths_edge`, `rendered_only`; `unknown` for an older `qa.json`) (see [360 video](workflows/360.md#where-the-two-qas-disagree)) |
 | `360 repair` | The repair report's own keys, and `exclude_file` (`null` if there are no exclusions) |
 | `crashes` | `crashes` (the `crashes.json` path), `count`, `candidates` (strongest first, each with the `crashes.json` keys `id`, `source`, `t0` and `t1` (impact span, s), `confidence` (0-1), `confirmed` (dense check ran), `origin` (`telemetry` or `words`), `clip` (`start`, `end`, `until`, and `reaction` when planned) and `sheet` (when one was written)), `activity_file` (the `activity.json` path), `profile_name` |

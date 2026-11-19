@@ -4,6 +4,7 @@ that depend on it (views, director paths). Synthetic IMU fused by ``geometry.fus
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import sys
@@ -138,7 +139,7 @@ def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
         G.orientation(src, Path("i00"), FPS, len(o.t))
     assert len(caplog.records) == 1  # the second call is silent
     assert G.cached_forward_axis(src) == "+z"
-    assert cache.load_json(G._orient_path(src).with_suffix(".json"))["forward_axis"] == "+z"
+    assert G.load_orientation(src).meta["forward_axis"] == "+z"
 
 
 # --------------------------------------------------------------------------- caches
@@ -162,6 +163,23 @@ def test_views_cache_follows_the_forward_axis(home, tmp_path, up, meta, valid) -
     assert (VW.load_views(src) is not None) is valid
 
 
+def test_a_views_meta_written_for_other_arrays_is_not_used(home, tmp_path) -> None:
+    """A211: the arrays and their meta carry one token; an interrupted save leaves them
+    apart, and the pair is not used. Files from before the token have it in neither."""
+    src = tmp_path / "clip.lrv"
+    src.write_bytes(b"x")
+    path = VW.cache_path(src)
+    write_views(src, {"source": str(src)})
+    assert VW.load_views(src) is not None
+    z = np.zeros(0)
+    d = np.zeros((0, len(VW.DET_COLS)), np.float32)
+    np.savez(path, t=z, emb=z, det=d, box_emb=z, box_idx=z, pair=np.array("new"))
+    for meta_pair, ok in (("old", False), (None, False), ("new", True)):
+        meta = {"source": str(src)} | ({"pair": meta_pair} if meta_pair else {})
+        cache.save_json(path.with_suffix(".json"), meta)
+        assert (VW.load_views(src) is not None) is ok
+
+
 def test_a_stale_views_cache_is_logged_once(home, tmp_path, caplog) -> None:
     src = tmp_path / "stale.lrv"
     src.write_bytes(b"x")
@@ -181,10 +199,15 @@ def test_a_cached_track_records_its_axis_in_memory_only_when_upright(home, tmp_p
         path = G._orient_path(src)
         path.parent.mkdir(parents=True, exist_ok=True)
         z = np.zeros(10, np.float32)
-        np.savez(path, t=z, up=np.tile(np.float32(up), (10, 1)), heading=z, heading_smooth=z, q=z)
-        cache.save_json(path.with_suffix(".json"), {"fps": 30.0})
+        ups = np.tile(np.float32(up), (10, 1))
+        meta = np.array(json.dumps({"fps": 30.0}))
+        np.savez(path, t=z, up=ups, heading=z, heading_smooth=z, q=z, meta=meta)
         assert G.load_orientation(src).meta.get("forward_axis") == want
-        assert cache.load_json(path.with_suffix(".json")) == {"fps": 30.0}
+        with np.load(path) as stored:
+            assert json.loads(str(stored["meta"])) == {"fps": 30.0}
+
+
+KEYS = [{"t": 1.0, "yaw": 0.0, "pitch": -5.0, "fov": 86.0}]  # a usable path (A215)
 
 
 def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
@@ -198,6 +221,7 @@ def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
         "kind": "people",
         "vertical": False,
         "params": {"a": 1},
+        "keys": KEYS,
     }
     cache.save_json(tmp_path / "001_a.json", base)
     upright = {
@@ -214,6 +238,35 @@ def test_director_reuse_key_has_the_axis_only_when_upright(tmp_path) -> None:
     assert PC._plan_key("002", *seg[1:], now) in found
     assert PC._plan_key("002", *seg[1:]) not in found  # planned upright, now default: re-plan
     assert PC._plan_key("003", *seg[1:], now) not in found  # d10b5c0's +z views: re-plan
+
+
+def test_director_reuse_key_follows_the_layers_the_path_was_planned_on(tmp_path) -> None:
+    """A212: a path records the identity of the view, voice and orientation caches; once
+    one is recomputed the key differs and the path is planned anew."""
+    from cutpoint.pano.director import PATH_VERSION  # noqa: PLC0415
+
+    seg = ("001", 1.0, 5.0, "people", False, {"a": 1})
+    planned_on = {"dir": "d", "views": ["v.npz", 10, 1], "voice": None, "orient": None}
+    path = {
+        "version": PATH_VERSION,
+        "clip": "001",
+        "segment": {"start": 1.0, "end": 5.0},
+        "kind": "people",
+        "vertical": False,
+        "params": {"a": 1},
+        "keys": KEYS,
+        "inputs": planned_on,
+    }
+    cache.save_json(tmp_path / "001_a.json", path)
+    found = PC._reusable(tmp_path)
+    assert PC._plan_key(*seg, None, None, planned_on) in found
+    recomputed = planned_on | {"views": ["v.npz", 10, 2]}
+    assert PC._plan_key(*seg, None, None, recomputed) not in found
+    assert PC._plan_key(*seg) not in found
+
+
+def test_layer_inputs_of_an_unreachable_source_is_none(tmp_path) -> None:
+    assert PC._layer_inputs(str(tmp_path / "gone.lrv")) is None
 
 
 # --------------------------------------------------------------------------- yaw 0 and meta

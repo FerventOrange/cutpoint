@@ -32,6 +32,8 @@ with the opposite sign).
 
 from __future__ import annotations
 
+import contextlib
+import json
 import logging
 import math
 import time
@@ -41,7 +43,8 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache
+from cutpoint import cache, state
+from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +270,8 @@ class Orientation:
 
 
 def _orient_path(source: Path) -> Path:
-    """Cache file of a clip's orientation track (meta in the ``.json`` beside it)."""
+    """Cache file of a clip's orientation track (its meta inside, as ``meta``: one file, so
+    the track and its meta are written together, A211)."""
     return cache.source_dir(source) / f"x3-orient-v{ORIENT_VERSION}.npz"
 
 
@@ -287,28 +291,50 @@ def _cached_orientation(z: Any, meta: dict[str, Any]) -> Orientation:
 _NPZ_ERRORS = cache.NPZ_ERRORS
 
 
-def _read_orientation(path: Path, meta: dict[str, Any]) -> Orientation | None:
-    """The track cached in ``path``, or None when it is missing or unreadable (corrupt)."""
+def _read_orientation(path: Path) -> Orientation | None:
+    """The track cached in ``path``, or None when it is missing, unreadable (corrupt) or has
+    no meta inside (written with the meta in a ``.json`` beside it: computed anew)."""
     if not path.exists():
         return None
     try:
         with np.load(path) as z:
+            if "meta" not in z.files:
+                return None
+            meta = json.loads(str(z["meta"]))
+            if not isinstance(meta, dict):
+                return None
             return _cached_orientation(z, meta)
     except _NPZ_ERRORS as err:
         logger.debug("%s: orientation cache unreadable (%s); treated as missing", path, err)
         return None
 
 
+# cache file -> (its stamp, the track read from it): load_orientation reads a file once per
+# version (A727); a rewrite (another stamp) is read again
+_ORIENT_MEMO: dict[str, tuple[Any, Orientation | None]] = state.register_container(
+    __name__, "_ORIENT_MEMO", {}
+)
+
+
 def load_orientation(source: Path) -> Orientation | None:
-    """The cached orientation track of a clip, or None (never parses the IMU)."""
+    """The cached orientation track of a clip, or None (never parses the IMU). Read from
+    disk once per version of the cache file (its path, size and modification time); the
+    track returned is shared, so callers must not change it."""
     try:
         path = _orient_path(source)
     except OSError:
         return None
-    meta = cache.load_json(path.with_suffix(".json")) or {}
-    if "fps" not in meta:
+    stamp = file_stamp(path)
+    if stamp is None:
         return None
-    return _read_orientation(path, meta)
+    hit = _ORIENT_MEMO.get(str(path))
+    if hit is not None and hit[0] == stamp:
+        return hit[1]
+    o = _read_orientation(path)
+    o = o if o is not None and "fps" in o.meta else None
+    _ORIENT_MEMO.clear()  # keep one clip: a track is a few MB
+    _ORIENT_MEMO[str(path)] = (stamp, o)
+    return o
 
 
 def cached_forward_axis(source: Path) -> str | None:
@@ -545,13 +571,14 @@ def orientation(
 
     ``q_offset_s`` (the renderer's IMU sync) recomputes a track cached with
     another offset; None takes any. An unreadable (corrupt) cache file is computed anew. The
-    ``.npz`` is written atomically (:func:`cutpoint.cache.save_bytes`), so a concurrent
-    reader never sees half of it.
+    ``.npz`` (the track and its meta) is written atomically
+    (:func:`cutpoint.cache.save_bytes`), so a concurrent reader never sees half of it.
     """
     path = _orient_path(source)
-    meta = cache.load_json(path.with_suffix(".json")) or {"fps": fps}
-    same = q_offset_s is None or meta.get("q_offset_s", 0.0) == q_offset_s
-    if not force and same and (cached := _read_orientation(path, meta)) is not None:
+    cached = None if force else _read_orientation(path)
+    if cached is not None and (
+        q_offset_s is None or cached.meta.get("q_offset_s", 0.0) == q_offset_s
+    ):
         _log_axis(source, cached)
         return cached
     t0 = time.perf_counter()
@@ -565,8 +592,10 @@ def orientation(
         heading=o.heading.astype(np.float32),
         heading_smooth=o.heading_smooth.astype(np.float32),
         q=o.q.astype(np.float32),
+        meta=np.array(json.dumps(o.meta)),
     )
-    cache.save_json(path.with_suffix(".json"), o.meta)
+    with contextlib.suppress(OSError):  # the meta file of an older cache
+        path.with_suffix(".json").unlink(missing_ok=True)
     _log_axis(source, o)
     return o
 
@@ -666,19 +695,6 @@ def sliver_boxes(
     return [tuple(float(v) for v in box[i]) if seen[i] else None for i in range(len(b))]
 
 
-def sliver_box(
-    r: np.ndarray,
-    tx: float,
-    ty: float,
-    box_yaw: float,
-    box_pitch: float,
-    box_w: float,
-    box_h: float,
-) -> tuple[float, float, float, float] | None:
-    """:func:`sliver_boxes` of one box."""
-    return sliver_boxes(r, tx, ty, np.array([box_yaw, box_pitch, box_w, box_h]))[0]
-
-
 def project_box_visible(
     view_yaw: float,
     view_pitch: float,
@@ -718,7 +734,7 @@ def project_box_visible(
     points with ``|y| <= 1`` too, or moving an off-frame yaw line into the
     frame, tracked the rendered QA worse: score r 0.80 vs 0.86). A box with a
     share below :data:`SLIVER_SHARE` is the part in view instead
-    (:func:`sliver_box`; the share stays the cross's).
+    (:func:`sliver_boxes`; the share stays the cross's).
 
     The share of the box inside the frame (0-1) is the clipped box's area over
     the box's projected extent (both in frame units, the extent clamped to 2
@@ -733,47 +749,73 @@ def project_box_visible(
         y down, not clipped; a sliver's part in view is) and its visible share, or None
         when the box centre is behind the camera.
     """
-    vfov = flat_fov(hfov, out_w, out_h)
+    box = np.array([[box_yaw, box_pitch, box_w, box_h]], float)
+    return project_boxes(view_yaw, view_pitch, hfov, (out_w, out_h), box, steps, polar_shift)[0]
+
+
+def project_boxes(
+    view_yaw: float,
+    view_pitch: float,
+    hfov: float,
+    size: tuple[int, int],
+    boxes: np.ndarray,
+    steps: int = 9,
+    polar_shift: float = 0.5,
+) -> list[tuple[tuple[float, float, float, float], float] | None]:
+    """:func:`project_box_visible` of ``(k, 4)`` boxes (yaw, pitch, w, h) in one view,
+    all at once (the safe-area pass projects every person of a view per check)."""
+    k = len(boxes)
+    if not k:
+        return []
+    b = np.asarray(boxes, float)
+    by, bp, bw, bh = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
+    vfov = flat_fov(hfov, *size)
     tx, ty = math.tan(math.radians(hfov) / 2), math.tan(math.radians(vfov) / 2)
     r = view_matrix(view_yaw, view_pitch)
-    c = r.T @ yaw_pitch_ray(box_yaw, box_pitch)
-    if c[2] <= 1e-6:
-        return None
     s = np.linspace(-0.5, 0.5, steps)
     lim = POLAR_LINE_MAX_DEG
-    p_w = box_pitch + math.copysign(polar_shift * box_h / 2, box_pitch)
-    p_w = min(lim, max(-lim, p_w))
-    # vertical lines at every grid yaw: (steps yaws, steps pitches)
-    gy, gp = np.meshgrid(box_yaw + s * box_w, box_pitch + s * box_h, indexing="ij")
-    vx, vy, vz = _view_xy(r, tx, ty, gy, gp)
+    p_w = np.clip(bp + np.copysign(polar_shift * bh / 2, bp), -lim, lim)
+    # vertical lines at every grid yaw (k, steps yaws, steps pitches), then the yaw line
+    shape = (k, steps, steps)
+    gy = np.broadcast_to(by[:, None, None] + s[None, :, None] * bw[:, None, None], shape)
+    gp = np.broadcast_to(bp[:, None, None] + s[None, None, :] * bh[:, None, None], shape)
+    hyaw = (by[:, None] + s[None, :] * bw[:, None])[:, None, :]
+    py = np.concatenate([gy, hyaw], 1)
+    pp = np.concatenate([gp, np.broadcast_to(p_w[:, None, None], hyaw.shape)], 1)
+    ax, ay, az = _view_xy(r, tx, ty, py, pp)
+    vx, vy, vz = ax[:, :steps], ay[:, :steps], az[:, :steps]
+    hx, hy, hz = ax[:, steps], ay[:, steps], az[:, steps]
     centre = steps // 2
-    line = centre
-    if not (np.abs(vx[centre]) <= 1).any():
-        vis = [k for k in range(steps) if (np.abs(vx[k]) <= 1).any()]
-        if vis:
-            line = min(vis, key=lambda k: abs(k - centre))
-    hx, hy, hz = _view_xy(r, tx, ty, box_yaw + s * box_w, np.full(steps, p_w))
-    xs = np.r_[hx, vx[line]]
-    y = np.r_[hy, vy[line]]
+    front_c = vz[:, centre, centre] > 1e-6  # the box centre in front of the camera
+    seen = (np.abs(vx) <= 1).any(2)  # (k, steps): per vertical line
+    far = np.where(seen, np.abs(np.arange(steps) - centre)[None, :], steps + 1)
+    line = np.where(seen[:, centre], centre, np.where(seen.any(1), far.argmin(1), centre))
+    rows = np.arange(k)
+    xs = np.concatenate([hx, vx[rows, line]], 1)
+    y = np.concatenate([hy, vy[rows, line]], 1)
     in_x = np.abs(xs) <= 1
-    ys = y[in_x] if in_x.any() else y
-    box = (
-        float((xs.min() + 1) / 2),
-        float((ys.min() + 1) / 2),
-        float((xs.max() + 1) / 2),
-        float((ys.max() + 1) / 2),
-    )
-    # visible share: the clipped box over the box's whole extent (clamped)
-    front = np.r_[hz, vz[centre]] > FRONT_Z
-    fy = np.r_[np.r_[hy, vy[centre]][front], ys]
-    full = np.clip(np.r_[xs.min(), fy.min(), xs.max(), fy.max()], -3.0, 3.0)
-    full_area = (full[2] - full[0]) * (full[3] - full[1])
-    vis = np.clip([xs.min(), ys.min(), xs.max(), ys.max()], -1.0, 1.0)
-    vis_area = max(0.0, vis[2] - vis[0]) * max(0.0, vis[3] - vis[1])
-    share = float(vis_area / full_area) if full_area > 0 else 0.0
-    if share < SLIVER_SHARE:
-        box = sliver_box(r, tx, ty, box_yaw, box_pitch, box_w, box_h) or box
-    return box, share
+    use = np.where(in_x.any(1)[:, None], in_x, True)
+    ys_min = np.where(use, y, np.inf).min(1)
+    ys_max = np.where(use, y, -np.inf).max(1)
+    front = np.concatenate([hz, vz[:, centre]], 1) > FRONT_Z
+    yc = np.concatenate([hy, vy[:, centre]], 1)
+    fy_min = np.minimum(np.where(front, yc, np.inf).min(1), ys_min)
+    fy_max = np.maximum(np.where(front, yc, -np.inf).max(1), ys_max)
+    x_min, x_max = xs.min(1), xs.max(1)
+    full = np.clip(np.stack([x_min, fy_min, x_max, fy_max], 1), -3.0, 3.0)
+    full_area = (full[:, 2] - full[:, 0]) * (full[:, 3] - full[:, 1])
+    vis = np.clip(np.stack([x_min, ys_min, x_max, ys_max], 1), -1.0, 1.0)
+    vis_area = np.maximum(0.0, vis[:, 2] - vis[:, 0]) * np.maximum(0.0, vis[:, 3] - vis[:, 1])
+    share = np.divide(vis_area, full_area, out=np.zeros(k), where=full_area > 0)
+    box = (np.stack([x_min, ys_min, x_max, ys_max], 1) + 1) / 2
+    out = [
+        (tuple(float(v) for v in box[i]), float(share[i])) if front_c[i] else None for i in range(k)
+    ]
+    sl = np.flatnonzero(front_c & (share < SLIVER_SHARE))  # the part in view, as there
+    for i, bi in zip(sl, sliver_boxes(r, tx, ty, b[sl]) if len(sl) else [], strict=True):
+        if bi is not None:
+            out[i] = (bi, float(share[i]))
+    return out
 
 
 class FisheyeSampler:
