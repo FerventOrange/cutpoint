@@ -150,6 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Candidate floors no longer depend on one outlier: `analyze` cuts a source's moments at a share of its strongest peak capped at twice its second strongest, so one very loud moment no longer drops every other moment of that source, and the recovered parts of a source (`--recover`) share one floor; action-cam candidates are cut at the absolute floor only (no share of the part's strongest moment); and a crash's audio score in `crashes.json` no longer reads a quiet source's loudest 1% as a yell. The absolute floor is now 5% of the style's weight sum (was a fixed 0.05: `sport` and custom styles whose weights do not sum to 1 cut slightly differently). A source whose strongest moment is at most twice its second keeps the candidates it had. (#1085)
 - `--json` now reports eight WARNINGs that were only logged, as `true_peak_over_ceiling`, `crossfade_no_room`, `earlier_output`, `stale_srt`, `kept_srt`, `event_tails_no_events`, `compress_peaks_dropped` and `read_error_trimmed` warnings (see docs/commands.md). (#1085)
 - `cutpoint extend` warns about mixed 360 sources (`pano_mixed_sources`) and refuses a non-empty folder with the same `--force` hint as `clips`. (#1085)
 - Every `cutpoint` start is faster: `--help`, `paths`, `<command> --help` and the other light commands no longer load numpy, requests or the export and events modules; each command loads what it needs when it runs. (#1085)

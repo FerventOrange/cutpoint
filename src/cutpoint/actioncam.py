@@ -96,6 +96,12 @@ VLM_IDLE_TAGS = ("transit", "standing_talking", "indoor_break")  # friends do no
 STRETCH = 0.7  # a pick takes the run around its peak that stays above this share of it
 FEATURES_DIR = "action_cam_features"
 PICK_FLOOR = 0.02  # a peak of the weighted sum at or below this gives no clip (:func:`pick`)
+# Nor, by default, one below this share of the part's strongest peak. The action-cam
+# candidates of ``analyze`` pass 0, so only the absolute floor (:func:`source_floor`) holds:
+# one strong moment (a 1.0 ``wipeout``) no longer hides a source's other moments, and the cut
+# is the same score points in every source and recovered part (#1085 A188). The mix and the
+# visual pool, which pick per category and part, keep it.
+PICK_REL_FLOOR = 0.08
 # The features only camera telemetry fills (:func:`build_features`). Not ``wipeout``:
 # crashes.json can list a crash on a source without telemetry (spoken cues, the visual check).
 TELEMETRY_FEATURES = ("airtime", "crash", "speed", "carve", "faces", "stopped", "short_clip")
@@ -512,6 +518,7 @@ def pick(
     offset: float = 0.0,
     friends_strong: bool = True,
     floor: float = PICK_FLOOR,
+    rel_floor: float = PICK_REL_FLOOR,
 ) -> list[Pick]:
     """Peak-pick clips with feature-specific geometry; results do not overlap.
 
@@ -524,6 +531,7 @@ def pick(
         friends_strong: A style's ``mask_friends`` (see :func:`effective_mask`).
         floor: No clip from a peak at or below this (:func:`source_floor` for a source
             without telemetry).
+        rel_floor: Nor from one below this share of the strongest peak (0: none).
     """
     combined = combine(features, weights, mask, friends_strong)
     n = len(combined)
@@ -535,7 +543,7 @@ def pick(
     while len(picks) < max_picks and gmax > 0:
         i = int(score.argmax())
         peak = float(score[i])
-        if peak <= floor or peak < 0.08 * gmax:
+        if peak <= floor or peak < rel_floor * gmax:
             break
         # The stretch: the run around the peak that stays above STRETCH of it (a
         # flat VLM window, a long fast section) is one moment and gives one clip.

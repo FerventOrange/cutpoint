@@ -134,6 +134,53 @@ def test_default_keeps_the_weak_peaks_of_a_short_source():
     assert len(got) == 4  # 0.2 is under the quarter floor, 0.3 and 0.4 are kept
 
 
+@pytest.mark.parametrize("name", ["gaming", "action"])
+def test_one_spike_does_not_hide_the_sources_other_moments(name):
+    # #1085 A104: a spike 5x the next moment; the floor is a quarter of twice the second
+    # peak (1.2), not of the spike, so the moments down to 0.3 stay
+    got = loud_picks(name, [3.0, 0.6, 0.5, 0.4, 0.35, 0.2])
+    w = get_style(name).weights["loudness"]
+    assert sorted(round(c.peak / w, 2) for c in got) == [0.35, 0.4, 0.5, 0.6, 3.0]
+
+
+def test_a_strongest_peak_under_twice_the_second_is_the_reference():
+    assert analyze._reference([1.0, 0.6, 0.4]) == 1.0
+    assert analyze._reference([3.0, 0.6, 0.4]) == pytest.approx(1.2)
+    assert analyze._reference([0.4]) == 0.4 and analyze._reference([]) == 0.0
+
+
+def two_parts(first: list[float], second: list[float]) -> list[analyze.SourceResult]:
+    """One source read in two recovered parts, loudness bumps of these heights 60 s apart."""
+    out = []
+    for offset, heights in ((0.0, first), (400.0, second)):
+        n = int(60 * (len(heights) + 1) / DT)
+        sig = {k: np.zeros(n) for k in SIGNALS}
+        for i, h in enumerate(heights):
+            sig["loudness"] += bump(30.0 + 60.0 * i, n, h)
+        ps = analyze.PartSignals(n, sig, [], [], [], [], [])
+        out.append(analyze.SourceResult(Path("a.mp4"), None, offset, n * DT, [], [], None, ps))
+    return out
+
+
+def test_the_recovered_parts_of_a_source_share_one_floor():
+    # #1085 A104: picked alone, the second part's floor was a quarter of its own 0.3, so a 0.2
+    # moment was kept there and dropped in the first part; now both drop it
+    style = get_style("gaming")
+    w = style.weights["loudness"]
+    parts = two_parts([1.0, 0.5, 0.2], [0.3, 0.2])
+    assert analyze.pick_reference(parts, style) == pytest.approx(w)
+    analyze.pick_sources(parts, style, None, {})
+    got = [sorted(round(c.peak / w, 2) for c in p.candidates) for p in parts]
+    assert got == [[0.5, 1.0], [0.3]]
+
+
+def test_a_source_in_one_part_is_picked_as_by_pick_candidates():
+    [part] = two_parts([1.0, 0.5, 0.2], [])[:1]
+    alone = analyze.pick_candidates(part, get_style("gaming"), None, {})
+    analyze.pick_sources([part], get_style("gaming"), None, {})
+    assert spans(part.candidates) == spans(alone)
+
+
 def test_an_open_list_applies_the_long_list_floor_only_past_the_usual_count():
     usual = analyze.usual_count(get_style("gaming"))
     got = loud_picks("gaming", heights_with_tail(usual))

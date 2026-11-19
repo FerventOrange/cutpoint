@@ -163,14 +163,48 @@ def test_source_constants_are_computed_once_and_equal_the_per_candidate_values(m
     yell, ref_y, ref_l = inp.voice_refs
     v = inp.voice
     assert np.array_equal(yell, np.maximum(v["raw_cheer"], v["hp_cheer"]))
-    assert ref_y == max(float(np.percentile(yell, 99)), 1e-4)
-    assert ref_l == max(float(np.percentile(v["hp_laugh"], 99)), 1e-4)
+    assert ref_y == max(float(np.percentile(yell, 99)), crash.AUDIO_REF_YELL)
+    assert ref_l == max(float(np.percentile(v["hp_laugh"], 99)), crash.AUDIO_REF_LAUGH)
     calls = []
     real = np.percentile
     monkeypatch.setattr(np, "percentile", lambda *a, **k: calls.append(1) or real(*a, **k))
     first = [crash.audio_feature(inp, t, t + 2.0) for t in (5.0, 20.0, 40.0)]
     assert len(calls) == 0  # the references were taken above, once
     assert first[0]["score"] != first[1]["score"] or first[0]["yell"] != first[1]["yell"]
+
+
+def _voice_source(level: float, loud: float) -> crash.SourceInputs:
+    """60 s of PANNs cheer and laughter at ``level``, with a 2 s stretch at ``loud`` (20-22 s,
+    3% of the source: the 99th percentile) and the rest of the source as it was."""
+    n = 600
+    cheer, laugh = np.full(n, level), np.full(n, level)
+    cheer[200:220] = laugh[200:220] = loud
+    voice = {"raw_cheer": cheer, "hp_cheer": cheer, "hp_laugh": laugh}
+    return crash.SourceInputs(path=Path("a.mp4"), duration=n / 10, voice=voice)
+
+
+def test_the_loudest_moment_of_a_quiet_source_is_no_yell():
+    # #1085 A189: a source whose loudest 1% is under the level the voice layer reads as
+    # laughter at all; scored against its own 99th percentile it reached 0.5
+    inp = _voice_source(5e-5, 1.2e-4)
+    assert crash.audio_feature(inp, 20.0, 21.0)["score"] < 0.1  # was 0.5
+
+
+def test_a_yell_of_normal_footage_scores_as_before():
+    # laughter around 1e-3 (the voice layer's calibration footage): above the references' floor
+    inp = _voice_source(1e-4, 2e-3)
+    _, ref_y, ref_l = inp.voice_refs
+    assert (ref_y, ref_l) == (2e-3, 2e-3)  # the 99th percentile, not the floor
+    assert crash.audio_feature(inp, 20.0, 21.0)["score"] == 0.5
+    assert crash.audio_feature(inp, 40.0, 41.0)["score"] == 0.0  # the quiet rest
+
+
+def test_the_audio_references_floor_is_where_the_voice_layer_starts_to_read_laughter():
+    from cutpoint.events.voice import VoiceCalibration  # noqa: PLC0415
+
+    cal = VoiceCalibration()
+    assert pytest.approx(10**cal.laugh_log_thr) == crash.AUDIO_REF_LAUGH
+    assert pytest.approx(10**cal.laugh_log_thr / cal.cheer_weight) == crash.AUDIO_REF_YELL
 
 
 def test_source_constants_are_none_without_their_layer():

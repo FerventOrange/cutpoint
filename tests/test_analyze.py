@@ -58,7 +58,7 @@ def recovering(home, tmp_path, monkeypatch):
     has each call's ``(offset, readable_from)``."""
     video = write(tmp_path / "videos" / "a.mp4")
     proj = tmp_path / "proj"
-    state = SimpleNamespace(video=video, proj=proj, seen=[], record={}, probes=[])
+    state = SimpleNamespace(video=video, proj=proj, seen=[], record={}, probes=[], loud={})
 
     def fake_source(src, style, tr, use_scenes, max_cand, timings, offset=0.0, **kw):
         state.seen.append((offset, kw.get("readable_from")))
@@ -66,7 +66,13 @@ def recovering(home, tmp_path, monkeypatch):
             src, 300.0, 300.0, 640, 360, Fraction(30), "yuv420p", "h264", 0, None, None, None
         )
         rec = dict(state.record) if not offset else None
-        return analyze.SourceResult(src, info, offset, 300.0 - offset, [], [], rec)
+        n = int((300.0 - offset) * 10)  # with --recover the parts are picked after the loop
+        x = np.arange(n) / 10
+        loud = sum(
+            (h * np.exp(-((x - t) ** 2)) for t, h in state.loud.get(offset, [])), np.zeros(n)
+        )
+        ps = analyze.PartSignals(n, {"loudness": loud}, [], [], [], [], [])
+        return analyze.SourceResult(src, info, offset, 300.0 - offset, [], [], rec, ps)
 
     def probe_window(src, t):
         state.probes.append(t)
@@ -109,6 +115,21 @@ def test_an_old_record_without_the_end_of_the_damage_gives_the_part_no_lead_in(r
     assert recovering.probes == []
     assert recovering.seen == [(0.0, None), (136.0, None)]
     assert _saved_record(recovering)["unreadable_until"] is None
+
+
+def test_the_recovered_parts_of_a_source_are_cut_at_one_floor(recovering):
+    # #1085 A104: the part after the damage once had its own floor (a quarter of its 0.3), so
+    # a 0.2 moment was kept there and dropped before the damage; now one floor holds for both
+    recovering.record = {"failure_time": 100.0, "resumed_at": 136.0, "unreadable_until": 133.0}
+    recovering.loud = {
+        0.0: [(20.0, 1.0), (50.0, 0.5), (80.0, 0.2)],
+        136.0: [(30.0, 0.3), (90.0, 0.2)],
+    }
+    recovering.go()
+    hl = json.loads((recovering.proj / "highlights.json").read_text())
+    w = get_style("funny").weights["loudness"]
+    got = sorted(round(c["score"] / (100 * w), 2) for c in hl["candidates"])
+    assert got == [0.3, 0.5, 1.0]
 
 
 def test_profanity_counts_only_next_to_another_cue():

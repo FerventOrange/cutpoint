@@ -165,8 +165,18 @@ DELIVERY_FLAT = 0.3
 # moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
 VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
 VISION_SPAN_EPS = 1e-3  # seconds: a candidate span this close to its rated one still matches
-PICK_FLOOR = 0.25  # a peak below this share of the strongest one is not a candidate ...
+PICK_FLOOR = 0.25  # a peak below this share of the source's reference is not a candidate ...
 LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
+# The reference of those shares (:func:`pick_reference`, #1085 A104): the strongest window peak
+# of the whole source, over all its recovered parts, but at most the second strongest over
+# LONG_LIST_FLOOR, so the source's second moment always clears the long-list floor. One spike
+# no longer hides the source's other moments, and where the strongest is not a spike (most
+# footage) the reference is the strongest peak as before, so nothing changes there.
+# Nor is a peak at or below this share of the style's weight sum (a 5-point score, :func:`
+# cutpoint.features.to_score`), whatever the reference: what keeps a dull source quiet. Was a
+# fixed 0.05 of the raw sum: the same for styles whose weights sum to 1, slightly different
+# for `sport` (1.1) and custom styles whose weights do not (#1085 A104)
+PICK_MIN = 0.05
 SNIPPET_CHARS = 240  # a candidate's transcript snippet
 UNSURE_P = 0.5  # transcript words Whisper heard with less confidence are listed as unsure
 SHORTFALL_S, SHORTFALL_FRAC, SHORTFALL_FLOOR_S = 2.0, 0.01, 0.5  # truncation thresholds
@@ -1494,18 +1504,23 @@ def _pick_windows(
     duration: float,
     max_candidates: int,
     usual: int | None = None,
+    ref: float | None = None,
 ) -> list[Candidate]:
     """Windows around the highest peaks of ``combined``, strongest first, at most
-    ``max_candidates``. A peak must reach :data:`PICK_FLOOR` of the strongest one, and once
-    ``usual`` windows are picked (None: never) :data:`LONG_LIST_FLOOR`."""
+    ``max_candidates``. A peak must be above :data:`PICK_MIN` of the style's weight sum and
+    reach :data:`PICK_FLOOR` of ``ref``, the source's reference (:func:`pick_reference`;
+    None: that of ``combined`` alone), and once ``usual`` windows are picked (None: never)
+    :data:`LONG_LIST_FLOOR` of it."""
+    if ref is None:
+        ref = _reference(_top_peaks(combined, style, duration))
+    least = PICK_MIN * features.divisor(style.weights)
     score = combined.copy()
-    gmax = float(score.max()) if score.size else 0.0
     out: list[Candidate] = []
     while len(out) < max_candidates:
         i = int(score.argmax())
         peak = float(score[i])
         floor = LONG_LIST_FLOOR if usual is not None and len(out) >= usual else PICK_FLOOR
-        if peak <= 0.05 or peak < floor * gmax:
+        if peak <= least or peak < floor * ref:
             break
         # Region around the peak that stays above 60% of it.
         lo, hi = i, i
@@ -1536,6 +1551,35 @@ def _pick_windows(
             )
         )
     return out
+
+
+def _top_peaks(combined: np.ndarray, style: Style, duration: float) -> list[float]:
+    """The two strongest window peaks of one part's ``combined`` (:func:`_pick_windows`
+    without the relative floors)."""
+    return [c.peak for c in _pick_windows(Path(), combined, {}, style, duration, 2, ref=0.0)]
+
+
+def pick_reference(parts: Sequence[PickPart], style: Style) -> float:
+    """The reference of :data:`PICK_FLOOR` and :data:`LONG_LIST_FLOOR` for the parts of one
+    source (a source read as recovered parts: all of them, so they share one floor): its
+    strongest window peak, at most its second strongest over :data:`LONG_LIST_FLOOR`; 0
+    without any above :data:`PICK_MIN`."""
+    return _reference(
+        [
+            p
+            for part in parts
+            if part.signals is not None
+            for p in _top_peaks(scorer.combined(part.signals.sig, style), style, part.duration)
+        ]
+    )
+
+
+def _reference(peaks: list[float]) -> float:
+    """:func:`pick_reference` of the window ``peaks`` (0: none)."""
+    top = sorted(peaks, reverse=True)
+    if len(top) < 2:
+        return top[0] if top else 0.0
+    return min(top[0], top[1] / LONG_LIST_FLOOR)
 
 
 def _absorb_into(prev: Candidate, c: Candidate) -> None:
@@ -2348,9 +2392,11 @@ def pick_candidates(
     max_candidates: int | None,
     timings: dict[str, float],
     cam_ctx: Any = None,
+    ref: float | None = None,
 ) -> list[Candidate]:
     """Candidates of one analysed part (:func:`analyze_source`, or a :class:`GridPart`), in
-    absolute source time."""
+    absolute source time. ``ref``: the source's :func:`pick_reference` (None: the part's own,
+    for a source read in one part)."""
     src, span, offset = res.source, res.duration, res.offset
     ps = res.signals
     if ps is None:
@@ -2366,9 +2412,8 @@ def pick_candidates(
         usual = usual_count(style) if style.open_list and max_candidates is None else None
         # Picked on the raw weighted sum: the cut-offs do not depend on what is available.
         combined = scorer.combined(sig, style)
-        raw = _pick_windows(
-            src, combined, sig, style, span, candidate_cap(style, max_candidates), usual
-        )
+        cap = candidate_cap(style, max_candidates)
+        raw = _pick_windows(src, combined, sig, style, span, cap, usual, ref)
         # The first ``usual`` picks are finished as they always were; the picks past them only
         # fill what those leave free, so a longer list never changes the top of a shorter one.
         head, tail = (raw[:usual], raw[usual:]) if usual is not None else (raw, [])
@@ -2383,6 +2428,23 @@ def pick_candidates(
         cands += _place_free(tail, taken, ps, span, style)
     res.avail = avail
     return describe_candidates(cands, style, ps, offset, avail)
+
+
+def pick_sources(
+    parts: Sequence[SourceResult],
+    style: Style,
+    max_candidates: int | None,
+    timings: dict[str, float],
+) -> None:
+    """:func:`pick_candidates` for each of ``parts`` (not action-cam); the recovered parts of
+    one source share its :func:`pick_reference`."""
+    by_source: dict[Path, list[SourceResult]] = {}
+    for r in parts:
+        by_source.setdefault(r.source, []).append(r)
+    for rs in by_source.values():
+        ref = pick_reference(rs, style)
+        for r in rs:
+            r.candidates = pick_candidates(r, style, max_candidates, timings, ref=ref)
 
 
 DIALOGUE_PRE_ROLL_S = 1.0  # a dialogue candidate starts this long before its stretch
@@ -2684,6 +2746,7 @@ def _action_cam_candidates(
         offset,
         friends_strong=style.mask_friends,
         floor=actioncam.source_floor(style.weights, avail, src_avail),
+        rel_floor=0.0,  # the absolute floor only: the same cut in every source (#1085 A188)
     )
     forced = actioncam.must_include_picks(src, cam_ctx, style.must_include_crash, span, offset)
     if forced:
@@ -4493,7 +4556,7 @@ def _transcribe_sources(
             shown = max(shown, done)
             steps.update(progress.fraction(i + shown, len(sources)))
 
-        offset, n_parts = 0.0, 0
+        offset, n_parts, first = 0.0, 0, len(results)
         readable_from: float | None = None  # where the damage before a recovered part ends
         while True:
             logger.info(
@@ -4511,7 +4574,8 @@ def _transcribe_sources(
                 timings,
                 offset=offset,
                 recover=opts.recover,
-                pick=cam is None and not pending,
+                # with --recover once every part is read: they share one reference
+                pick=cam is None and not pending and not opts.recover,
                 report=report if steps.active else None,
                 read_checked=read_checked(src, offset),
                 text=not pending,
@@ -4552,6 +4616,10 @@ def _transcribe_sources(
                 rec["lost_s"],
             )
             offset, readable_from, n_parts = resume, until, n_parts + 1
+        if opts.recover and cam is None and not pending:
+            pick_sources(results[first:], style, opts.max_candidates, timings)
+            n_cands = sum(len(r.candidates) for r in results[first:])
+            logger.info("%s: %d candidates", src.name, n_cands)
         runstate.transcribed(out_dir, sources)  # a source without audio: once analyzed
     # Written with highlights.json at the end; the event layers read it from memory.
     transcript = "\n".join(transcript_lines)
@@ -4594,7 +4662,8 @@ def _final_style(
                     scene_signal(r.signals, style)  # a full pass if it weighs scenes
                     if r.signals.edge_cuts is None:  # cut by a full pass after all
                         r.stages.pop("scene_windows", None)
-                    r.candidates = pick_candidates(r, style, opts.max_candidates, timings)
+            read = [r for r in results if r.signals is not None]
+            pick_sources(read, style, opts.max_candidates, timings)
         category.warn(det, style.name, fallback)
         detection_rec = det.record(auto.emphasis, style.name, fallback)
     return style, cat, detection_rec
