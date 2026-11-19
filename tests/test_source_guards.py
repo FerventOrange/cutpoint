@@ -147,7 +147,7 @@ def test_the_guard_turns_out_of_memory_into_a_low_memory_error(caplog, err):
 def test_prepare_scores_a_source_whose_telemetry_fails_without_it(tmp_path, monkeypatch, caplog):
     srcs = [tmp_path / f"{n}.mp4" for n in ("ridge", "gully", "bowl")]
     monkeypatch.setattr(actioncam, "extract", _extract({"gully"}))
-    monkeypatch.setattr(actioncam, "join_runs", lambda tels: {"runs": len(tels)})
+    monkeypatch.setattr(actioncam, "join_runs", lambda tels, **_: {"runs": len(tels)})
     monkeypatch.setattr(actioncam, "write_telemetry_json", lambda project, ctx: None)
     with caplog.at_level(logging.WARNING), jsonout.run("analyze") as result:
         ctx = actioncam.prepare(srcs, {str(s): N / 10 for s in srcs}, tmp_path)

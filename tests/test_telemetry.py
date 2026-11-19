@@ -277,10 +277,68 @@ def test_x3_clock_reads_the_file_name_only_without_a_better_clock():
     telemetry._x3_clock(tel, Path("VID_20260101_100000_00_001.insv"))
     assert tel.meta["start_local"] == "2026-01-01T10:00:00"
     assert tel.meta["clock"] == "filename"
+    assert tel.meta["start_utc"] is None  # per project: sync_filename_clocks sets it
 
     gps = _tel("y.insv", datetime(2026, 1, 1, 9, tzinfo=UTC), 10)
     telemetry._x3_clock(gps, Path("VID_20260101_100000_00_001.insv"))
     assert gps.meta["clock"] == "gps" and "start_local" not in gps.meta
+
+
+def _x3(name: str, local: str):
+    tel = _tel(name, None, 60)
+    tel.meta.update({"start_local": local, "start_utc": None, "clock": "filename"})
+    return tel
+
+
+def test_x3_file_name_clock_takes_the_zone_of_a_gopro_gps_clip():
+    gopro = _tel("g.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC), 60)
+    gopro.meta["start_local"] = "2026-01-01T05:00:00"  # local = GPS UTC - 5 h
+    x3 = _x3("x.insv", "2026-01-01T05:10:00")
+
+    out = telemetry.join_runs([x3, gopro])
+
+    assert x3.meta["start_utc"] == "2026-01-01T10:10:00+00:00"
+    assert x3.meta["clock"] == "filename_gopro"
+    assert [c["source"] for c in out["clips"]] == ["g.mp4", "x.insv"]
+    assert "order" not in out["clips"][1]
+
+
+def test_x3_file_name_clock_without_a_gopro_keeps_local_time_and_marks_the_order(caplog):
+    caplog.set_level("INFO", logger="cutpoint.telemetry")
+    cam = _tel("c.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC), 60)
+    cam.meta["clock"] = "camera"  # no GPS: no zone to learn
+    x3 = _x3("x.insv", "2026-01-01T10:10:00")
+
+    out = telemetry.join_runs([cam, x3])
+
+    local = datetime(2026, 1, 1, 10, 10).astimezone(UTC).isoformat()
+    assert x3.meta["start_utc"] == local and x3.meta["clock"] == "filename"
+    assert out["clips"][1]["order"] == "unknown vs GPS clips" and "order" not in out["clips"][0]
+    assert sum("order against the other clips is unknown" in r.message for r in caplog.records) == 1
+
+    solo = telemetry.join_runs([_x3("y.insv", "2026-01-01T10:10:00")])  # only X3 clips: ordered
+    assert "order" not in solo["clips"][0]
+
+    caplog.clear()
+    quiet = telemetry.join_runs([cam, _x3("z.insv", "2026-01-01T10:10:00")], quiet=True)
+    assert quiet["clips"][1]["order"] == "unknown vs GPS clips"  # still marked
+    assert not caplog.records
+
+
+def test_gopro_zone_offset_is_rounded_to_15_minutes():
+    # fractional GPS start, local clock cut to whole seconds: 7:59:59.571 is exactly 8 h
+    gopro = _tel("g.mp4", datetime(2026, 1, 1, 21, 29, 29, 429000, tzinfo=UTC), 60)
+    gopro.meta["start_local"] = "2026-01-02T05:29:29"
+    x3 = _x3("x.insv", "2026-01-02T05:30:00")
+    telemetry.join_runs([gopro, x3])
+    assert x3.meta["start_utc"] == "2026-01-01T21:30:00+00:00"
+
+    # a local time a few minutes off still rounds to the zone: 5:28 is +5:30
+    gopro = _tel("g.mp4", datetime(2026, 1, 1, 10, tzinfo=UTC), 60)
+    gopro.meta["start_local"] = "2026-01-01T15:28:00"
+    x3 = _x3("x.insv", "2026-01-01T15:40:00")
+    telemetry.join_runs([gopro, x3])
+    assert x3.meta["start_utc"] == "2026-01-01T10:10:00+00:00"
 
 
 def test_join_runs_joins_clips_across_short_gaps_and_splits_at_lifts_and_long_gaps():
