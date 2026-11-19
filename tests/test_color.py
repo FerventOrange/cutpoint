@@ -202,8 +202,7 @@ def test_hdr_still_without_zscale_keeps_todays_command_and_warns(caplog):
     ],
 )
 def test_full_range_bt601_proxy_is_only_narrowed_to_tv_range(tags):
-    assert encode.TV_RANGE == "scale=out_range=tv"
-    assert encode.preview_filter(media_info(**tags), BOTH) == encode.TV_RANGE
+    assert encode.preview_filter(media_info(**tags), BOTH) == "scale=out_range=tv"
 
 
 @pytest.mark.parametrize(
