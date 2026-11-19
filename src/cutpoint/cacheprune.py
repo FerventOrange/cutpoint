@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from cutpoint import cache, folders, jsonout, paths, runstate, stage
+from cutpoint import cache, folders, jsonout, paths, projectfiles, runstate, stage
 from cutpoint.config import projects_dir
 from cutpoint.errors import FolderBusyError
 
@@ -143,7 +143,7 @@ def cache_size() -> int | None:
 def _project_sources(project: Path) -> list[str]:
     """The source paths a project's files name (shapes they do not have are skipped)."""
     out: list[str] = []
-    hl = cache.load_json(project / "highlights.json")
+    hl = projectfiles.load_highlights(project)
     if isinstance(hl, dict) and isinstance(hl.get("sources"), list):
         out += [s.get("path") for s in hl["sources"] if isinstance(s, dict)]
     rec = cache.load_json(project / runstate.FILE)
@@ -155,7 +155,8 @@ def _project_sources(project: Path) -> list[str]:
             if isinstance(c, dict):
                 out.append(c.get("lrv"))
                 out += c.get("insv") if isinstance(c.get("insv"), list) else []
-    meta = cache.load_json(project / "ui" / "meta.json")  # cutpoint.ui.files.picked_inputs
+    # cutpoint.ui.files.picked_inputs
+    meta = cache.load_json(project / projectfiles.UI_DIR / "meta.json")
     if isinstance(meta, dict):
         out += meta["inputs"] if isinstance(meta.get("inputs"), list) else [meta.get("source")]
     for manifest in sorted(project.glob("clips*/manifest.json")):  # clips --segments picks too

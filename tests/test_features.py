@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 
 from cutpoint import actioncam, analyze, extras, features, reset_state, scorer, styles
-from cutpoint.events import scoring
 from cutpoint.features import Feature
 from cutpoint.styles import STYLES, get_style, load_learned
 
@@ -53,7 +52,7 @@ def test_learned_style_with_unknown_feature_is_unusable(home):
     with pytest.raises(ValueError, match="'lodness', 'vlm_window'") as err:
         get_style("odd")
     assert str(path) in str(err.value)
-    assert scoring.style_and_base("odd") == ("odd",)  # the library cannot answer for it
+    assert styles.style_and_base("odd") == ("odd",)  # the library cannot answer for it
 
 
 def test_validate_names_the_style():

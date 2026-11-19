@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -8,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint.events import regions
+from cutpoint import vision
+from cutpoint.events import regions, vlm_windows
 from cutpoint.events.common import parse_clock
 from cutpoint.utils import (
     MAX_CONTEXT_CHARS,
@@ -18,6 +20,7 @@ from cutpoint.utils import (
     find_videos,
     footage_context,
     input_name,
+    json_object,
     matches_glob,
     non_negative_float,
     positive_float,
@@ -288,3 +291,43 @@ def test_context_hash_is_short_stable_and_blind_to_whitespace():
     assert one == context_hash(" a river\ntrip ") and len(one) == 12
     assert one != context_hash("a lake trip")
     assert context_hash(None) is None and context_hash("  ") is None
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ('{"moments": []}', {"moments": []}),
+        ('Sure, here it is:\n```json\n{"moments": [{"first_line": 1}]}\n```\nHope it helps.',
+         {"moments": [{"first_line": 1}]}),
+        ('{"a": 1} {"b": 2}', {"a": 1}),  # two objects: the first
+        ('{"a": {"b": 1}}}', {"a": {"b": 1}}),  # a trailing brace; nested: the outer
+        ('{"t": "a } and { b"}', {"t": "a } and { b"}),  # braces inside a string
+        ('{not json} and then {"moments": []}', {"moments": []}),
+        ("I can't help with that.", None),
+        ("[1, 2, 3]", None),
+        ("", None),
+    ],
+)  # fmt: skip
+def test_json_object_is_the_first_complete_object_of_a_reply(text, want):
+    assert json_object(text) == want
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"summary":"x","events":[{"t":1,"what":"y"}],',  # cut off
+        '{"summary":"x","events":[{"t":1,"what":"y"}],}',  # trailing comma
+    ],
+)
+def test_a_broken_reply_is_unusable_not_its_nested_object(text):
+    """Review F1: a VLM reply whose outer object is broken gives no window (so it is retried),
+    not one made from an object nested in it."""
+    assert json_object(text, scan=False) is None
+    assert vlm_windows.parse_reply(text) is None
+
+
+def test_vision_reply_object_is_the_one_at_the_first_brace():
+    """Review F1: a malformed outer object still raises; what follows a valid one is ignored."""
+    with pytest.raises(json.JSONDecodeError):
+        vision._json_object('{"a": {"b": 1}')
+    assert vision._json_object('{"a":1} {"b":2}') == {"a": 1}

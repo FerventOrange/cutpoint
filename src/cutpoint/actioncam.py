@@ -82,6 +82,7 @@ import numpy as np
 
 from cutpoint import cache, features, scorer
 from cutpoint.config import path_key, source_path
+from cutpoint.intervals import overlaps
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
@@ -619,7 +620,7 @@ def _deoverlap(picks: list[Pick], duration: float = float("inf")) -> list[Pick]:
     keep: list[Pick] = []
     for p in sorted(picks, key=lambda p: -p.peak):
         for q in keep:
-            if p.start < q.end and q.start < p.end:
+            if overlaps(p.start, p.end, q.start, q.end):
                 if p.peak_t < q.start:
                     p.end = min(p.end, q.start)
                 else:

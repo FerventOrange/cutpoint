@@ -16,7 +16,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from conftest import patch_ui
-from cutpoint import analyze, rerank, ui
+from cutpoint import analyze, projectfiles, rerank, ui
 from cutpoint.styles import get_style
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 from test_ui_ranking import (  # noqa: F401 (torch_imports: a fixture)
@@ -66,7 +66,7 @@ def rewrite(project: Path, name: str, edit: Callable[[dict[str, Any]], object]) 
 def relink(project: Path) -> None:
     """highlights.json linked to the backup as it is now and sealed again: only the backup's own
     change is left for the Undo to notice."""
-    link = analyze.backup_digest((project / rerank.BACKUP).read_bytes())
+    link = analyze.backup_digest((project / projectfiles.RERANK_BACKUP).read_bytes())
     rewrite(
         project, "highlights.json", lambda hl: hl["settings"].__setitem__("rerank_backup", link)
     )
@@ -156,7 +156,11 @@ def test_last_candidate_id_never_goes_down_across_undo_and_redo(home, tmp_path, 
     funny_last = read(project)["settings"]["last_candidate_id"]
     assert funny_last > 1
     # the ranking in the backup knew fewer ids than the one in use gave out
-    rewrite(project, rerank.BACKUP, lambda hl: hl["settings"].__setitem__("last_candidate_id", 1))
+    rewrite(
+        project,
+        projectfiles.RERANK_BACKUP,
+        lambda hl: hl["settings"].__setitem__("last_candidate_id", 1),
+    )
     relink(project)
     for _ in range(3):
         assert swap(client).status_code == 200
@@ -200,7 +204,7 @@ def test_an_edited_backup_hides_the_undo(home, tmp_path, client):
     project = make_project(home, tmp_path)
     applied(client)
     assert page(client)["ranking_undo"] is not None
-    rewrite(project, rerank.BACKUP, lambda hl: hl.__setitem__("suggested_top", 99))
+    rewrite(project, projectfiles.RERANK_BACKUP, lambda hl: hl.__setitem__("suggested_top", 99))
     assert page(client)["ranking_undo"] is None
     before = snapshot(project)
     assert swap(client).status_code == 409
@@ -211,7 +215,9 @@ def test_a_backup_of_other_sources_hides_the_undo(home, tmp_path, client):
     project = make_project(home, tmp_path)
     applied(client)
     other = str(tmp_path / "footage" / "elsewhere.mp4")
-    rewrite(project, rerank.BACKUP, lambda hl: hl["sources"][0].__setitem__("path", other))
+    rewrite(
+        project, projectfiles.RERANK_BACKUP, lambda hl: hl["sources"][0].__setitem__("path", other)
+    )
     relink(project)  # linked and sealed: only the sources differ
     assert page(client)["ranking_undo"] is None
     assert swap(client).status_code == 409
@@ -222,7 +228,7 @@ def test_the_view_follows_the_files_not_a_remembered_answer(home, tmp_path, clie
     applied(client)
     assert page(client)["ranking_undo"] is not None
     assert page(client)["ranking_undo"] is not None  # remembered
-    (project / rerank.BACKUP).unlink()
+    (project / projectfiles.RERANK_BACKUP).unlink()
     assert page(client)["ranking_undo"] is None
 
 
@@ -291,7 +297,7 @@ def test_a_failed_second_rename_leaves_both_files_and_no_temp(home, tmp_path, cl
     real = Path.replace
 
     def flaky(self: Path, target: Any) -> Path:
-        if Path(target).name == rerank.BACKUP:  # the second rename
+        if Path(target).name == projectfiles.RERANK_BACKUP:  # the second rename
             raise OSError("disk trouble")
         return real(self, target)
 
@@ -308,13 +314,13 @@ LOGIN = "http://alice:s3c@ret@myhost:11434"
 
 
 def no_login(project: Path) -> None:
-    for name in ("highlights.json", rerank.BACKUP):
+    for name in ("highlights.json", projectfiles.RERANK_BACKUP):
         raw = (project / name).read_bytes()
         assert b"alice" not in raw and b"s3c" not in raw, name
 
 
 def read_backup_ranking(project: Path) -> tuple[str, list[tuple[str, float, float]]]:
-    hl = json.loads((project / rerank.BACKUP).read_bytes())
+    hl = json.loads((project / projectfiles.RERANK_BACKUP).read_bytes())
     return hl["style"], [(c["id"], c["start"], c["end"]) for c in hl["candidates"]]
 
 
@@ -325,7 +331,7 @@ def test_undo_and_redo_keep_no_ollama_login_in_either_file(home, tmp_path, clien
     project = make_project(home, tmp_path)
     applied(client)
     first, second = read_backup_ranking(project), ranking(project)
-    for name in (rerank.BACKUP, "highlights.json"):
+    for name in (projectfiles.RERANK_BACKUP, "highlights.json"):
         rewrite(project, name, lambda hl: hl["settings"].__setitem__("ollama_url", LOGIN))
     relink(project)
     assert page(client)["ranking_undo"] == {"action": "undo", "style": "gaming"}
@@ -333,7 +339,7 @@ def test_undo_and_redo_keep_no_ollama_login_in_either_file(home, tmp_path, clien
     assert swap(client).json()["action"] == "undo"
     no_login(project)
     assert ranking(project) == first
-    for name in ("highlights.json", rerank.BACKUP):
+    for name in ("highlights.json", projectfiles.RERANK_BACKUP):
         hl = json.loads((project / name).read_bytes())
         assert hl["settings"]["ollama_url"] == "http://myhost:11434"
     assert page(client)["ranking_undo"] == {"action": "redo", "style": "funny"}
@@ -354,7 +360,7 @@ def test_undo_is_offered_after_applying_over_a_file_with_an_ollama_login(home, t
     assert page(client)["ranking_undo"] == {"action": "undo", "style": "gaming"}
     assert swap(client).json()["action"] == "undo"
     assert ranking(project) == first
-    for name in ("highlights.json", rerank.BACKUP):
+    for name in ("highlights.json", projectfiles.RERANK_BACKUP):
         assert b"user:pass" not in (project / name).read_bytes(), name
 
 
@@ -371,9 +377,11 @@ def test_the_swap_flushes_both_files_before_their_rename(
     fsyncs.clear()
     assert swap(client).status_code == 200
     assert flushed_before_replace(fsyncs, "highlights.json")
-    assert flushed_before_replace(fsyncs, rerank.BACKUP)
+    assert flushed_before_replace(fsyncs, projectfiles.RERANK_BACKUP)
     if os.name == "posix":
-        at = next(i for i, c in enumerate(fsyncs) if c[:2] == ("replace", rerank.BACKUP))
+        at = next(
+            i for i, c in enumerate(fsyncs) if c[:2] == ("replace", projectfiles.RERANK_BACKUP)
+        )
         assert ("fsync", project.stat().st_ino) in fsyncs[at + 1 :]
 
 

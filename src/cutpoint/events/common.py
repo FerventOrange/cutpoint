@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import requests
 
-from cutpoint import cache
+from cutpoint import cache, projectfiles
 from cutpoint.backends import ollama_post, ollama_ps, ollama_url
 
 logger = logging.getLogger(__name__)
@@ -230,14 +230,9 @@ def load_highlights(project: Path) -> dict[str, Any]:
     """
     if _PENDING and (pending := _PENDING.get(project.resolve())) is not None:
         return pending
-    path = project / "highlights.json"
-    try:
-        data = cache.read_json(path, hint="; re-run `cutpoint analyze` to rewrite it")
-    except FileNotFoundError:
-        raise FileNotFoundError(f"{path} not found; run `cutpoint analyze` first") from None
-    if not isinstance(data, dict) or not isinstance(data.get("sources"), list):  # e.g. null
-        raise ValueError(f"{path} has no sources list; re-run `cutpoint analyze` to rewrite it")
-    return data
+    return projectfiles.load_highlights(
+        project, strict=True, missing="{path} not found; run `cutpoint analyze` first"
+    )
 
 
 # --------------------------------------------------------------------------- GPU

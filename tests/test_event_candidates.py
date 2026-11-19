@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, cache, default_fit, paths, planning, scorer
+from cutpoint import analyze, cache, default_fit, paths, planning, scorer, styles
 from cutpoint.assistant import context
 from cutpoint.events import scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, Matcher
@@ -512,15 +512,15 @@ def test_recorded_style_of_a_broken_style_file_raises_its_own_error(text, error)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "mine.json").write_text(text, encoding="utf-8")
     with pytest.raises(ValueError, match=error):
-        scoring.recorded_style({"style": "mine", "style_base": "gaming"})
+        styles.recorded_style({"style": "mine", "style_base": "gaming"})
     hl = highlights([own("h001", 20.0)], style="mine")
     hl["style_base"] = "gaming"
     assert scoring.nominate(hl, events_of([feed(100.0)]), Path(), [grid()]) == 0
 
 
 def test_recorded_style_degrades_a_missing_style_to_its_recorded_base(caplog):
-    with caplog.at_level(logging.DEBUG, logger=scoring.__name__):
-        got = scoring.recorded_style({"style": "gone", "style_base": "sport"}, logging.DEBUG)
+    with caplog.at_level(logging.DEBUG, logger=styles.__name__):
+        got = styles.recorded_style({"style": "gone", "style_base": "sport"}, logging.DEBUG)
     assert got is get_style("sport")
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
         (
@@ -529,11 +529,11 @@ def test_recorded_style_degrades_a_missing_style_to_its_recorded_base(caplog):
         )
     ]
     caplog.clear()
-    assert scoring.recorded_style({"style": "gaming", "style_base": "sport"}) is get_style("gaming")
+    assert styles.recorded_style({"style": "gaming", "style_base": "sport"}) is get_style("gaming")
     assert not caplog.records  # a style in the library: no fallback, no line
     for hl in ({"style": "gone"}, {"style": "gone", "style_base": "gone"}, {"style_base": None}):
         with pytest.raises(ValueError, match="not in the style library"):
-            scoring.recorded_style(hl)
+            styles.recorded_style(hl)
 
 
 # --------------------------------------------------------------------------- rescore
@@ -836,23 +836,7 @@ def test_a_source_with_scenes_and_no_audio_nominates_on_both_paths(tmp_path):
     assert from_run == from_caches
 
 
-# --------------------------------------------------------------------------- _free_around, _place_free
-@pytest.mark.parametrize(
-    ("t", "taken", "expected"),
-    [
-        (30.0, [], (0.0, 100.0)),
-        (30.0, [(10.0, 20.0), (40.0, 60.0)], (20.0, 40.0)),  # between two
-        (5.0, [(10.0, 20.0)], (0.0, 10.0)),  # before the first
-        (15.0, [(10.0, 20.0)], (15.0, 15.0)),  # inside one: nothing is free
-        (40.0, [(40.0, 50.0), (10.0, 20.0)], (20.0, 40.0)),  # at a start, the list unsorted
-        (50.0, [(40.0, 50.0)], (50.0, 100.0)),  # at an end
-        (90.0, [(10.0, 20.0), (130.0, 140.0)], (20.0, 100.0)),  # after the last; one past the part
-    ],
-)
-def test_free_around_is_the_stretch_no_taken_window_covers(t, taken, expected):
-    assert analyze._free_around(t, taken, 100.0) == expected
-
-
+# --------------------------------------------------------------------------- _place_free
 def free_cand(start: float, end: float, peak_t: float) -> analyze.Candidate:
     return analyze.Candidate(Path("a.mp4"), start, end, peak_t, 0.5, dict.fromkeys(SIGNALS, 0.0))
 

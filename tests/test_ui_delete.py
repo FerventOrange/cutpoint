@@ -18,7 +18,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from conftest import link_dir, link_file, write
-from cutpoint import folders, projectdelete, rerank, runstate, ui
+from cutpoint import folders, projectdelete, projectfiles, runstate, ui
 from cutpoint.ui.routes import jobs as jobs_routes
 
 REAL_TRASH_BLOCKER = projectdelete.trash_blocker
@@ -697,4 +697,4 @@ def test_every_project_file_agents_md_names_is_deleted_with_the_project() -> Non
 
 
 def test_the_rerank_backup_is_one_of_the_project_files() -> None:
-    assert rerank.BACKUP in projectdelete.OWN_FILES
+    assert projectfiles.RERANK_BACKUP in projectdelete.OWN_FILES

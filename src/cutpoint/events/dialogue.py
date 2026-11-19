@@ -32,7 +32,6 @@ The functions that do not ask a model (:func:`split_pieces`, :func:`parse_reply`
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import threading
@@ -43,7 +42,8 @@ from typing import Any
 
 from cutpoint import cache, jsonout, state
 from cutpoint.events.scoring import DIALOGUE_TYPE, LAUGH_SOUNDS, SCREAM_SOUNDS
-from cutpoint.utils import context_block, context_hash
+from cutpoint.intervals import overlap
+from cutpoint.utils import context_block, context_hash, json_object
 
 logger = logging.getLogger(__name__)
 
@@ -159,26 +159,6 @@ def piece_text(lines: Sequence[Line], idx: Sequence[int]) -> str:
     return "\n".join(f"{i}: {lines[i][2]}" for i in idx)
 
 
-def extract_json(text: str) -> dict[str, Any] | None:
-    """The reply's JSON object: the text itself, else the first ``{...}`` in it that parses
-    (a model that wraps the JSON in words or a code fence); None if there is none."""
-    try:
-        whole = json.loads(text)
-    except ValueError:
-        whole = None
-    if isinstance(whole, dict):
-        return whole
-    decoder = json.JSONDecoder()
-    for m in re.finditer(r"\{", text):
-        try:
-            found, _ = decoder.raw_decode(text, m.start())
-        except ValueError:
-            continue
-        if isinstance(found, dict):
-            return found
-    return None
-
-
 def _line_id(value: Any) -> int | None:
     """A line id from a reply: an integer (or a whole number written as a float or a string)."""
     if isinstance(value, bool):
@@ -261,9 +241,9 @@ def parse_reply(
 
 def _overlaps(a: Stretch, b: Stretch) -> bool:
     """Whether ``a`` and ``b`` overlap by more than :data:`MERGE_OVERLAP` of the shorter."""
-    overlap = min(a["end"], b["end"]) - max(a["start"], b["start"])
+    shared = overlap(a["start"], a["end"], b["start"], b["end"])
     shorter = min(a["end"] - a["start"], b["end"] - b["start"])
-    return overlap > 0 and overlap > MERGE_OVERLAP * shorter
+    return shared > 0 and shared > MERGE_OVERLAP * shorter
 
 
 def _union(a: Stretch, b: Stretch) -> Stretch:
@@ -500,7 +480,7 @@ def _hosted_backend(provider: Any) -> Backend | None:
         except (providers.ProviderError, keys.KeyringError) as err:
             logger.warning("Dialogue reader: request failed: %s", keys.redact(str(err)))
             return None
-        found = extract_json(reply)
+        found = json_object(reply)
         if found is None:
             logger.warning("Dialogue reader: the reply is not JSON: %.120s", keys.redact(reply))
         return found

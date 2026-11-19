@@ -81,7 +81,7 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint import cache, state
+from cutpoint import cache, projectfiles, state
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.utils import file_stamp
@@ -505,7 +505,7 @@ def path_flags(diag: dict[str, Any]) -> list[str]:
 
 # --------------------------------------------------------------------------- 360 analyze
 def _candidates(project: Path) -> list[dict[str, Any]]:
-    hl = cache.load_json(project / "highlights.json")
+    hl = projectfiles.load_highlights(project)
     cands = hl.get("candidates") if isinstance(hl, dict) else None
     return [c for c in cands or [] if isinstance(c, dict)]
 

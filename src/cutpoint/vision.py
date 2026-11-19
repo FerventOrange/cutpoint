@@ -1490,11 +1490,16 @@ def _cached(entry: object) -> VisionResult | None:
 
 
 def _json_object(content: str) -> object:
-    """A reply's JSON from its first ``{`` to its last ``}``; else the whole reply as JSON (a
-    list, string or number is returned as it is), None if that is no JSON."""
-    match = re.search(r"\{.*\}", content, re.S)
-    if match:
-        return json.loads(match.group(0))
+    """A reply's JSON object from its first ``{`` (when a ``}`` follows; what comes after the
+    object is ignored); else the whole reply as JSON (a list, string or number is returned as
+    it is), None if that is no JSON.
+
+    Raises:
+        ValueError: The object at the first ``{`` is malformed (``JSONDecodeError``).
+    """
+    if re.search(r"\{.*\}", content, re.S):
+        found, _ = json.JSONDecoder().raw_decode(content, content.index("{"))
+        return found
     try:
         return json.loads(content.strip())
     except ValueError:

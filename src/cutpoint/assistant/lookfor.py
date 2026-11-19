@@ -44,8 +44,9 @@ import numpy as np
 from cutpoint import actioncam, extras
 from cutpoint.config import path_key
 from cutpoint.events import visual as V
+from cutpoint.intervals import overlap
 from cutpoint.segments import moment_id
-from cutpoint.visual_pool import _fit, _overlap
+from cutpoint.visual_pool import _fit
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +421,7 @@ def _covering(hit: Hit, mine: Sequence[Mapping[str, Any]]) -> str | None:
     best, found = 0.0, None
     for c in mine:
         a, b = float(c["start"]), float(c["end"])
-        over = _overlap(hit.start, hit.end, a, b)
+        over = overlap(hit.start, hit.end, a, b)
         if over >= COVERED * min(hit.end - hit.start, b - a) and over > best:
             best, found = over, str(c["id"])
     return found

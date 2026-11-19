@@ -18,7 +18,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from conftest import patch_ui
-from cutpoint import analyze, cache, folders, rerank, runstate, ui
+from cutpoint import analyze, cache, folders, projectfiles, rerank, runstate, ui
 from cutpoint.styles import get_style, style_name
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 from test_untrusted_paths import flushed_before_replace, fsyncs  # noqa: F401 (a fixture)
@@ -161,7 +161,7 @@ def test_apply_writes_the_ranking_the_backup_and_the_chosen_style(home, tmp_path
     assert [c["id"] for c in hl["candidates"]][: len(shown["top"])] == [
         r["cli_id"] for r in shown["top"]
     ]
-    assert (project / rerank.BACKUP).read_bytes() == old
+    assert (project / projectfiles.RERANK_BACKUP).read_bytes() == old
     assert ui.read_meta(project)["style"] == "funny"
     page = client.get("/api/projects/p").json()
     assert page["style"] == "funny"
@@ -192,7 +192,7 @@ def test_apply_after_the_file_changed_is_409_stale_and_writes_nothing(home, tmp_
     assert res.status_code == 409 and res.json()["code"] == "stale"
     assert "preview it again" in res.json()["detail"]
     assert snapshot(project) == before
-    assert not (project / rerank.BACKUP).exists()
+    assert not (project / projectfiles.RERANK_BACKUP).exists()
     assert not (project / "ui" / "meta.json").exists()
 
 
@@ -268,7 +268,7 @@ def test_apply_with_a_ui_file_is_refused_before_the_ranking_is_saved(home, tmp_p
     res = apply(client, base)
     assert res.status_code == 409 and "not a folder" in res.json()["detail"]
     assert snapshot(project) == before
-    assert not (project / rerank.BACKUP).exists() and not ui.RERANKING
+    assert not (project / projectfiles.RERANK_BACKUP).exists() and not ui.RERANKING
 
 
 def test_the_marker_and_ui_folder_are_released_when_apply_fails(
@@ -327,7 +327,7 @@ def test_apply_keeps_no_ollama_login_and_writes_highlights_durably(
     fsyncs.clear()
     res = apply(client, preview(client).json()["base"])
     assert res.status_code == 200, res.text
-    for name in ("highlights.json", rerank.BACKUP):
+    for name in ("highlights.json", projectfiles.RERANK_BACKUP):
         raw = (project / name).read_bytes()
         assert b"alice" not in raw and b"s3c" not in raw, name
         assert json.loads(raw)["settings"]["ollama_url"] == "http://myhost:11434"

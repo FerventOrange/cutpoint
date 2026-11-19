@@ -11,6 +11,7 @@ from fastapi import APIRouter, Request
 
 from cutpoint import jsonout
 from cutpoint.errors import FolderBusyError
+from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import ProjectStyle, set_style
 from cutpoint.ui.common import BUSY_TEXT, META_FILE, bad
@@ -91,9 +92,10 @@ def preview_ranking(pid: str, body: dict[str, Any]):
 def apply_ranking(request: Request, pid: str, body: dict[str, Any]):
     """Re-rank the project in the library style ``style`` and save it, after the user
     clicked to use the preview made against the ranking key ``base``: highlights.json
-    replaced (the one before kept, :data:`cutpoint.rerank.BACKUP`) and ``style`` the project's
-    chosen style (a detection kept when it leaves Auto). Redone, not stored: the same
-    caches give the ranking the preview showed. No job starts on the project meanwhile.
+    replaced (the one before kept, :data:`~cutpoint.projectfiles.RERANK_BACKUP`) and
+    ``style`` the project's chosen style (a detection kept when it leaves Auto). Redone, not
+    stored: the same caches give the ranking the preview showed. No job starts on the project
+    meanwhile.
 
     409 with ``code``: ``stale`` (highlights.json is not the previewed one any more),
     ``needs_analyze`` (with :func:`_needs_analyze`'s ``missing`` and ``can_analyze``) or
@@ -107,7 +109,7 @@ def apply_ranking(request: Request, pid: str, body: dict[str, Any]):
     if not isinstance(base, str) or not base:
         raise bad("base must be the ranking key of the preview")
     try:
-        with _reranking(request, pid, p, (rerank.BACKUP, META_FILE), load=True) as (p, made):
+        with _reranking(request, pid, p, (RERANK_BACKUP, META_FILE), load=True) as (p, made):
             meta = read_meta(p)
             # a command-line project has no ui folder (nor meta.json) yet; 409 for a ui that
             # is no folder, before the ranking is saved
@@ -148,7 +150,6 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
     409 with ``code``: ``stale`` (highlights.json is not the loaded one any more) or
     ``folder_busy``; 409 for a 360 project and when there is no earlier ranking that
     matches this analysis."""
-    from cutpoint import rerank  # noqa: PLC0415
     from cutpoint.errors import StaleRankingError  # noqa: PLC0415
 
     p = project_dir(pid)
@@ -156,7 +157,7 @@ def undo_ranking(request: Request, pid: str, body: dict[str, Any]):
     if not isinstance(base, str) or not base:
         raise bad("base must be the ranking key of the loaded project")
     try:
-        names = (rerank.HIGHLIGHTS, rerank.BACKUP, META_FILE)
+        names = (HIGHLIGHTS, RERANK_BACKUP, META_FILE)
         with _reranking(request, pid, p, names) as (p, made):
             _ui_folder(p, made=made)  # a command-line project has no ui folder (meta.json) yet
             try:

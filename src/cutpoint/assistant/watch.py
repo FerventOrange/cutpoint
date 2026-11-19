@@ -50,6 +50,7 @@ from cutpoint.assistant import context
 from cutpoint.assistant.providers import Capabilities, Provider, accepts_images, endpoint
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
+from cutpoint.projectfiles import UI_DIR
 from cutpoint.utils import clock
 from cutpoint.vision import _frame_times
 
@@ -382,7 +383,7 @@ class Viewer:
         return self._events
 
     def _folder(self) -> Path | None:
-        folder = self.project / "ui" / "assistant" / SHEETS
+        folder = self.project / UI_DIR / "assistant" / SHEETS
         return folder if _inside(self.project, folder) else None
 
     def sheet(self, real: str, source: str, start: float, end: float) -> tuple[bytes, bool]:

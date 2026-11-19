@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cutpoint.assistant.ops import MAX_GROW_S
+from cutpoint.intervals import overlaps
 
 STOP_SHARE = 0.95  # of the target: close enough, stop filling
 MIN_STEP_S = 0.5  # a lengthening of less than this is not worth an op
@@ -49,7 +50,7 @@ class TopUp:
 
 def _overlaps(row: Mapping[str, Any], others: Sequence[Mapping[str, Any]]) -> bool:
     return any(
-        o["source"] == row["source"] and o["start"] < row["end"] and row["start"] < o["end"]
+        o["source"] == row["source"] and overlaps(o["start"], o["end"], row["start"], row["end"])
         for o in others
     )
 

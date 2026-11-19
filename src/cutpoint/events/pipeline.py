@@ -27,7 +27,7 @@ from typing import Any, NamedTuple
 from cutpoint import cache, jsonout, memguard, progress, tsrepair
 from cutpoint import paths as cutpoint_paths
 from cutpoint.errors import LowMemoryError
-from cutpoint.events import explosions, paths, scoring
+from cutpoint.events import explosions, paths
 from cutpoint.events.audio_events import (
     AudioParams,
     PannsDetector,
@@ -67,7 +67,7 @@ from cutpoint.events.vlm_windows import (
     windows_to_events,
 )
 from cutpoint.sources import parts as source_parts
-from cutpoint.styles import ACTION_CAM, project_kind
+from cutpoint.styles import ACTION_CAM, analysis_names, project_kind
 from cutpoint.utils import footage_context
 from cutpoint.vision import VisionRater
 
@@ -714,7 +714,7 @@ def run_events(
         vlm,
         seed_types,
         quiet="vlm" not in layers,
-        style=scoring.analysis_names(hl),
+        style=analysis_names(hl),
     )
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings

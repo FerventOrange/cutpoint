@@ -23,7 +23,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from cutpoint import boundaries, cache, default_fit, folders, jsonout, sources, visual_pool
+from cutpoint import (
+    boundaries,
+    cache,
+    default_fit,
+    folders,
+    jsonout,
+    projectfiles,
+    sources,
+    visual_pool,
+)
 from cutpoint.config import path_key
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
@@ -85,19 +94,12 @@ def select_moments(
         ValueError: If highlights.json is unreadable, not valid JSON or has no
             candidates list, an id is unknown or nothing is selected.
     """
-    try:
-        data = cache.read_json(
-            project / "highlights.json", hint="; re-run `cutpoint analyze` to rewrite it"
-        )
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            f"No highlights.json in {project}; run 'cutpoint analyze' first"
-        ) from None
-    if not isinstance(data, dict) or not isinstance(data.get("candidates"), list):  # e.g. null
-        raise ValueError(
-            f"{project / 'highlights.json'} has no candidates list; "
-            "re-run `cutpoint analyze` to rewrite it"
-        )
+    data = projectfiles.load_highlights(
+        project,
+        strict=True,
+        need="candidates",
+        missing="No highlights.json in {project}; run 'cutpoint analyze' first",
+    )
     cands: list[dict[str, Any]] = data["candidates"]
     pool = (
         [c for c in cands if visual_pool.is_pool(c)] if visual_pool.project_has_pool(data) else []
