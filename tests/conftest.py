@@ -21,14 +21,15 @@ import pytest
 from cutpoint import analyze, cache, clips, config, paths, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
 
-# Fixtures moved out of test_analyze_steps, test_batch_size, test_event_candidates and
-# test_planning, registered here so no test module imports them from those files.
+# Fixtures moved out of test_analyze_steps, test_batch_size, test_event_candidates, test_planning
+# and test_ui, registered here so no test module imports them from those files.
 pytest_plugins = [
     "analyze_steps_helpers",
     "batch_size_helpers",
     "event_candidates_helpers",
     "export_helpers",
     "planning_helpers",
+    "ui_helpers",
 ]
 
 
