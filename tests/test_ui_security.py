@@ -15,8 +15,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from cutpoint import cache, ui
-from test_ui import X3_CLIPS, cli_project, make_project
-from ui_helpers import JobSpy
+from ui_helpers import X3_CLIPS, JobSpy, cli_project, make_project
 
 PORT = 8765
 BLANK = {"X-Cutpoint-Token": ""}
