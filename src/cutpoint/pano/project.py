@@ -53,6 +53,7 @@ Render sources, best first (``source_mode``):
 from __future__ import annotations
 
 import logging
+import math
 import re
 import sys
 from dataclasses import dataclass
@@ -262,6 +263,82 @@ def stitch_timeout_s() -> float | None:
             f"{paths.config_file()}: 'pano.stitch_timeout_s' must be a positive number"
         )
     return float(raw)
+
+
+MAX_FOLLOW_DEG = 30.0  # default ``pano.max_follow_deg``
+
+
+def _number(key: str, default: float, lo: float | None = None, hi: float | None = None) -> float:
+    """``pano.<key>`` (``default`` when unset), checked to be a number within ``[lo, hi]``.
+
+    Raises:
+        ValueError: If it is not a number (``null`` and true / false included) or is out
+            of range, naming the key and the range.
+    """
+    cfg = pano_config()
+    if key not in cfg:
+        return float(default)
+    raw = cfg[key]
+    ok = isinstance(raw, int | float) and not isinstance(raw, bool) and math.isfinite(raw)
+    if ok and (lo is None or raw >= lo) and (hi is None or raw <= hi):
+        return float(raw)
+    want = (
+        f"a number from {lo:g} to {hi:g}"
+        if lo is not None and hi is not None
+        else f"a number of at least {lo:g}"
+        if lo is not None
+        else "a number"
+    )
+    raise ValueError(f"{paths.config_file()}: 'pano.{key}' must be {want}, got {raw!r}")
+
+
+def level_settings() -> tuple[float, float, float]:
+    """``(level_strength, tilt_follow_s, max_follow_deg)`` of the renderer's levelling
+    (``pano`` keys; defaults 0.7, 0.5 and :data:`MAX_FOLLOW_DEG`), validated.
+
+    Raises:
+        ValueError: If one is not a number, ``level_strength`` is outside 0-1,
+            ``tilt_follow_s`` is negative or ``max_follow_deg`` is outside 0-180.
+    """
+    return (
+        _number("level_strength", 0.7, 0.0, 1.0),
+        _number("tilt_follow_s", 0.5, 0.0),
+        _number("max_follow_deg", MAX_FOLLOW_DEG, 0.0, 180.0),
+    )
+
+
+def cmd_every() -> int:
+    """Frames between ``v360`` updates (``pano.cmd_every``, default 1), validated.
+
+    Raises:
+        ValueError: If it is not a whole number of at least 1.
+    """
+    raw = pano_config().get("cmd_every", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        raise ValueError(
+            f"{paths.config_file()}: 'pano.cmd_every' must be a whole number of at least 1, "
+            f"got {raw!r}"
+        )
+    return raw
+
+
+def imu_offset_s() -> float:
+    """The renderer's IMU sync (``pano.imu_offset_s``, seconds, default 0), validated.
+
+    Raises:
+        ValueError: If it is not a number.
+    """
+    return _number("imu_offset_s", 0.0)
+
+
+def equirect_yaw_offset() -> float:
+    """Yaw (deg) added for an equirect input (``pano.equirect_yaw_offset``, default 0),
+    validated.
+
+    Raises:
+        ValueError: If it is not a number.
+    """
+    return _number("equirect_yaw_offset", 0.0)
 
 
 # --------------------------------------------------------------------------- pano.json

@@ -556,9 +556,21 @@ def write_sidecar(out: Path, cmd: list[str]) -> Path:
     return path
 
 
+DEFAULT_BITRATE = 100_000_000  # bits/s: the -bitrate of DEFAULT_STITCH_ARGS
+
+
 def _need_gb(clip: X3Clip) -> float:
-    """Estimated size of one stitched clip (~100 Mb/s, the default -bitrate, +20%)."""
-    return clip.duration / 3600 * 45 * 1.2
+    """Estimated size of one stitched clip: its length at the ``-bitrate`` of
+    ``pano.stitch_args`` (:data:`DEFAULT_BITRATE` without one), +20%.
+
+    Invalid ``pano.stitch_args`` count as the default here; the stitch itself
+    rejects them with a clear message.
+    """
+    try:
+        bitrate = _bitrate(stitch_args()) or DEFAULT_BITRATE
+    except ValueError:
+        bitrate = DEFAULT_BITRATE
+    return clip.duration * bitrate / 8 / 1e9 * 1.2
 
 
 def estimate_gb(clips: list[X3Clip]) -> float:
@@ -653,11 +665,12 @@ def stitch_clips(
         dry_run: Only log the commands (works without the SDK).
 
     Returns:
-        One record per clip: ``clip``, ``output``, ``status`` (``ok``, the
-        verification notes, ``failed``, ``exists`` or ``dry-run``); after a run
-        also ``seconds``, ``log_file`` and ``sdk`` (the parsed status, see
+        One record per clip: ``clip``, ``output``, ``status`` (``ok``,
+        ``failed``, ``exists`` or ``dry-run``); after a run also ``seconds``,
+        ``log_file`` and ``sdk`` (the parsed status, see
         :meth:`SdkResult.summary`); on failure ``error`` (the reasons)
-        and ``log`` (the last stdout/stderr lines).
+        and ``log`` (the last stdout/stderr lines); ``verify`` (the problems
+        found) when an ``ok`` stitch fails its check (:func:`_verify`).
 
     Raises:
         SdkNotConfigured: If the SDK is missing (unless ``dry_run``).
@@ -793,15 +806,18 @@ def _stitch_one(
             tail,
         )
         return rec
-    status = _verify(c, part)
+    notes = _verify(c, part)
     # --force: drop the old sidecar first, so an interruption before the new one is
     # written leaves a sidecar-less (warned, FlowState) file rather than a stale record
     with contextlib.suppress(OSError):
         equirect_sidecar(out).unlink(missing_ok=True)
     part.replace(out)
     write_sidecar(out, cmd)
-    _write_log(log_file, cmd, run, f"ok; verify: {status}")
-    rec["status"] = status
+    verify = "; ".join(notes) or "ok"
+    _write_log(log_file, cmd, run, f"ok; verify: {verify}")
+    rec["status"] = "ok"
+    if notes:
+        rec["verify"] = verify
     ex = res.export
     feats = features_summary(res.features)
     logger.info(
@@ -809,16 +825,26 @@ def _stitch_one(
         c.clip_id,
         run.seconds,
         c.duration / max(run.seconds, 1e-6),
-        status,
+        f"verify {verify}",
         ex.get("Encoder", "?"),
         ex.get("Encode", "?"),
         feats or "none",
     )
+    if notes:
+        logger.warning(
+            "clip %s: the stitched %s failed its check: %s. It is kept and used for renders; "
+            "restitch it with `cutpoint 360 stitch <project> --clips %s --force`",
+            c.clip_id,
+            out.name,
+            verify,
+            c.clip_id,
+        )
     return rec
 
 
-def _verify(clip: X3Clip, path: Path) -> str:
-    """Compare the stitched file's frames and size with the clip."""
+def _verify(clip: X3Clip, path: Path) -> list[str]:
+    """Compare the stitched file's frames and size with the clip: the problems found
+    (empty when it matches)."""
     from cutpoint.pano.x3 import probe_video_stream  # noqa: PLC0415
 
     s = probe_video_stream(path)
@@ -828,4 +854,4 @@ def _verify(clip: X3Clip, path: Path) -> str:
         notes.append(f"not 2:1 ({w}x{h})")
     if clip.frames and abs(n - clip.frames) > 1:
         notes.append(f"{n} frames vs {clip.frames} in the proxy: time mapping is off")
-    return "ok" if not notes else "; ".join(notes)
+    return notes

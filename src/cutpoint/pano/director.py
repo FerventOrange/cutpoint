@@ -494,7 +494,7 @@ def score_grid(
     talk = _voice_at(Path(clip.source), times)
     selfie = p.selfie_base + p.w_selfie_talk * talk + p.w_selfie_group * selfie_g
     # Talking with a friend in view: the friend wins (people >> selfie).
-    selfie = selfie * (1 - 0.6 * np.maximum(people, 0.0).max(1))
+    selfie = selfie * (1 - SELFIE_FRIEND_DAMP * np.maximum(people, 0.0).max(1))
     if p.selfie_mode == "off":
         selfie = np.full(len(times), NO_SELFIE)
     else:  # a glove / sleeve / helmet top over the selfie view is no selfie
@@ -637,7 +637,12 @@ def _shots(
     return shots
 
 
+FRIEND_PEOPLE = 0.3  # a bin's people score above this frames a friend (fitted FOV, "friend")
+PITCH_PEOPLE = 0.15  # ... above this the pitch follows the person (not pitch_default)
+FORWARD_DEG = 30.0  # a view this close in yaw to the forward axis is labelled "forward"
+SELFIE_FRIEND_DAMP = 0.6  # the selfie score drops by this share of the strongest people score
 LINK_DEG = 25.0  # a person in the next view frame this close in yaw is the same subject
+SHOT_BIN_DEG = 45.0  # ... and this close to the shot's bin
 TRACK_GAP_S = 2.6  # interpolate between linked detections at most this far apart
 TRACK_HOLD_S = 1.0  # ... and hold the first / last one this long
 SAFE_MIN_S = 0.5  # the safe-area pass fixes longer violations only
@@ -662,8 +667,8 @@ def _track_subject(
 
     Within each non-selfie shot the person is linked across view frames: the
     candidate (the strongest person of any bin, ``direction_scores`` ``subject``)
-    within :data:`LINK_DEG` of the previous one and within 45 deg of the shot's
-    bin; otherwise the chosen bin's own person (re-seed). Linked detections are
+    within :data:`LINK_DEG` of the previous one and within :data:`SHOT_BIN_DEG` of
+    the shot's bin; otherwise the chosen bin's own person (re-seed). Linked detections are
     interpolated linearly at the step times (yaw unwrapped).
     """
     out = np.full((len(times), 4), np.nan)
@@ -685,7 +690,7 @@ def _track_subject(
             if pts and len(cands):
                 d = np.abs(G.wrap_deg(cands[:, 0] - pts[-1][1]))
                 off = np.abs(G.wrap_deg(cands[:, 0] - centres[states[i]]))
-                ok = np.flatnonzero((d < LINK_DEG) & (off <= 45.0))
+                ok = np.flatnonzero((d < LINK_DEG) & (off <= SHOT_BIN_DEG))
                 if len(ok):
                     pick = cands[ok[d[ok].argmin()]].copy()
             if pick is None and not np.isnan(row[states[i]]).any():
@@ -753,14 +758,14 @@ def _refine_shot(
 
     ``bins_yaw``: the shot's bin centres (unwrapped); ``subj`` ``(n, 4)``
     (:func:`_track_subject`); ``fovs``: friend, wide, fitted min and max FOV.
-    Friend steps (people > 0.3) with a subject get the fitted FOV
+    Friend steps (people > :data:`FRIEND_PEOPLE`) with a subject get the fitted FOV
     (:func:`fit_fov`, clamped) and aim at it with a dead zone and headroom;
     the FOV is smoothed and limited to ``fov_rate``.
     """
     ff, fw, lo, hi = fovs
     sm = p.smooth_s / p.dt
     has = ~np.isnan(subj).any(1)
-    friend = people > 0.3
+    friend = people > FRIEND_PEOPLE
     sy = np.where(has, subj[:, 0], bins_yaw)
     target = bins_yaw + G.wrap_deg(sy - bins_yaw)
     raw_fov = np.where(friend, ff, fw)
@@ -769,9 +774,9 @@ def _refine_shot(
     zone = np.where(has, p.dead_zone * raw_fov / 2, 0.0)
     yaw = _limit(_gauss(_dead_zone(target, zone), sm), p.dt, p.max_speed, p.max_accel)
     aim = np.clip(subj[:, 1] + p.headroom * subj[:, 3], p.pitch_min, p.pitch_max)
-    old = (person_pitch > -900) & (people > 0.15)
+    old = (person_pitch > -900) & (people > PITCH_PEOPLE)
     raw_pitch = np.where(old, np.clip(person_pitch, p.pitch_min, p.pitch_max), p.pitch_default)
-    raw_pitch = np.where(has & (people > 0.15), aim, raw_pitch)
+    raw_pitch = np.where(has & (people > PITCH_PEOPLE), aim, raw_pitch)
     pitch = _gauss(raw_pitch, 2 * sm)
     fov = _limit(_gauss(raw_fov, sm), p.dt, p.fov_rate, 2 * p.fov_rate)
     return yaw, pitch, fov
@@ -801,72 +806,6 @@ def _near_people(
     idx = QP.view_frame_index(pv.t.astype(float), times)
     by_frame = {int(j): rows[keep & (fi == j)] for j in np.unique(idx) if j >= 0}
     return [by_frame[int(j)] if j >= 0 else empty for j in idx]  # one array per view frame
-
-
-def project_boxes(
-    view_yaw: float,
-    view_pitch: float,
-    hfov: float,
-    size: tuple[int, int],
-    boxes: np.ndarray,
-    steps: int = 9,
-    polar_shift: float = 0.5,
-) -> list[tuple[tuple[float, float, float, float], float] | None]:
-    """:func:`geometry.project_box_visible` of ``(k, 4)`` boxes (yaw, pitch, w, h) in one
-    view, all at once (the same points and rules; the safe-area pass projects every
-    person of a view per check)."""
-    k = len(boxes)
-    if not k:
-        return []
-    b = np.asarray(boxes, float)
-    by, bp, bw, bh = b[:, 0], b[:, 1], b[:, 2], b[:, 3]
-    vfov = G.flat_fov(hfov, *size)
-    tx, ty = math.tan(math.radians(hfov) / 2), math.tan(math.radians(vfov) / 2)
-    r = G.view_matrix(view_yaw, view_pitch)
-    s = np.linspace(-0.5, 0.5, steps)
-    lim = G.POLAR_LINE_MAX_DEG
-    p_w = np.clip(bp + np.copysign(polar_shift * bh / 2, bp), -lim, lim)
-    # vertical lines at every grid yaw (k, steps yaws, steps pitches), then the yaw line
-    shape = (k, steps, steps)
-    gy = np.broadcast_to(by[:, None, None] + s[None, :, None] * bw[:, None, None], shape)
-    gp = np.broadcast_to(bp[:, None, None] + s[None, None, :] * bh[:, None, None], shape)
-    hyaw = (by[:, None] + s[None, :] * bw[:, None])[:, None, :]
-    py = np.concatenate([gy, hyaw], 1)
-    pp = np.concatenate([gp, np.broadcast_to(p_w[:, None, None], hyaw.shape)], 1)
-    ax, ay, az = G._view_xy(r, tx, ty, py, pp)  # the same points as project_box_visible
-    vx, vy, vz = ax[:, :steps], ay[:, :steps], az[:, :steps]
-    hx, hy, hz = ax[:, steps], ay[:, steps], az[:, steps]
-    centre = steps // 2
-    front_c = vz[:, centre, centre] > 1e-6  # the box centre in front of the camera
-    seen = (np.abs(vx) <= 1).any(2)  # (k, steps): per vertical line
-    far = np.where(seen, np.abs(np.arange(steps) - centre)[None, :], steps + 1)
-    line = np.where(seen[:, centre], centre, np.where(seen.any(1), far.argmin(1), centre))
-    rows = np.arange(k)
-    xs = np.concatenate([hx, vx[rows, line]], 1)
-    y = np.concatenate([hy, vy[rows, line]], 1)
-    in_x = np.abs(xs) <= 1
-    use = np.where(in_x.any(1)[:, None], in_x, True)
-    ys_min = np.where(use, y, np.inf).min(1)
-    ys_max = np.where(use, y, -np.inf).max(1)
-    front = np.concatenate([hz, vz[:, centre]], 1) > G.FRONT_Z
-    yc = np.concatenate([hy, vy[:, centre]], 1)
-    fy_min = np.minimum(np.where(front, yc, np.inf).min(1), ys_min)
-    fy_max = np.maximum(np.where(front, yc, -np.inf).max(1), ys_max)
-    x_min, x_max = xs.min(1), xs.max(1)
-    full = np.clip(np.stack([x_min, fy_min, x_max, fy_max], 1), -3.0, 3.0)
-    full_area = (full[:, 2] - full[:, 0]) * (full[:, 3] - full[:, 1])
-    vis = np.clip(np.stack([x_min, ys_min, x_max, ys_max], 1), -1.0, 1.0)
-    vis_area = np.maximum(0.0, vis[:, 2] - vis[:, 0]) * np.maximum(0.0, vis[:, 3] - vis[:, 1])
-    share = np.divide(vis_area, full_area, out=np.zeros(k), where=full_area > 0)
-    box = (np.stack([x_min, ys_min, x_max, ys_max], 1) + 1) / 2
-    out = [
-        (tuple(float(v) for v in box[i]), float(share[i])) if front_c[i] else None for i in range(k)
-    ]
-    sl = np.flatnonzero(front_c & (share < G.SLIVER_SHARE))  # the part in view, as there
-    for i, bi in zip(sl, G.sliver_boxes(r, tx, ty, b[sl]) if len(sl) else [], strict=True):
-        if bi is not None:
-            out[i] = (bi, float(share[i]))
-    return out
 
 
 def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams) -> Any:
@@ -968,7 +907,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         wide = near + np.array([0.0, 0.0, c, c])  # OUT: clear of the view
         pad = near + np.array([0.0, 0.0, 2 * p.include_check_pad_deg, 0.0])  # IN: padded
         own = [] if sj is None else [sj[:4]]
-        res = project_boxes(
+        res = G.project_boxes(
             vy, vp, vf, size, np.concatenate([np.reshape(own, (-1, 4)), rows[:, :4], pad, wide])
         )
         out = []
@@ -997,7 +936,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
             r = res_rows[k]
             if r is not None and not wearer_allowed(np.clip(r[0], 0.0, 1.0), th):
                 out.append(float(rows[k, 0]))
-        res_hard = project_boxes(vy, vp, vf, size, near) if p.near_soft_as_hard else res_near
+        res_hard = G.project_boxes(vy, vp, vf, size, near) if p.near_soft_as_hard else res_near
         for bx, r, rw, rh in zip(near, res_near, res_wide, res_hard, strict=True):
             if (
                 r is not None
@@ -1090,7 +1029,7 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
             return False
         return any(  # in front and overlapping the frame
             r is not None and r[0][0] < 1 and r[0][2] > 0 and r[0][1] < 1 and r[0][3] > 0
-            for r in project_boxes(*view(i), size, own[:, :4])
+            for r in G.project_boxes(*view(i), size, own[:, :4])
         )
 
     def held_bad(j: int) -> bool:
@@ -1519,7 +1458,7 @@ def _apply_away(ctx: dict[str, Any], c0: int, c1: int, ctr: float, p: DirectorPa
     ctx["pitch"][c0:c1] = p.pitch_default
     ctx["fov"][c0:c1] = ctx["fov_wide"]
     ctx["subj"][c0:c1] = np.nan
-    fwd = abs(G.wrap_deg(ctr - h0 - ctx["forward_yaw"])) <= 30  # forward_yaw: held frame
+    fwd = abs(G.wrap_deg(ctr - h0 - ctx["forward_yaw"])) <= FORWARD_DEG  # forward_yaw: held frame
     ctx["target"][c0:c1] = ["forward" if fwd else "view"] * (c1 - c0)
 
 
@@ -1607,7 +1546,7 @@ def _cut_away(
         away = np.ones(len(cen), bool)
         for y in sy:
             away &= np.abs(G.wrap_deg(cen - y)) > ctx["fov_wide"] / 2 + 10.0
-        away &= ctx["people"][c0:c1].max(0) <= 0.3
+        away &= ctx["people"][c0:c1].max(0) <= FRIEND_PEOPLE
         cands = [float(cen[k]) for k in np.flatnonzero(away)[np.argsort(-score[away])]]
         h0 = 0.0 if ctx.get("hold") is None else float(ctx["hold"][c0])
         best = _best_away(ctx, chk, c0, c1, cands or [float(ctx["forward_yaw"]) + h0], p)
@@ -1853,9 +1792,9 @@ def compute_path(
         for i in range(a, b):
             target[i] = (
                 "friend"
-                if pe[i - a] > 0.3
+                if pe[i - a] > FRIEND_PEOPLE
                 else "forward"
-                if abs(G.wrap_deg(sg["centres"][st[i - a]] - sg["forward_yaw"])) <= 30
+                if abs(G.wrap_deg(sg["centres"][st[i - a]] - sg["forward_yaw"])) <= FORWARD_DEG
                 else "view"
             )
     off = None  # display yaw - held yaw per step (0 on selfie shots, which follow the wearer)
@@ -2058,6 +1997,44 @@ def _linear_intervals(kx: np.ndarray, yaw: np.ndarray, pitch: np.ndarray) -> np.
     for limit in (th.max_pan_p95, th.max_pan_max):
         out |= (cubic > limit) & (slow < limit + 0.05)
     return out
+
+
+def validate_path(path: Any) -> dict[str, Any]:
+    """``path`` when it is a usable camera path (a hand-edited file may not be): an object
+    whose ``keys`` are a non-empty list of objects with numbers ``t`` (in order), ``yaw``,
+    ``pitch`` and ``fov`` (above 0); a ``segment``, when present, is an object whose
+    ``start`` and ``end`` are numbers.
+
+    Raises:
+        ValueError: Naming the first problem (the key's index for a bad key).
+    """
+
+    def number(v: Any) -> bool:
+        return isinstance(v, int | float) and not isinstance(v, bool) and math.isfinite(v)
+
+    if not isinstance(path, dict):
+        raise ValueError("not a camera path (a JSON object with keys)")
+    keys = path.get("keys")
+    if not isinstance(keys, list) or not keys:
+        raise ValueError("'keys' must be a non-empty list")
+    last = -math.inf
+    for i, k in enumerate(keys):
+        if not isinstance(k, dict):
+            raise ValueError(f"key {i} is not an object")
+        bad = [f for f in ("t", "yaw", "pitch", "fov") if not number(k.get(f))]
+        if bad:
+            raise ValueError(f"key {i}: {', '.join(bad)} must be numbers")
+        if k["t"] < last:
+            raise ValueError(f"key {i}: t {k['t']} is before the key before it")
+        if k["fov"] <= 0:
+            raise ValueError(f"key {i}: fov must be above 0")
+        last = k["t"]
+    seg = path.get("segment")
+    if seg is not None and not (
+        isinstance(seg, dict) and all(number(seg[k]) for k in ("start", "end") if k in seg)
+    ):
+        raise ValueError("'segment' must be an object with numbers start and end")
+    return path
 
 
 def shot_index(path: dict[str, Any], times: np.ndarray) -> np.ndarray:

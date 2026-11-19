@@ -113,6 +113,25 @@ def test_wearer_axis_of_an_upright_clip_comes_from_its_track(home, tmp_path) -> 
     assert np.allclose(axis, _orient(UPRIGHT_UP).wearer)
 
 
+def test_the_memoised_axis_follows_a_track_rewritten_by_another_process(home, tmp_path) -> None:
+    """A213: the memo key holds the orientation file's stamp, so a long-lived process
+    (``cutpoint ui``) sees a track another process cached anew."""
+    import os  # noqa: PLC0415
+
+    src = tmp_path / "up.lrv"
+    src.write_bytes(b"x")
+    write_orient(src, UPRIGHT_UP)
+    VW._AXES.clear()
+    pv = _pv(src, UPRIGHT_META, _boxes([0.52, 0.75, -0.41]))
+    assert np.allclose(VW.wearer_axis(pv), _orient(UPRIGHT_UP).wearer)
+    tilted = [0.0, -0.8, 0.6]
+    write_orient(src, tilted)
+    path = G._orient_path(src)
+    st = path.stat()
+    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # a later write
+    assert np.allclose(VW.wearer_axis(pv), _orient(tilted).wearer)
+
+
 def test_wearer_axis_of_a_helmet_clip_is_unchanged(home, tmp_path) -> None:
     src = tmp_path / "helmet.lrv"
     src.write_bytes(b"x")
@@ -310,7 +329,7 @@ def _plan_twice(
             "kind": kind,
             "vertical": vertical,
             "params": asdict(D.params_for(kind)),
-            "keys": [],
+            "keys": [{"t": start, "yaw": 0.0, "pitch": -5.0, "fov": 86.0}],
             "cuts": [],
         }
         if axis != G.axis_name(G.FORWARD_V):  # as compute_path writes an upright path

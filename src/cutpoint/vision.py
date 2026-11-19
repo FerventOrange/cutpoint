@@ -486,6 +486,9 @@ class VisionRater:
                 want, agreed = _ollama_consent_key(self.url), v_ast.consent
             self._consent_needed = want if want is not None and want not in agreed else None
         self.used = False  # True once a request went to the model: unload() frees it
+        # ask_text: whether Ollama had the model loaded before this rater's first request (the
+        # AI Chat or another job), checked after the memory guard; None: not asked yet (#888)
+        self.preloaded: bool | None = None
         # the context (num_ctx) of the last request to Ollama; the memory guard's (#732)
         self.num_ctx: int | None = None
         self.hits = 0  # ratings taken from the cache by rate()
@@ -730,11 +733,15 @@ class VisionRater:
         reply = self.via.ask(prompt, images, schema=schema) if self.via else None
         return (_json_object(reply) if reply else None), reply
 
-    def _ollama_chat(self, payload: dict, timeout: float, endpoint: str = "chat") -> dict:
+    def _ollama_chat(
+        self, payload: dict, timeout: Any, endpoint: str = "chat", *, note_loaded: bool = False
+    ) -> dict:
         """One request to Ollama's ``/api/<endpoint>``: ``payload["options"]["num_ctx"]`` is
         raised to the context the model is loaded with already (:meth:`_context`), the memory
         guard runs, and :attr:`used`, :attr:`timed_out` and :attr:`last_call_s` (the post's own
-        duration) are kept. The answer's body.
+        duration) are kept. The answer's body. ``note_loaded``: before the first request, record
+        in :attr:`preloaded` whether the model is loaded already (after the memory guard, which
+        may free it).
 
         Raises:
             requests.RequestException: The request failed (:attr:`timed_out` says if it ran out).
@@ -744,6 +751,8 @@ class VisionRater:
         num_ctx = self._context(payload["options"]["num_ctx"])
         payload["options"] = {**payload["options"], "num_ctx": num_ctx}
         self.check_memory(num_ctx)
+        if note_loaded and self.preloaded is None:
+            self.preloaded = memguard.ollama_loaded(self.url, self.model)
         self.used = True
         self.timed_out = False
         t_post = time.perf_counter()
@@ -835,6 +844,68 @@ class VisionRater:
             )
             return None
         return data
+
+    def ask_text(
+        self,
+        prompt: str,
+        images: list[bytes],
+        *,
+        num_ctx: int = 8192,
+        num_predict: int = 2048,
+        temperature: float = 0.1,
+        timeout: float = 300,
+    ) -> dict[str, str] | None:
+        """One turn with the JPEG ``images`` and a free-text reply: ``{"content", "thinking"}``
+        (``thinking`` empty from a hosted Vision role), or None (logged).
+
+        The same path as the other requests: the consent check (:meth:`warn_consent`), a
+        hosted Vision role through :meth:`AssistantVision.ask`, the memory guard, the loaded
+        context (:meth:`_context`) and no redirect followed. Ollama gets no ``format`` and no
+        thinking; :attr:`preloaded` is recorded before the first request. A None reply leaves
+        :attr:`last_failure` at ``"request"`` (nothing came back, or no consent) or ``"reply"``
+        (an answer that is not JSON).
+        """
+        self.last_failure = None
+        if self.consent_needed:
+            self.warn_consent()
+            self.last_failure = "request"
+            return None
+        if self.via:
+            self.check_memory()  # a server on this machine: the RAM floor (#887)
+            text = self.via.ask(prompt, images)
+            if text is None:
+                self.last_failure = "request"
+                return None
+            return {"content": text, "thinking": ""}
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt,
+                    "images": [base64.b64encode(b).decode("ascii") for b in images],
+                }
+            ],
+            "stream": False,
+            "think": False,
+            "options": {"temperature": temperature, "num_ctx": num_ctx, "num_predict": num_predict},
+        }
+        try:
+            body = self._ollama_chat(payload, timeout, note_loaded=True)
+        except requests.RequestException as err:
+            logger.warning("Vision request failed: %s", err)
+            self.last_failure = "request"
+            return None
+        except ValueError as err:
+            logger.warning("Vision reply is not JSON: %s", err)
+            self.last_failure = "reply"
+            return None
+        msg = body.get("message")
+        msg = msg if isinstance(msg, dict) else {}  # another shape: no reply (A116)
+        return {
+            "content": str(msg.get("content") or ""),
+            "thinking": str(msg.get("thinking") or ""),
+        }
 
     def rate(
         self,

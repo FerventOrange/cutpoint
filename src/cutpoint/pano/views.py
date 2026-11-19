@@ -36,6 +36,7 @@ looked for when the profile has ``lift`` captions (:func:`lift_scores`).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import time
@@ -49,6 +50,7 @@ import numpy as np
 from cutpoint import cache, progress, state
 from cutpoint.events.common import params_key
 from cutpoint.pano import geometry as G
+from cutpoint.utils import file_stamp
 
 if TYPE_CHECKING:
     from cutpoint.activity import Prompts
@@ -173,7 +175,8 @@ def _stale_selfie(src: Path, meta: dict[str, Any]) -> bool:
 
 def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
     """Cached view-layer outputs of a clip, or None (also when they were computed with
-    another forward axis than the clip's cached orientation track has now)."""
+    another forward axis than the clip's cached orientation track has now, or the meta
+    beside them was written for other arrays)."""
     try:
         path = cache_path(Path(src), params)
     except OSError:
@@ -199,6 +202,10 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
         return None
     z = cache.load_npz(path)
     if z is None or not {"t", "emb", "det", "box_emb", "box_idx"} <= z.keys():
+        return None
+    # a meta written for other arrays (an interrupted save_views); files from before the
+    # pair token have it in neither
+    if ("pair" in z or "pair" in meta) and str(z.get("pair")) != meta.get("pair"):
         return None
     return PanoViews(
         t=z["t"],
@@ -440,17 +447,54 @@ def compute_views(
 def save_views(src: Path, data: PanoViews, params: ViewParams) -> Path:
     """Write the pano cache and the standard visual-layer cache of one clip."""
     path = cache_path(src, params)
+    # one token in both files (a hash of the arrays): an interruption between the two writes
+    # leaves a pair that load_views refuses, never new arrays read with the old meta (A211)
+    digest = hashlib.sha1()
+    for a in (data.t, data.emb, data.det, data.box_emb, data.box_idx):
+        digest.update(np.ascontiguousarray(a).tobytes())
+    pair = digest.hexdigest()[:16]
     cache.save_npz(
-        path, t=data.t, emb=data.emb, det=data.det, box_emb=data.box_emb, box_idx=data.box_idx
+        path,
+        t=data.t,
+        emb=data.emb,
+        det=data.det,
+        box_emb=data.box_emb,
+        box_idx=data.box_idx,
+        pair=np.array(pair),
     )
-    cache.save_json(path.with_suffix(".json"), data.meta)
+    cache.save_json(path.with_suffix(".json"), data.meta | {"pair": pair})
     _SCORES.clear()  # keyed without emb or axis: drop scores of the clip's old views
     _OCCL.clear()
     write_standard_visual(src, data)
     return path
 
 
-_AXES: dict[str, np.ndarray] = state.register_container(__name__, "_AXES", {})
+_AXES: dict[tuple, np.ndarray] = state.register_container(__name__, "_AXES", {})
+
+
+def _memo_stamp(pv: PanoViews) -> tuple:
+    """What the per-process memos of ``pv`` add to their keys: the identity of its view
+    layer (the arrays' ``pair`` hash, else the default cache file's stamp) and of the clip's
+    orientation track (its file's stamp), so a long-lived process (``cutpoint ui``) sees a
+    re-analysis done by another process (A213). Names the files only, never creates the
+    cache folder."""
+    src = pv.meta.get("source")
+    if not src:
+        return ()
+    try:
+        folder = cache.source_dir(Path(src), create=False)
+    except OSError:
+        return ()
+    views = pv.meta.get("pair") or file_stamp(
+        folder / f"pano-views-{params_key(ViewParams().key())}.npz"
+    )
+    return views, file_stamp(folder / f"x3-orient-v{G.ORIENT_VERSION}.npz")
+
+
+def _drop_axis(src: Path) -> None:
+    """Forget the memoised wearer axes of ``src``."""
+    for key in [k for k in _AXES if k[0] == str(src)]:
+        del _AXES[key]
 
 
 def _upright_wearer(pv: PanoViews) -> np.ndarray | None:
@@ -483,7 +527,7 @@ def wearer_axis(pv: PanoViews, min_boxes: int = 15) -> np.ndarray:
     seen from above, the wearer is rarely a person box, while the people around are
     (on aug-24-cruise the box median landed on the neighbours).
     """
-    key = str(pv.meta.get("source"))
+    key = (str(pv.meta.get("source")), *_memo_stamp(pv))
     cached = _AXES.get(key)
     if cached is not None:
         return cached
@@ -613,7 +657,13 @@ def view_scores(pv: PanoViews, prompts: Prompts | None = None) -> dict[str, np.n
     ``cutpoint crashes`` uses them). ``prompts``: default the active set.
     """
     p = _prompts(prompts)
-    key = (pv.meta.get("source"), len(pv.t), float(pv.t[-1]) if len(pv.t) else 0.0, p)
+    key = (
+        pv.meta.get("source"),
+        len(pv.t),
+        float(pv.t[-1]) if len(pv.t) else 0.0,
+        p,
+        *_memo_stamp(pv),
+    )
     cached = _SCORES.get(key)
     if cached is not None:
         return cached
@@ -785,7 +835,13 @@ def occlusion_scores(pv: PanoViews, prompts: Prompts | None = None) -> dict[str,
     usable selfie, not a glove on the lens).
     """
     p = _prompts(prompts)
-    key = (pv.meta.get("source"), len(pv.t), float(pv.t[-1]) if len(pv.t) else 0.0, p)
+    key = (
+        pv.meta.get("source"),
+        len(pv.t),
+        float(pv.t[-1]) if len(pv.t) else 0.0,
+        p,
+        *_memo_stamp(pv),
+    )
     cached = _OCCL.get(key)
     if cached is not None:
         return cached
@@ -1058,12 +1114,12 @@ def run_layer(
             orient = G.orientation(src, i00, c.fps, max(c.frames, 1))
             c0 = time.perf_counter()
             prior = load_views(src, p)  # a forced re-run reuses the clip's wearer axis
-            _AXES.pop(str(src), None)
+            _drop_axis(src)
             prior_axis = wearer_axis(prior) if prior is not None else orient.wearer
             data = compute_views(c, models, p, orient, wearer_v=prior_axis)
             if data is None:
                 continue
-            _AXES.pop(str(src), None)
+            _drop_axis(src)
             axis = wearer_axis(data)
             if (
                 math.degrees(math.acos(float(np.clip(axis @ prior_axis, -1, 1))))

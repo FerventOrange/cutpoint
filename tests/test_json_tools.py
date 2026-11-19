@@ -336,6 +336,21 @@ def test_360_status_json(pano_project, no_sdk, monkeypatch, capsys):
     ]
 
 
+def test_360_status_json_names_the_sdk_stitch_it_renders(pano_project, no_sdk, monkeypatch, capsys):
+    """A208: with an SDK stitch and a Studio export, mode and file both name the stitch."""
+    project, _ = pano_project
+    sdk = project / "stitched" / "x.equirect.mp4"
+    sdk.parent.mkdir()
+    sdk.write_bytes(b"x")
+    monkeypatch.setattr(P, "sdk_output", lambda c: sdk)
+    monkeypatch.setattr(P, "find_studio_export", lambda c: (project / "studio.mp4", "Studio"))
+    monkeypatch.setattr(VW, "load_views", lambda src: None)
+    code, doc = run_json(capsys, ["360", "status", "trip"])
+    assert code == 0
+    [row] = doc["outputs"]["clips"]
+    assert (row["render"], row["render_file"]) == ("sdk", str(sdk))
+
+
 # --------------------------------------------------------------------------- 360 director
 def test_360_director_json(pano_project, monkeypatch, capsys):
     project, clip = pano_project
@@ -473,10 +488,72 @@ def test_360_stitch_json_never_reports_sdk_output(pano_project, monkeypatch, cap
     assert "sdk said no" not in json.dumps(doc) and "sdk line" not in json.dumps(doc)
 
 
+def test_360_stitch_json_warns_about_an_unverified_stitch(pano_project, monkeypatch, capsys):
+    """A209: an ``ok`` stitch that failed its check is a ``stitch_unverified`` warning."""
+    project, _ = pano_project
+    out_file = project / "a.equirect.mp4"
+    recs = [{"clip": "001", "output": str(out_file), "status": "ok", "verify": "not 2:1"}]
+    monkeypatch.setattr(pano_stitch, "stitch_clips", lambda clips, force, dry_run: recs)
+    monkeypatch.setattr(capabilities, "nvidia_present", lambda: True)
+    code, doc = run_json(capsys, ["360", "stitch", "trip", "--clips", "001"])
+    assert code == 0
+    assert warning_codes(doc) == ["stitch_unverified"]
+    assert doc["warnings"][0]["files"] == [str(out_file)]
+    assert doc["outputs"]["clips"][0]["verify"] == "not 2:1"
+
+
 def test_360_stitch_json_nothing_selected(pano_project, capsys):
-    code, doc = run_json(capsys, ["360", "stitch", "trip", "--clips", "999", "--dry-run"])
+    segments = pano_project[0] / "picks.json"
+    other = write(pano_project[0] / "flat.mp4", "x")  # ordinary footage, not a 360 clip
+    cache.save_json(segments, [{"source": str(other), "start": 1.0, "end": 4.0}])
+    code, doc = run_json(capsys, ["360", "stitch", "trip", "--segments", str(segments)])
     assert code == 1 and doc["error"]["code"] == "error"
     assert "No 360 clips selected" in doc["error"]["message"]
+    assert warning_codes(doc) == ["not_a_360_clip"]  # A219: named, not skipped silently
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--clips", "001", "999"], "Unknown --clips: 999"),
+        (
+            ["--clips", "001", "--top", "3"],
+            "--top picks from highlights.json; drop it with --clips",
+        ),
+        (["--segments", "s.json", "--max-total", "60"], "--max-total picks from highlights"),
+    ],
+)
+def test_360_stitch_refuses_options_it_would_ignore(pano_project, capsys, args, message):
+    """A219: as clips --ids, an unknown clip or an option the selection replaces is bad_args."""
+    code, doc = run_json(capsys, ["360", "stitch", "trip", *args, "--dry-run"])
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert message in doc["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (
+            ["--paths", "--size", "320x180"],
+            "--paths decodes no frames and writes no sheets; drop --size",
+        ),
+        (["--paths", "--json-only"], "drop --json-only"),
+        (
+            ["--compare", "a.json", "b.json", "--fps", "4"],
+            "--compare takes the two qa.json files; drop --fps",
+        ),
+        (
+            ["--compare", "a.json", "b.json", "--size", "320x180", "--json-only"],
+            "drop --size, --json-only",
+        ),
+    ],
+)
+def test_360_qa_refuses_options_the_mode_ignores(home, capsys, args, message):
+    """A219: --paths ignores --size and --json-only, --compare --fps, --size and --json-only."""
+    (home / "projects" / "trip" / "clips").mkdir(parents=True)
+    code, doc = run_json(capsys, ["360", "qa", "projects/trip/clips", *args])
+    assert code == 1 and doc["error"]["code"] == "bad_args"
+    assert message in doc["error"]["message"]
 
 
 # --------------------------------------------------------------------------------- 360 qa

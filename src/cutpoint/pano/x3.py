@@ -279,13 +279,15 @@ def scan(folder: Path, with_meta: bool = True) -> list[X3Clip]:
         if with_meta:
             mpath = cache.source_dir(Path(clip.source)) / f"x3-meta-v{META_VERSION}.json"
             meta = cache.load_json(mpath)
-            if meta is None:
+            # a failed read is never cached (an older file may hold one): retry next run
+            if not isinstance(meta, dict) or "error" in meta:
                 try:
                     meta = read_trailer_meta(insv[0])
                 except Exception as err:  # noqa: BLE001 - Rust parser raises plain Exception
                     logger.warning("clip %s: trailer unreadable (%s)", key, err)
                     meta = {"error": str(err)}
-                cache.save_json(mpath, meta)
+                else:
+                    cache.save_json(mpath, meta)
             clip.meta = meta
         clips.append(clip)
     return clips
