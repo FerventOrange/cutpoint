@@ -7239,10 +7239,10 @@ def test_side_tabs_and_panel_headers_stay_put_while_a_panel_scrolls() -> None:
 
 
 def test_the_column_minimums_fit_the_narrowest_three_column_window() -> None:
-    """Cross-file contract (#516): app.js's MOM_MIN + SIDE_MIN + STAGE_MIN fit app.css's narrowest
+    """Cross-file contract (#516): prefs.js's MOM_MIN + SIDE_MIN + STAGE_MIN fit app.css's narrowest
     three-column window, and the stage track keeps STAGE_MIN. The splitters' behaviour is in
     tests/js/workspace.test.mjs."""
-    js, css = _web("app.js"), _web("app.css")
+    js, css = _web("prefs.js"), _web("app.css")
 
     def const(name: str) -> int:
         return int(re.search(rf"\bconst {name}\s*=\s*(\d+)\s*;", js)[1])
@@ -7815,7 +7815,9 @@ def test_model_text_is_never_set_as_markup() -> None:
     inline = re.findall(r"<script\b[^>]*>(.*?)</script>", _web("index.html"), re.S)
     assert any(s.strip() for s in inline)  # the early theme script
     scripts = [(p.name, p.read_text(encoding="utf-8")) for p in sorted(ui.WEB_DIR.glob("*.js"))]
-    assert {"app.js", "util.js", "api.js", "picker.js"} <= {name for name, _ in scripts}
+    assert {"app.js", "util.js", "api.js", "picker.js", "chat.js", "models.js", "prefs.js"} <= {
+        name for name, _ in scripts
+    }
     for name, js in [*scripts, *(("index.html <script>", s) for s in inline)]:
         for sink in sinks:
             assert sink not in js, (name, sink)

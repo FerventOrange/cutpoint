@@ -353,13 +353,13 @@ select { max-width: 100%; }
    reads them. */
 @property --side-w { syntax: "*"; inherits: false; }
 @property --mom-w { syntax: "*"; inherits: false; }
-/* The preview keeps 360px (STAGE_MIN in app.js): at the narrowest grid window (961px) both columns
-   fit at their minimum beside it, and app.js keeps dragged widths within what is left. */
+/* The preview keeps 360px (STAGE_MIN in prefs.js): at the narrowest grid window (961px) both columns
+   fit at their minimum beside it, and prefs.js keeps dragged widths within what is left. */
 #workspace {
   flex: 1; min-height: 0; display: grid;
   grid-template-columns: var(--mom-w, minmax(260px, 300px)) minmax(360px, 1fr) var(--side-w, minmax(290px, 360px));
 }
-/* drag handles on the preview's and the sequence column's left edges; app.js sets --mom-w and
+/* drag handles on the preview's and the sequence column's left edges; prefs.js sets --mom-w and
    --side-w on #workspace. Each starts at the border and reaches into the padding of the column
    right of it, clear of the scrollbar of the column left of it. Every column has its own cell, so
    a handle never pushes one into another row. */
@@ -390,7 +390,7 @@ select { max-width: 100%; }
 /* the column's tabs (Sequence | AI Chat | Models): a segmented control in a rounded well, the selected
    one raised and bold (board F). The header's Export is no tab: it shows the Export panel here with none
    selected. The bar stays at the top while a long panel scrolls under it (top: the column's padding), the
-   panel's header right under it; app.js sets the column's scroll-padding-top to both heights.
+   panel's header right under it; prefs.js sets the column's scroll-padding-top to both heights.
    --side-bar-h is the bar's height, the header bands' (--band-h): 8 px margin, the 36 px control, 8 px margin and the rule under it */
 .side { --side-bar-h: var(--band-h); }
 .side-bar { margin: -12px -16px 0; background: var(--panel); border-bottom: 1px solid var(--divider); position: sticky; top: -12px; z-index: 3; }
