@@ -24,7 +24,7 @@ def readable(monkeypatch):
 @pytest.fixture
 def speech_env(monkeypatch, readable, tmp_path):
     """One utterance 10-14 s in every source; records the speech-map and words calls."""
-    calls: dict[str, list[Any]] = {"maps": [], "words": [], "languages": []}
+    calls: dict[str, list[Any]] = {"maps": [], "words": []}
 
     def fake_map(src, words, events, settings):
         calls["maps"].append((src, words, events))
@@ -33,7 +33,6 @@ def speech_env(monkeypatch, readable, tmp_path):
 
     def fake_words(src, language=None):
         calls["words"].append(src)
-        calls["languages"].append(language)
         return [{"start": 10.0, "end": 14.0, "word": "sentence"}]
 
     monkeypatch.setattr(planning.boundaries, "build_speech_map", fake_map)
