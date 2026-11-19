@@ -379,7 +379,7 @@ def test_cli_flag_overrides_config_and_rejects_unknown_presets(home, command, ca
 
 def test_assemble_cli_passes_the_preset(home, tmp_path, monkeypatch):
     got: dict = {}
-    monkeypatch.setattr(cli, "assemble", lambda d, out, **kw: got.update(kw))
+    monkeypatch.setattr("cutpoint.assemble.assemble", lambda d, out, **kw: got.update(kw))
     (tmp_path / "clips").mkdir()
     assert cli.main(["assemble", str(tmp_path / "clips"), "--compress-peaks", "strong"]) == 0
     assert got["compress_peaks"] == "strong" and got["loudnorm"] is False

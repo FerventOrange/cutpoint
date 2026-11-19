@@ -22,23 +22,15 @@ from collections.abc import Iterator, Sequence
 from dataclasses import replace
 from importlib.resources import files
 from pathlib import Path, PurePath
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 from cutpoint import __version__, cache, jsonout, paths, runstate, stage
-from cutpoint.assemble import (
-    AUDIO_TRANSITIONS,
-    OUTPUT_FORMATS,
-    assemble,
-    assemble_project,
-    check_transitions,
-    read_joins,
-)
-from cutpoint.boundaries import SpeechSettings
-from cutpoint.category import FUNNY, HYPE
-from cutpoint.clips import export_clips
 from cutpoint.config import (
+    AUDIO_TRANSITIONS,
     COLOR_MODES,
     COMPRESS_PEAKS,
+    LUT_SUFFIXES,
+    OUTPUT_FORMATS,
     analysis_skip,
     color_default,
     compress_peaks_default,
@@ -50,15 +42,14 @@ from cutpoint.config import (
     vision_detect_all_default,
     visual_index_default,
 )
-from cutpoint.edit import KINDS, edit_name, resolve_kind, run_edit
-from cutpoint.encode import LUT_SUFFIXES, Lut, check_lut
 from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.events import paths as event_paths
-from cutpoint.extend import extend_clips
-from cutpoint.planning import Padding, manifest_project
+from cutpoint.kinds import KINDS
 from cutpoint.progress import SKIPPABLE
 from cutpoint.styles import (
     AUTO,
+    FUNNY,
+    HYPE,
     AutoRequest,
     Style,
     auto_fallback,
@@ -75,6 +66,9 @@ from cutpoint.utils import (
     positive_int,
     unit_float,
 )
+
+if TYPE_CHECKING:
+    from cutpoint.encode import Lut
 
 logger = logging.getLogger("cutpoint")
 
@@ -197,6 +191,8 @@ def _lut(a: argparse.Namespace) -> Lut | None:
         if a.lut_strength is not None:
             raise jsonout.ArgumentError("--lut-strength needs --lut")
         return None
+    from cutpoint.encode import check_lut  # noqa: PLC0415 - numpy: only when a command runs
+
     strength = 1.0 if a.lut_strength is None else a.lut_strength
     return check_lut(resolve_project_path(a.lut, bare_names=False), strength)
 
@@ -350,10 +346,14 @@ def _cmd_detect(a: argparse.Namespace) -> None:
 
 def _edit_project(a: argparse.Namespace) -> Path:
     """``edit``'s project folder: ``--out``, else named after the first input."""
+    from cutpoint.edit import edit_name  # noqa: PLC0415 - the export stack
+
     return resolve_project_path(a.out) if a.out else projects_dir() / edit_name(Path(a.inputs[0]))
 
 
 def _cmd_edit(a: argparse.Namespace) -> None:
+    from cutpoint.edit import resolve_kind, run_edit  # noqa: PLC0415
+
     targets = [Path(t) for t in a.inputs]
     project = _edit_project(a)
     jsonout.set_project(project)
@@ -414,6 +414,8 @@ def _export_options(a: argparse.Namespace) -> dict:
     ``--segments``, ``--mix`` and ``--order``, :func:`_add_export_arguments` but
     ``--vertical``, ``--force``, ``--audio-fade`` and ``--compress-peaks``), ``--lut`` and
     ``--color`` checked."""
+    from cutpoint.planning import Padding  # noqa: PLC0415
+
     lut = _lut(a)
     color, color_strength = _color(a, lut)
     return {
@@ -440,6 +442,8 @@ def _export_options(a: argparse.Namespace) -> dict:
 
 
 def _cmd_clips(a: argparse.Namespace) -> None:
+    from cutpoint.clips import export_clips  # noqa: PLC0415 - the export stack
+
     project = resolve_project_path(a.project)
     jsonout.set_project(project)
     options = _export_options(a)
@@ -469,6 +473,8 @@ def _cmd_clips(a: argparse.Namespace) -> None:
 def _set_clips_project(clips_dir: Path) -> None:
     """For --json: the project of a clips folder (its manifest's ``project``, else the parent)."""
     if jsonout.active():
+        from cutpoint.planning import manifest_project  # noqa: PLC0415
+
         manifest = cache.load_json(clips_dir / "manifest.json")
         jsonout.set_project(
             manifest_project(manifest if isinstance(manifest, dict) else {}, clips_dir)
@@ -476,6 +482,10 @@ def _set_clips_project(clips_dir: Path) -> None:
 
 
 def _cmd_extend(a: argparse.Namespace) -> None:
+    from cutpoint.boundaries import SpeechSettings  # noqa: PLC0415
+    from cutpoint.extend import extend_clips  # noqa: PLC0415 - the export stack
+    from cutpoint.planning import Padding  # noqa: PLC0415
+
     clips_dir = resolve_project_path(a.clips_dir, bare_names=False)
     _set_clips_project(clips_dir)
     extend_clips(
@@ -1039,6 +1049,8 @@ def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
 
 
 def _cmd_assemble(a: argparse.Namespace) -> None:
+    from cutpoint.assemble import assemble, assemble_project, read_joins  # noqa: PLC0415
+
     given = resolve_project_path(a.clips_dir, bare_names=False)
     out = resolve_project_path(a.out, bare_names=False) if a.out else None
     join = {
@@ -1071,6 +1083,8 @@ def _cmd_assemble(a: argparse.Namespace) -> None:
 def _check_assemble(parser: argparse.ArgumentParser, a: argparse.Namespace) -> None:
     """Refuse an ``--audio-transition`` that does not go with ``--transition``, and options of
     the final video with a timeline ``--format`` (exit 2)."""
+    from cutpoint.assemble import check_transitions  # noqa: PLC0415 - the export stack
+
     if (why := check_transitions(a.transition, a.audio_transition)) is not None:
         parser.error(f"--audio-transition {a.audio_transition}: {why}")
     if a.output_format != "mp4":
@@ -1626,7 +1640,7 @@ def _add_export_arguments(
 
 
 def _add_format_argument(p: argparse.ArgumentParser) -> None:
-    """``--format mp4|fcpxml|otio`` (``output_format``, see cutpoint.assemble.OUTPUT_FORMATS)."""
+    """``--format mp4|fcpxml|otio`` (``output_format``, see cutpoint.config.OUTPUT_FORMATS)."""
     p.add_argument(
         "--format",
         dest="output_format",

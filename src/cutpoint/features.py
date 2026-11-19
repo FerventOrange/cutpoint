@@ -21,10 +21,12 @@ import functools
 import logging
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass
-
-import numpy as np
+from typing import TYPE_CHECKING
 
 from cutpoint import extras, state
+
+if TYPE_CHECKING:
+    import numpy as np
 
 logger = logging.getLogger(__name__)
 

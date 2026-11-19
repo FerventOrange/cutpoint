@@ -50,6 +50,7 @@ from cutpoint.events.killfeed import (
     detect_ocr_events,
     link_teamkills,
 )
+from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.events.regions import game_key_for_path, load_preset, stale_mapping
 from cutpoint.events.report import kept_dialogue, normalize, write_outputs
@@ -71,10 +72,6 @@ from cutpoint.utils import footage_context
 from cutpoint.vision import VisionRater
 
 logger = logging.getLogger(__name__)
-LAYERS = ("audio", "voice", "visual", "crash", "ocr", "vlm")
-# Layers run by default; voice/visual/crash feed action-cam features (other styles opt in).
-DEFAULT_LAYERS = ("audio", "ocr", "vlm")
-ACTION_CAM_LAYERS = ("audio", "voice", "visual", "crash", "vlm")
 # Share (percent) of the OCR step's progress HUD discovery takes when it runs; the
 # per-source OCR takes the rest. Measured first runs: discovery was about 4 of 7 min of
 # OCR on a 7 min file and 7 of 14 min on two 10 min files.

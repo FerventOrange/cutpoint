@@ -380,7 +380,9 @@ def test_assemble_refuses_an_audio_crossfade_at_cuts_with_exit_2(capsys, json_fl
 )
 def test_assemble_audio_transition_reaches_assemble(monkeypatch, tmp_path, extra, audio):
     calls = []
-    monkeypatch.setattr(cli, "assemble", lambda *a, **kw: calls.append(kw) or tmp_path / "f.mp4")
+    monkeypatch.setattr(
+        "cutpoint.assemble.assemble", lambda *a, **kw: calls.append(kw) or tmp_path / "f.mp4"
+    )
     args = cli.build_parser().parse_args(["assemble", str(tmp_path), *extra])
     cli._cmd_assemble(args)
     assert calls[0]["audio_transition"] == audio

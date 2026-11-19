@@ -182,7 +182,7 @@ def test_events_hands_the_option_on(home, tmp_path, monkeypatch, cfg, argv) -> N
         seen.append(kw["ocr"].det_skip)
         raise _Ran
 
-    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    monkeypatch.setattr("cutpoint.events.pipeline.run_events", run_events)
     parser = argparse.ArgumentParser()
     events_cli.add_arguments(parser)
     with pytest.raises(_Ran):

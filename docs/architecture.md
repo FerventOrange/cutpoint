@@ -31,6 +31,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 |---|---|
 | `cli.py`, `__main__.py` | argparse entry point and error handling (exit codes 0, 1, 2, 130); `python -m cutpoint` |
 | `edit.py` | `cutpoint edit`: analyze, clips and assemble in one run |
+| `kinds.py` | `edit --kind` presets (`KINDS`), import-free for the parser |
 | `jsonout.py`, `progress.py` | `--json` result envelope; `CUTPOINT_PROGRESS` lines |
 | `capabilities.py` | `cutpoint capabilities` report |
 | `skill/` | `cutpoint skill` and the packaged `SKILL.md` |
@@ -56,7 +57,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `ffmpeg_utils.py` | ffmpeg discovery, probing, loudness, encoder choice, read-error detection |
 | `telemetry.py`, `actioncam.py`, `crash.py`, `mix.py` | Action-cam module; `scripts/refmatch.py` is the action-cam scorer's development harness (fits learned styles to a reference edit; your own styles come from `cutpoint style`, `stylefiles.py`) |
 | `extras.py` | Maps missing optional modules to the extra and install command |
-| `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`, `menu_spans.py`, `ocr_prefetch.py`, `ocr_raw.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, through the shared vision client in `vision.py`), `pipeline.py` to run them, `scoring.py` and `tails.py` to feed results back, `report.py` and `sheets.py` (`events.txt`, contact sheets), `common.py`, `eventtypes.py`, `paths.py`, `cli.py`; `setup.py` downloads models |
+| `events/` | `cutpoint events`: layers for audio (`audio_events.py`), HUD OCR (`killfeed.py`, `regions.py`, `discover.py`, `menu_spans.py`, `ocr_prefetch.py`, `ocr_raw.py`), voice (`voice.py`), visual (`visual.py`), model windows (`vlm_windows.py`, through the shared vision client in `vision.py`), `pipeline.py` to run them, `layers.py` (layer names, import-free for the parser), `scoring.py` and `tails.py` to feed results back, `report.py` and `sheets.py` (`events.txt`, contact sheets), `common.py`, `eventtypes.py`, `paths.py`, `cli.py`; `setup.py` downloads models |
 | `pano/` | `cutpoint 360`: `x3.py` (clip discovery), `geometry.py` (IMU levelling), `views.py`, `director.py`, `render.py`, `stitch.py` (SDK wrapper), `qa.py`, `qa_compare.py`, `qa_horizon.py`, `qa_paths.py`, `check.py`, `vlcheck.py`, `candidates.py` (camera paths of the candidates), `repair.py`, `project.py` (`pano.json` and the `pano` config section), `cli.py`. Not optional code: `telemetry.py`, `analyze.py`, `mix.py` and `actioncam.py` import `pano.x3` or `pano.views`; only the SDK stitch is optional |
 
 See [360 director](workflows/360-director.md) for the 360 design.

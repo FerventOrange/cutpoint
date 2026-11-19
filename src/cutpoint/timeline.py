@@ -288,9 +288,6 @@ def write_otio(
     return out
 
 
-TIMELINE_FORMATS = ("fcpxml", "otio")  # ``assemble --format`` values that write a timeline
-
-
 def write_timeline(
     clips: list[MediaInfo],
     output_video: Path,
@@ -298,7 +295,7 @@ def write_timeline(
     fade: float | list[float] = 0.0,
     audio_cut: bool = False,
 ) -> Path:
-    """Write the ``kind`` timeline (:data:`TIMELINE_FORMATS`), ``<name>.fcpxml`` or
+    """Write the ``kind`` timeline (:data:`~cutpoint.config.TIMELINE_FORMATS`), ``<name>.fcpxml`` or
     ``<name>.otio``, for ``output_video`` (its folder and stem; the video itself need not exist).
 
     ``fade``: the crossfade of the join (:func:`cutpoint.assemble.crossfade_duration`, whole

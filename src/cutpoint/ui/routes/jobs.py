@@ -14,15 +14,15 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from cutpoint import cache, insta360, progress, runstate
-from cutpoint.assemble import (
+from cutpoint.assemble import default_audio_transition, exact_clips
+from cutpoint.assistant import providers as ai_providers
+from cutpoint.config import (
     AUDIO_TRANSITIONS,
     OUTPUT_FORMATS,
-    default_audio_transition,
-    exact_clips,
+    projects_dir,
+    vision_assistant_settings,
 )
-from cutpoint.assistant import providers as ai_providers
-from cutpoint.config import projects_dir, vision_assistant_settings
-from cutpoint.edit import KINDS
+from cutpoint.kinds import KINDS
 from cutpoint.pano import x3
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import AUTO

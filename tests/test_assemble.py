@@ -791,7 +791,9 @@ def test_a_join_without_room_becomes_a_cut_alone_and_is_reported():
     with jsonout.run("assemble") as res:
         got = assemble.join_fade([a, b, c], "cut", 0.2, ["fade", "fade"])
     assert got == pytest.approx([0.2, 0.0])
-    assert [(w["code"], w["files"]) for w in res.warnings] == [("join_no_room", ["b.mp4", "c.mp4"])]
+    assert [(w["code"], w["files"]) for w in res.warnings] == [
+        ("join_no_room", [str(Path("b.mp4").absolute()), str(Path("c.mp4").absolute())])
+    ]
     # nothing left to fade: the plain cut, not a list of zeros
     with jsonout.run("assemble"):
         assert assemble.join_fade([a, c], "cut", 0.2, ["fade"]) == 0.0
