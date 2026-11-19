@@ -1127,7 +1127,7 @@ def test_assemble_first_puts_back_the_originals_of_a_killed_replace(monkeypatch,
         seen.update(_snapshot(clips_dir))
         return project / "final.mp4"
 
-    monkeypatch.setattr(assemble, "_assemble", joined)
+    monkeypatch.setattr(assemble, "_write_mp4", joined)
     caplog.clear()
     assert cli.main(["assemble", str(project / "clips")]) == 0
     assert seen == before  # the clips were put back before they were listed
@@ -1141,7 +1141,7 @@ def test_assemble_removes_a_leftover_staging_folder(monkeypatch, home):
     stale = project / ".clips.cutpoint-tmp"
     stale.mkdir()
     (stale / "001_a.mp4").write_bytes(b"half an export")
-    monkeypatch.setattr(assemble, "_assemble", lambda *_a: project / "final.mp4")
+    monkeypatch.setattr(assemble, "_write_mp4", lambda *_a: project / "final.mp4")
     assert cli.main(["assemble", str(project / "clips")]) == 0
     assert _snapshot(project / "clips") == before
     _only_original_folders(project)
@@ -1171,7 +1171,7 @@ def test_a_second_run_on_the_folder_is_refused_and_keeps_the_first_ones_staging(
         raise AssertionError("assembled while another run was exporting")
 
     monkeypatch.setattr(clips, "export_clip_checked", export)
-    monkeypatch.setattr(assemble, "_assemble", joined)
+    monkeypatch.setattr(assemble, "_write_mp4", joined)
     assert cli.main(_argv("clips", project, "--force")) == 0
     assert codes == [1]
     errors = _errors(caplog)
@@ -1239,7 +1239,7 @@ def test_lock_of_another_run_stops_the_run_before_anything_is_touched(
         else:
             assert "process 4321" in errors
             assert ("on other-pc" in errors) is (holder == "other-host")
-    monkeypatch.setattr(assemble, "_assemble", lambda *_a: pytest.fail("assembled"))
+    monkeypatch.setattr(assemble, "_write_mp4", lambda *_a: pytest.fail("assembled"))
     code, doc = run_json(capsys, ["assemble", str(clips_dir)])
     assert code == 1
     assert doc["error"]["code"] == "folder_busy"
@@ -1309,7 +1309,7 @@ def test_assemble_of_a_folder_whose_parent_is_read_only_runs_without_a_lock(
     else:  # the lock cannot be created and neither can any other file there
         _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Permission denied"))
         monkeypatch.setattr(folders, "_dir_writable", lambda _folder: False)
-    monkeypatch.setattr(assemble, "_assemble", lambda *_a: project / "final.mp4")
+    monkeypatch.setattr(assemble, "_write_mp4", lambda *_a: project / "final.mp4")
     caplog.set_level("INFO")
     assert cli.main(["assemble", str(project / "clips")]) == 0
     assert "Not locking" in caplog.text
@@ -1322,7 +1322,9 @@ def test_lock_that_is_briefly_not_creatable_is_retried_and_taken(monkeypatch, ho
     project = _setup(home, monkeypatch)
     calls = _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Access denied"), 1)
     held = []
-    monkeypatch.setattr(assemble, "_assemble", lambda *_a: held.append(lock_file(project).exists()))
+    monkeypatch.setattr(
+        assemble, "_write_mp4", lambda *_a: held.append(lock_file(project).exists())
+    )
     assert cli.main(["assemble", str(project / "clips")]) == 0
     assert len(calls) == 2
     assert held == [True]
@@ -1333,7 +1335,7 @@ def test_lock_that_is_briefly_not_creatable_is_retried_and_taken(monkeypatch, ho
 def test_lock_not_creatable_in_a_writable_folder_stops_the_run(monkeypatch, home, caplog):
     project = _setup(home, monkeypatch)
     _failing_lock_open(monkeypatch, PermissionError(errno.EACCES, "Access denied"))
-    monkeypatch.setattr(assemble, "_assemble", lambda *_a: pytest.fail("assembled"))
+    monkeypatch.setattr(assemble, "_write_mp4", lambda *_a: pytest.fail("assembled"))
     assert cli.main(["assemble", str(project / "clips")]) == 1
     assert f"Cannot create the lock file {lock_file(project)}" in _errors(caplog)
 

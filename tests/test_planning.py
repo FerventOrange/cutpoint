@@ -39,6 +39,12 @@ def _cand(cid: str, score: float, duration: float = 10.0, **extra: Any) -> dict[
     return {"id": cid, "score": score, "duration": duration, **extra}
 
 
+def test_select_moments_rejects_non_object_candidates(tmp_path: Path) -> None:
+    project = _project(tmp_path, [1, "x", None])
+    with pytest.raises(ValueError, match=r"highlights\.json: candidate 1 is not an object.*re-run"):
+        select_moments(project)
+
+
 def test_select_moments_top_by_score(tmp_path):
     project = _project(tmp_path, [_cand("a", 1), _cand("b", 3), _cand("c", 2)])
     chosen, style = select_moments(project, top=2)

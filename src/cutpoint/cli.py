@@ -2000,31 +2000,30 @@ ANALYSIS_CONTEXT_USE = (
 )
 
 
-def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
-    """Build the argument parser; ``profile_verbs``: ``profile`` takes the library verbs
-    (:func:`_profile_verb`) instead of a project."""
-    p = _Parser(
-        prog="cutpoint",
-        description="Cutpoint: local AI highlight finding, clipping and assembly",
-    )
+def _add_inputs_argument(p: argparse.ArgumentParser, metavar: str) -> None:
+    """The ``inputs`` of edit, detect and analyze."""
     p.add_argument(
-        "-v",
-        "--verbose",
-        "--debug",
-        action="store_true",
-        help="debug logging (also prints tracebacks of errors)",
+        "inputs", nargs="+", metavar=metavar, help="one or more video files and/or folders"
     )
-    p.add_argument("--version", action="version", version=f"cutpoint {__version__}")
-    sub = p.add_subparsers(dest="command", required=True)
 
+
+def _add_analysis_arguments(p: argparse.ArgumentParser) -> None:
+    """The analysis options analyze and edit share, after their own ones."""
+    _add_context_argument(p, ANALYSIS_CONTEXT_USE)
+    _add_skip_argument(p)
+    _add_visual_index_argument(p)
+    _add_ocr_det_skip_argument(p)
+    _add_vision_detect_all_argument(p)
+
+
+def _add_edit_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint edit``: analyze, clips and assemble in one command."""
     ed = sub.add_parser(
         "edit",
         help="one command: analyze, export clips and assemble the final video with "
         "subtitles (<video>-final.mp4 and .srt in the project folder)",
     )
-    ed.add_argument(
-        "inputs", nargs="+", metavar="video", help="one or more video files and/or folders"
-    )
+    _add_inputs_argument(ed, "video")
     ed.add_argument(
         "--kind",
         choices=list(KINDS),
@@ -2080,25 +2079,22 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         "--vision; ",
     )
     _add_ollama_arguments(ed)
-    _add_context_argument(ed, ANALYSIS_CONTEXT_USE)
-    _add_skip_argument(ed)
-    _add_visual_index_argument(ed)
-    _add_ocr_det_skip_argument(ed)
-    _add_vision_detect_all_argument(ed)
+    _add_analysis_arguments(ed)
     _add_compress_peaks_argument(ed, "baked into the clips and so the final video")
     _add_lut_arguments(ed)
     _add_color_arguments(ed)
     _add_json_argument(ed)
     ed.set_defaults(func=_cmd_edit, usage_check=lambda a: _check_edit(ed, a))
 
+
+def _add_detect_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint detect``."""
     dt = sub.add_parser(
         "detect",
         help="detect the footage category (gameplay, action cam, action, talk, general) and the "
         "style --style auto picks; reads only a few frames and the container tags",
     )
-    dt.add_argument(
-        "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
-    )
+    _add_inputs_argument(dt, "input")
     _add_source_filter_arguments(dt)
     dt.add_argument(
         "--vision",
@@ -2115,10 +2111,11 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(dt)
     dt.set_defaults(func=_cmd_detect)
 
+
+def _add_analyze_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint analyze``."""
     an = sub.add_parser("analyze", help="find and rank highlight candidates")
-    an.add_argument(
-        "inputs", nargs="+", metavar="input", help="one or more video files and/or folders"
-    )
+    _add_inputs_argument(an, "input")
     _add_source_filter_arguments(an)
     an.add_argument(
         "--style",
@@ -2127,8 +2124,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         help="preset (default: auto); learned presets in "
         "<CUTPOINT_HOME>/styles/*.json are listed too (action-cam: telemetry-driven "
         "action-cam footage); auto picks one from the footage (gameplay, "
-        f"action cam, action, talk or general, see cutpoint detect; ambiguous: gaming when it leans "
-        f"to gameplay, else the General style, {auto_fallback(HYPE)})",
+        "action cam, action, talk or general, see cutpoint detect; ambiguous: gaming when it "
+        f"leans to gameplay, else the General style, {auto_fallback(HYPE)})",
     )
     an.add_argument(
         "--out",
@@ -2163,15 +2160,14 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         "confidence, 0-1, become must-include moments with their reaction; weaker ones are "
         "ranked like any moment (default: the style's, 0.6; 0 = none forced)",
     )
-    _add_context_argument(an, ANALYSIS_CONTEXT_USE)
-    _add_skip_argument(an)
-    _add_visual_index_argument(an)
-    _add_ocr_det_skip_argument(an)
-    _add_vision_detect_all_argument(an)
+    _add_analysis_arguments(an)
     add_batch_size_argument(an)
     _add_json_argument(an)
     an.set_defaults(func=_cmd_analyze)
 
+
+def _add_clips_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint clips``."""
     cl = sub.add_parser("clips", help="export selected moments as numbered clips")
     cl.add_argument(
         "project",
@@ -2195,6 +2191,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(cl)
     cl.set_defaults(func=_cmd_clips)
 
+
+def _add_extend_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint extend``."""
     ex = sub.add_parser(
         "extend",
         help="re-export an existing clips folder with extra "
@@ -2245,6 +2244,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(ex)
     ex.set_defaults(func=_cmd_extend)
 
+
+def _add_events_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint events`` (its options are in :mod:`cutpoint.events.cli`)."""
     ev = sub.add_parser(
         "events",
         help="detect what happens: audio events, "
@@ -2258,6 +2260,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(ev)
     ev.set_defaults(func=_cmd_events)
 
+
+def _add_stage_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint stage``."""
     st = sub.add_parser(
         "stage",
         help="copy sources on slow or network storage to a "
@@ -2276,6 +2281,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(st)
     st.set_defaults(func=_cmd_stage)
 
+
+def _add_crashes_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint crashes``."""
     cr = sub.add_parser(
         "crashes",
         help="(action-cam module) find crashes / "
@@ -2349,29 +2357,32 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(cr)
     cr.set_defaults(func=_cmd_crashes)
 
-    if profile_verbs:
-        _add_profile_verb_parsers(sub)
-    else:
-        pf = sub.add_parser(
-            "profile",
-            help="pick or discover the project's activity profile (crash prompts and words; "
-            "found in your library or discovered from the footage, refined by --context) and "
-            "write activity.json; cutpoint profile list|show|create|validate|delete manage "
-            "the profile library",
-            description="Pick or discover a project's activity profile and write its "
-            "activity.json. The profile library has its own commands: cutpoint profile "
-            "list | show NAME | create NAME --from FILE | validate NAME|FILE | delete NAME.",
-        )
-        pf.add_argument(
-            "project",
-            help="analysed project (bare name = projects folder; a project named list, show, "
-            "create, validate or delete: projects/<name>)",
-        )
-        _add_activity_arguments(pf)
-        _add_ollama_arguments(pf)
-        _add_json_argument(pf)
-        pf.set_defaults(func=_cmd_profile)
 
+def _add_profile_project_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint profile <project>`` (the library verbs: :func:`_add_profile_verb_parsers`)."""
+    pf = sub.add_parser(
+        "profile",
+        help="pick or discover the project's activity profile (crash prompts and words; "
+        "found in your library or discovered from the footage, refined by --context) and "
+        "write activity.json; cutpoint profile list|show|create|validate|delete manage "
+        "the profile library",
+        description="Pick or discover a project's activity profile and write its "
+        "activity.json. The profile library has its own commands: cutpoint profile "
+        "list | show NAME | create NAME --from FILE | validate NAME|FILE | delete NAME.",
+    )
+    pf.add_argument(
+        "project",
+        help="analysed project (bare name = projects folder; a project named list, show, "
+        "create, validate or delete: projects/<name>)",
+    )
+    _add_activity_arguments(pf)
+    _add_ollama_arguments(pf)
+    _add_json_argument(pf)
+    pf.set_defaults(func=_cmd_profile)
+
+
+def _add_resume_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint resume``."""
     rs = sub.add_parser(
         "resume",
         help="continue the interrupted run of a project (analyze, edit, events, crashes, "
@@ -2384,6 +2395,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(rs)
     rs.set_defaults(func=_cmd_resume)
 
+
+def _add_rerank_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint rerank``."""
     rr = sub.add_parser(
         "rerank",
         help="re-rank an analysed project with another style from its caches, in seconds "
@@ -2417,6 +2431,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(rr)
     rr.set_defaults(func=_cmd_rerank)
 
+
+def _add_mix_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint mix``."""
     mx = sub.add_parser(
         "mix",
         help="(action-cam module) pick a varied set of moments (runs, jumps, "
@@ -2453,6 +2470,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(mx)
     mx.set_defaults(func=_cmd_mix)
 
+
+def _add_assemble_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint assemble``."""
     asm = sub.add_parser(
         "assemble",
         help="join clips (filename order) into one video, or write their timeline; from a "
@@ -2535,10 +2555,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
         project_defaults={d: asm.get_default(d) for d in project_options},
     )
 
-    from cutpoint.pano.cli import add_parser as add_pano_parser  # noqa: PLC0415
 
-    add_pano_parser(sub)
-
+def _add_setup_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint setup`` (its options are in :mod:`cutpoint.events.setup`)."""
     su = sub.add_parser(
         "setup",
         help="install the models: Whisper (into the Hugging Face cache) and the events "
@@ -2551,6 +2570,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(su)
     su.set_defaults(func=_cmd_setup, usage_check=lambda a: check_setup_args(su, a))
 
+
+def _add_paths_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint paths``."""
     pa = sub.add_parser(
         "paths",
         help="print the resolved data folders (CUTPOINT_HOME, "
@@ -2559,6 +2581,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(pa)
     pa.set_defaults(func=_cmd_paths)
 
+
+def _add_cache_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint cache``."""
     ca = sub.add_parser(
         "cache",
         help="remove the source cache folders not used for DAYS days, least recently used "
@@ -2582,6 +2607,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(ca)
     ca.set_defaults(func=_cmd_cache)
 
+
+def _add_capabilities_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint capabilities``."""
     cp = sub.add_parser(
         "capabilities",
         help="report GPU vendors present, video encoders that really work, what "
@@ -2592,11 +2620,15 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     _add_json_argument(cp)
     cp.set_defaults(func=_cmd_capabilities)
 
-    _add_style_parsers(sub)
 
+def _add_guide_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint guide``."""
     gd = sub.add_parser("guide", help="print the guide for AI agents driving Cutpoint")
     gd.set_defaults(func=_cmd_guide)
 
+
+def _add_skill_parsers(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint skill install | print``."""
     sk = sub.add_parser(
         "skill", help="install or print the Claude Code skill for AI agents driving Cutpoint"
     )
@@ -2617,6 +2649,9 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     sp = sks.add_parser("print", help="print the skill (SKILL.md) to stdout")
     sp.set_defaults(func=_cmd_skill_print)
 
+
+def _add_proxy_parsers(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint proxy``, ``login`` and ``logout`` (CLIProxyAPI)."""
     pr = sub.add_parser(
         "proxy",
         help="run the authenticated CLIProxyAPI daemon in the foreground for subscription logins",
@@ -2631,7 +2666,8 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
 
     lg = sub.add_parser(
         "login",
-        help="log in to a subscription (Claude Code, Codex, Antigravity) in the browser via CLIProxyAPI",
+        help="log in to a subscription (Claude Code, Codex, Antigravity) in the browser via "
+        "CLIProxyAPI",
     )
     lg.add_argument("provider", choices=PROXY_PROVIDERS)
     lg.add_argument(
@@ -2642,12 +2678,61 @@ def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
     lo.add_argument("provider", choices=PROXY_PROVIDERS)
     lo.set_defaults(func=_cmd_logout)
 
+
+def _add_ui_parser(sub: argparse._SubParsersAction) -> None:
+    """``cutpoint ui``."""
     ui = sub.add_parser(
         "ui",
         help="serve the local browser workspace (127.0.0.1 only)",
     )
     ui.add_argument("--port", type=_port, default=8765, help="port on 127.0.0.1 (default 8765)")
     ui.set_defaults(func=_cmd_ui)
+
+
+def build_parser(profile_verbs: bool = False) -> argparse.ArgumentParser:
+    """Build the argument parser; ``profile_verbs``: ``profile`` takes the library verbs
+    (:func:`_profile_verb`) instead of a project."""
+    p = _Parser(
+        prog="cutpoint",
+        description="Cutpoint: local AI highlight finding, clipping and assembly",
+    )
+    p.add_argument(
+        "-v",
+        "--verbose",
+        "--debug",
+        action="store_true",
+        help="debug logging (also prints tracebacks of errors)",
+    )
+    p.add_argument("--version", action="version", version=f"cutpoint {__version__}")
+    sub = p.add_subparsers(dest="command", required=True)
+    _add_edit_parser(sub)
+    _add_detect_parser(sub)
+    _add_analyze_parser(sub)
+    _add_clips_parser(sub)
+    _add_extend_parser(sub)
+    _add_events_parser(sub)
+    _add_stage_parser(sub)
+    _add_crashes_parser(sub)
+    if profile_verbs:
+        _add_profile_verb_parsers(sub)
+    else:
+        _add_profile_project_parser(sub)
+    _add_resume_parser(sub)
+    _add_rerank_parser(sub)
+    _add_mix_parser(sub)
+    _add_assemble_parser(sub)
+    from cutpoint.pano.cli import add_parser as add_pano_parser  # noqa: PLC0415
+
+    add_pano_parser(sub)
+    _add_setup_parser(sub)
+    _add_paths_parser(sub)
+    _add_cache_parser(sub)
+    _add_capabilities_parser(sub)
+    _add_style_parsers(sub)
+    _add_guide_parser(sub)
+    _add_skill_parsers(sub)
+    _add_proxy_parsers(sub)
+    _add_ui_parser(sub)
     return p
 
 

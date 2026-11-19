@@ -308,7 +308,7 @@ def test_temporary_clips_keep_no_resume_folder(home, monkeypatch):
     project, video = _edit_project(home, monkeypatch)
     from cutpoint import assemble  # noqa: PLC0415
 
-    monkeypatch.setattr(assemble, "_assemble", lambda *a, **kw: project / "final.mp4")
+    monkeypatch.setattr(assemble, "_write_mp4", lambda *a, **kw: project / "final.mp4")
     _Encoder(monkeypatch, stop_at="003_c.mp4", during=True)
     assert cli.main(["assemble", "p", "--segments", str(project / "seg.json")]) == 130
     assert _resume_folders(home) == []
