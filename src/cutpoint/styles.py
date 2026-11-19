@@ -183,6 +183,7 @@ ACTION_CAM = "action-cam"
 # ``--style auto`` (analyze, edit; their default): the style follows the detected footage
 # category (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
 AUTO = "auto"
+HYPE, FUNNY = "hype", "funny"  # emphasis: analyze is hype, edit --kind funny-moments funny
 # The category whose style --style auto uses when the detection is ambiguous, in analyze and
 # edit (#896): everyday footage's, not gaming's (kill feeds and loudness), unless the best
 # guess is one of AUTO_GUESSED (gameplay: some HUD evidence), whose own style is used then.

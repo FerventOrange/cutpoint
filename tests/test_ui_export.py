@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from conftest import set_config, write
 from cutpoint import cache, cli, ui
+from cutpoint.assemble import read_joins
 from ui_helpers import (
     JobSpy,
     _after,
@@ -636,7 +637,7 @@ def test_assemble_job_hands_the_joins_over_in_a_file_and_only_when_there_are_any
     assert json.loads(written.read_text(encoding="utf-8")) == {
         "joins": [{"from": "001_a.mp4", "to": "002_b.mp4", "transition": "fade"}]
     }
-    assert cli.read_joins(written)  # the CLI's own reader takes the file
+    assert read_joins(written)  # the CLI's own reader takes the file
 
 
 def test_assemble_job_has_no_joins_flag_without_joins_for_these_clips(

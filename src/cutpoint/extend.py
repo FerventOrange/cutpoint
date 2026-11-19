@@ -519,7 +519,7 @@ def _extend_locked(
             jsonout.warn(
                 "compress_peaks_dropped",
                 message,
-                [out_dir / p.name for p in plans if p.entry.get("compress_peaks")],
+                [clips_dir / p.name for p in plans if p.entry.get("compress_peaks")],
             )
         # Only clips with a manifest entry are written; none may be a file this run reads.
         reads = []

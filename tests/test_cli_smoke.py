@@ -388,8 +388,9 @@ def test_logout_cli_command_error(monkeypatch, caplog):
 
 
 @pytest.mark.slow
-def test_import_cli_skips_action_cam_proxy_and_http_modules():
-    """``import cutpoint.cli`` (every ``cutpoint`` start) loads them only when a command runs."""
+def test_cli_parser_skips_the_heavy_modules():
+    """``import cutpoint.cli`` and building its parser (every ``cutpoint`` start, ``--help``)
+    load the action-cam, proxy, HTTP, export and events modules only when a command runs."""
     lazy = (
         "cutpoint.activity",
         "cutpoint.crash",
@@ -397,8 +398,20 @@ def test_import_cli_skips_action_cam_proxy_and_http_modules():
         "cutpoint.assistant.cliproxy",
         "huggingface_hub",
         "requests",
+        "numpy",
+        "torch",
+        "cv2",
+        "cutpoint.encode",
+        "cutpoint.clips",
+        "cutpoint.assemble",
+        "cutpoint.extend",
+        "cutpoint.edit",
+        "cutpoint.events.pipeline",
     )
-    code = f"import sys, cutpoint.cli; print([m for m in {lazy!r} if m in sys.modules])"
+    code = (
+        "import sys, cutpoint.cli; cutpoint.cli.build_parser(); "
+        f"print([m for m in {lazy!r} if m in sys.modules])"
+    )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
     assert proc.stdout.strip() == "[]"
 

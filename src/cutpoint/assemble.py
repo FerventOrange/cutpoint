@@ -59,6 +59,7 @@ from typing import Any
 
 from cutpoint import cache, folders, jsonout, paths, srt
 from cutpoint.clips import export_clips
+from cutpoint.config import AUDIO_TRANSITIONS, OUTPUT_FORMATS
 from cutpoint.encode import (
     A_FMT,
     AUDIO_OUT,
@@ -89,7 +90,7 @@ from cutpoint.ffmpeg_utils import (
     run,
 )
 from cutpoint.planning import EXACT_AUDIO_FADE_S, manifest_entries
-from cutpoint.timeline import TIMELINE_FORMATS, clip_offsets, per_join, write_timeline
+from cutpoint.timeline import clip_offsets, per_join, write_timeline
 from cutpoint.transcribe import Transcriber, split_markers
 from cutpoint.utils import clip_files
 
@@ -1244,7 +1245,7 @@ def _per_join_fade(infos: list[MediaInfo], kinds: list[str], fade_dur: float) ->
                 "crossfade; cutting between them"
             )
             logger.warning("%s", message)
-            jsonout.warn("join_no_room", message, [a.path.name, b.path.name])
+            jsonout.warn("join_no_room", message, [a.path, b.path])
         fading.append(kind == "fade" and room)
     clips = [i for n, i in enumerate(infos) if any(fading[max(n - 1, 0) : n + 1])]
     used = crossfade_duration(clips, fade_dur, fps) if clips else 0.0
@@ -1351,9 +1352,7 @@ def _report_joins(
     )
 
 
-AUDIO_TRANSITIONS = ("cut", "crossfade")
 JOIN_TRANSITIONS = ("cut", "fade")  # what a join of ``assemble --joins`` can be
-OUTPUT_FORMATS = ("mp4", *TIMELINE_FORMATS)  # assemble --format: the final video or a timeline
 
 
 def default_audio_transition(transition: str) -> str:

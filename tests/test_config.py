@@ -88,7 +88,7 @@ def _handed_on(monkeypatch, command: str, video: Path, argv: list[str], kw: str)
 
         monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **k: seen.append(k[kw]))
     else:
-        monkeypatch.setattr(cli, "run_edit", lambda *a, **k: seen.append(k[kw]))
+        monkeypatch.setattr("cutpoint.edit.run_edit", lambda *a, **k: seen.append(k[kw]))
     assert cli.main([command, str(video), "--out", "p", *argv]) == 0
     return seen
 
@@ -397,7 +397,7 @@ def test_analyze_and_edit_hand_the_context_on(home, tmp_path, monkeypatch):
     video = write(tmp_path / "a.mp4")
     seen: list = []
     monkeypatch.setattr(cutpoint.analyze, "analyze", lambda *a, **kw: seen.append(kw["context"]))
-    monkeypatch.setattr(cli, "run_edit", lambda *a, **kw: seen.append(kw["context"]))
+    monkeypatch.setattr("cutpoint.edit.run_edit", lambda *a, **kw: seen.append(kw["context"]))
     for command in ("analyze", "edit"):
         assert cli.main([command, str(video), "--out", "p"]) == 0
         assert cli.main([command, str(video), "--out", "p", "--context", "chest mount"]) == 0

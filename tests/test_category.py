@@ -237,17 +237,17 @@ def test_an_ambiguous_detection_falls_back_and_sport_is_never_chosen():
     # the General style (#896), not gaming
     for cat, style in ((GAMEPLAY, "gaming"), (GENERAL, "action"), (TALK, "action")):
         unsure = category.Detection(cat, True, "", {}, [])
-        assert category.choose_style(unsure, category.HYPE) == (style, style)
+        assert category.choose_style(unsure, styles.HYPE) == (style, style)
         assert category.fallback_label(unsure) == ("Gameplay" if cat == GAMEPLAY else "General")
-    assert styles.auto_fallback(category.HYPE, GAMEPLAY) == "gaming"
-    assert styles.auto_fallback(category.HYPE, TALK) == "action"
-    assert styles.auto_fallback(category.HYPE) == styles.resolve_auto(GENERAL, category.HYPE)
-    assert styles.auto_fallback(category.HYPE) == "action"
-    assert styles.auto_fallback(category.FUNNY) == "funny"
+    assert styles.auto_fallback(styles.HYPE, GAMEPLAY) == "gaming"
+    assert styles.auto_fallback(styles.HYPE, TALK) == "action"
+    assert styles.auto_fallback(styles.HYPE) == styles.resolve_auto(GENERAL, styles.HYPE)
+    assert styles.auto_fallback(styles.HYPE) == "action"
+    assert styles.auto_fallback(styles.FUNNY) == "funny"
     chosen = {
         category.choose_style(category.Detection(c, False, "", {}, []), e)[0]
         for c in category.CATEGORIES
-        for e in (category.HYPE, category.FUNNY)
+        for e in (styles.HYPE, styles.FUNNY)
     }
     assert chosen == {"gaming", "funny", "action-cam", "commentary", "action"}
 
@@ -1409,8 +1409,8 @@ def test_the_vision_question_names_no_sport():
 
 
 def test_auto_resolves_the_action_category_to_the_action_style():
-    assert styles.resolve_auto(ACTION, category.HYPE) == "action"
-    assert styles.resolve_auto(ACTION, category.FUNNY) == "funny"
+    assert styles.resolve_auto(ACTION, styles.HYPE) == "action"
+    assert styles.resolve_auto(ACTION, styles.FUNNY) == "funny"
     assert set(styles.AUTO_STYLES) == set(category.CATEGORIES)
     assert category.label(ACTION) == "Action"
 

@@ -30,6 +30,12 @@ logger = logging.getLogger(__name__)
 VIDEO_ENCODERS = ("auto", "nvenc", "amf", "vaapi", "cpu")
 COMPRESS_PEAKS = ("off", "light", "strong")
 COLOR_MODES = ("off", "auto", "underwater")  # --color; the grades are cutpoint.color.MODES
+# Option values of the export commands, here so that building the command-line parser does not
+# load the export modules
+LUT_SUFFIXES = (".cube", ".3dl")  # --lut: lut3d's Iridas/Resolve .cube and Autodesk .3dl
+AUDIO_TRANSITIONS = ("cut", "crossfade")  # assemble --audio-transition
+TIMELINE_FORMATS = ("fcpxml", "otio")  # ``assemble --format`` values that write a timeline
+OUTPUT_FORMATS = ("mp4", *TIMELINE_FORMATS)  # assemble --format: the final video or a timeline
 # in the Models tab's order: local, the API keys, then the subscription logins
 VISION_PROVIDERS = ("ollama", "anthropic", "openai", "xai", "claude-code", "codex", "antigravity")
 MAX_EXPORT_WORKERS = 3  # NVENC sessions: consumer GeForce cards allow few at once

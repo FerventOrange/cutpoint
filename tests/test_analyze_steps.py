@@ -2691,7 +2691,7 @@ def _events_det_skip(project: Path, monkeypatch, *argv: str) -> bool:
         seen.append(kw["ocr"].det_skip)
         raise _Ran
 
-    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    monkeypatch.setattr("cutpoint.events.pipeline.run_events", run_events)
     parser = argparse.ArgumentParser()
     events_cli.add_arguments(parser)
     with pytest.raises(_Ran):
@@ -3168,7 +3168,7 @@ def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeyp
         lines = common.load_transcript_lines(project)
         return report.write_outputs(project, [str(run.video)], [], [], lines, {}, {}, {})
 
-    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    monkeypatch.setattr("cutpoint.events.pipeline.run_events", run_events)
     capsys.readouterr()
     argv = ["events", str(run.proj), "--no-vlm", "--layers", "audio", "voice", "crash", "--json"]
     code = cli.main(argv)
@@ -3203,7 +3203,7 @@ def test_a_deleted_user_style_without_a_recorded_base_is_a_clear_error(
         lines = common.load_transcript_lines(project)
         return report.write_outputs(project, [str(run.video)], [], [], lines, {}, {}, {})
 
-    monkeypatch.setattr(events_cli.pipeline, "run_events", run_events)
+    monkeypatch.setattr("cutpoint.events.pipeline.run_events", run_events)
     capsys.readouterr()
     caplog.clear()
     code = cli.main(["events", str(run.proj), "--no-vlm", "--layers", "audio", "--json"])
