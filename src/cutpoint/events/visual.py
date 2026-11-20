@@ -17,7 +17,10 @@ Frames: GoPro HEVC has a keyframe every 1.001 s, so a keyframe-only decode
 (``-skip_frame nokey``, GPU decode: NVDEC + ``scale_cuda``, or VAAPI) yields about 1 fps for almost
 no decode cost; reading the file is the bottleneck. Sources whose keyframes
 are sparser than 1.5 s (gameplay recordings) are decoded fully through
-``fps=1``. Frame times come from ``showinfo``.
+``fps=1``. The spacing is probed on the first 12 s, so after a keyframe-only pass the gaps
+between the decoded frames are checked too: a largest gap over 1.5 s (outside the
+avoided ranges; a scene-adaptive encoder that spaces its keyframes out later) decodes the
+source again through ``fps=1``. Frame times come from ``showinfo``.
 
 Raw outputs are cached per source in ``cache/<source>/visual-<hash>.npz``.
 Everything derived from them (:func:`frame_scores`) is cheap numpy, so the
@@ -46,6 +49,7 @@ import zipfile
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -173,7 +177,10 @@ def _load_npz(path: Path) -> VisualData | None:
 
 
 # --------------------------------------------------------------------------- decoding
-def keyframe_spacing(path: Path, probe_s: float = 12.0) -> float | None:
+KEYFRAME_PROBE_S = 12.0  # keyframe_spacing's probe of the start of a source
+
+
+def keyframe_spacing(path: Path, probe_s: float = KEYFRAME_PROBE_S) -> float | None:
     """Median keyframe interval in the first ``probe_s`` seconds (None if unknown)."""
     try:
         data = ffprobe_json(
@@ -195,6 +202,16 @@ def keyframe_spacing(path: Path, probe_s: float = 12.0) -> float | None:
     if len(ts) < 3:
         return None
     return float(np.median(np.diff(ts)))
+
+
+def _keyframe_gap(decoded: list[float], avoid: list[tuple[float, float]] | None) -> float | None:
+    """The largest gap between the ``decoded`` frame times of a keyframe-only pass, leaving out gaps that overlap an ``avoid`` range (bad sectors, where
+    ffmpeg skips packets); None with fewer than two frames or no gap left."""
+    ts = sorted(decoded)
+    gaps = [b - a for a, b in pairwise(ts) if not any(lo < b and a < hi for lo, hi in avoid or [])]
+    if not gaps:
+        return None
+    return max(gaps)
 
 
 def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: bool) -> Any:
@@ -471,6 +488,42 @@ class VisualModels:
         free_torch()
 
 
+def _visual_pass(
+    src: Source,
+    models: VisualModels,
+    params: VisualParams,
+    size: tuple[int, int],
+    keyframes: bool,
+    avoid: list[tuple[float, float]] | None,
+) -> tuple[_FrameBatches, list[float]]:
+    """One decode of ``src`` (keyframes only or at 1 fps) through the models: the outputs of
+    the frames kept (not within 0.5 s of the last kept one, not in an ``avoid`` range) and
+    the time of every frame decoded."""
+    acc = _FrameBatches(models)
+    decoded: list[float] = []
+    batch_t: list[float] = []
+    batch_f: list[np.ndarray] = []
+
+    def flush() -> None:
+        acc.add(batch_t, batch_f)
+        batch_t.clear()
+        batch_f.clear()
+
+    last = -1e9
+    for t, frame in iter_frames(src.io_path, size[0], size[1], keyframes, params.hwaccel):
+        decoded.append(t)
+        if t - last < 0.5 or any(a <= t <= b for a, b in avoid or []):
+            continue  # duplicate timestamps (open GOP) or an avoided range
+        last = t
+        batch_t.append(t)
+        batch_f.append(frame)
+        if len(batch_f) >= params.batch:
+            flush()
+    if batch_f:
+        flush()
+    return acc, decoded
+
+
 class _FrameBatches:
     """Runs :meth:`VisualModels.run` on frame batches and assembles a :class:`VisualData`."""
 
@@ -557,26 +610,19 @@ def compute_visual(
     height = round(width * info.height / max(1, info.width) / 2) * 2
     spacing = keyframe_spacing(src.io_path)
     keyframes = spacing is not None and spacing <= params.keyframe_max_s
-    acc = _FrameBatches(models)
-    batch_t: list[float] = []
-    batch_f: list[np.ndarray] = []
-
-    def flush() -> None:
-        acc.add(batch_t, batch_f)
-        batch_t.clear()
-        batch_f.clear()
-
-    last = -1e9
-    for t, frame in iter_frames(src.io_path, width, height, keyframes, params.hwaccel):
-        if t - last < 0.5 or any(a <= t <= b for a, b in avoid or []):
-            continue  # duplicate timestamps (open GOP) or an avoided range
-        last = t
-        batch_t.append(t)
-        batch_f.append(frame)
-        if len(batch_f) >= params.batch:
-            flush()
-    if batch_f:
-        flush()
+    acc, decoded = _visual_pass(src, models, params, (width, height), keyframes, avoid)
+    gap = _keyframe_gap(decoded, avoid) if keyframes else None
+    if gap is not None and gap > params.keyframe_max_s:
+        # the probe saw dense keyframes but the file spaces them out later: those stretches
+        # would score 0 (to_grid), so decode the whole source at 1 fps instead
+        logger.info(
+            "%s: keyframes up to %.1fs apart after the first %.0fs: decoding again at 1 fps",
+            src.name,
+            gap,
+            KEYFRAME_PROBE_S,
+        )
+        keyframes = False
+        acc, _ = _visual_pass(src, models, params, (width, height), keyframes, avoid)
     ts, gpu_s = acc.ts, acc.gpu_s
     if not ts:
         logger.warning("%s: visual layer decoded no frames", src.name)
@@ -589,6 +635,7 @@ def compute_visual(
         "frames": len(ts),
         "mode": "keyframes" if keyframes else "fps=1",
         "keyframe_spacing_s": spacing,
+        **({"keyframe_gap_s": round(gap, 2)} if gap is not None else {}),
         "size": [width, height],
         "elapsed_s": round(elapsed, 1),
         "gpu_s": round(gpu_s, 1),

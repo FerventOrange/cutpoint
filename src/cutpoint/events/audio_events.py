@@ -279,7 +279,7 @@ def pooled_probabilities(
 
     Every block's frames are max-pooled into one absolute time grid, so
     overlapping blocks join seamlessly (block edges, which lack context, are
-    dropped except at the very start and end of the audio).
+    dropped except at the start and end of each audio part).
 
     Returns:
         Pooled probabilities; row 0 is at time 0 and rows are ``params.pool_s`` apart.
@@ -288,13 +288,12 @@ def pooled_probabilities(
     total = max((p.offset + p.duration for p in src.audio_parts), default=0.0)
     grid = np.zeros((int(total / dt) + 2, len(class_idx)), dtype=np.float32)
     edge = int(params.overlap_s / 2 / FRAME_S)
-    pending: list[tuple[float, np.ndarray]] = []
+    pending: list[tuple[float, np.ndarray, bool, bool]] = []
 
     def flush() -> None:
-        outs = det.framewise([upsample_2x(x) for _, x in pending])
-        for (t, x), fr in zip(pending, outs, strict=True):
-            lo = edge if t > 0 else 0
-            is_last = t + len(x) / 16000 >= total - 0.05
+        outs = det.framewise([upsample_2x(x) for _, x, _, _ in pending])
+        for (t, _x, is_first, is_last), fr in zip(pending, outs, strict=True):
+            lo = 0 if is_first else edge
             hi = len(fr) if is_last else max(lo, len(fr) - edge)
             if hi <= lo:
                 continue
@@ -303,8 +302,8 @@ def pooled_probabilities(
             np.maximum.at(grid, rows, fr[lo:hi][:, class_idx])
         pending.clear()
 
-    for t, block in iter_audio_blocks(src, params.block_s, params.overlap_s):
-        pending.append((t, block))
+    for t, block, first, last in iter_audio_blocks(src, params.block_s, params.overlap_s):
+        pending.append((t, block, first, last))
         if len(pending) >= params.batch:
             flush()
     if pending:

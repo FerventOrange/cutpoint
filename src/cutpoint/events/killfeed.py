@@ -3,9 +3,8 @@
 One sequential ffmpeg pass per source decodes only the bounding box of the
 game's HUD regions at a low frame rate (the probed GPU decoder when it works) and
 pipes raw BGR frames to numpy. Each region is OCR'd with RapidOCR (CPU) only
-when its gate lets it through: the text layout RapidOCR detects changed ("det")
-or its "HUD pixel" mask (white text, blue/orange boxes) changed ("mask"), which
-skips the vast majority of frames.
+when its gate lets it through: the text layout RapidOCR detects changed ("det", which
+skips the vast majority of frames) or on every frame the region is due ("read").
 
 Events: ``{t, end, type, text, confidence, region, ...}`` with type one of
 ``kill`` (and the other feed verbs), ``banner``, ``notice``, ``bigtext``, ``multikill`` and
@@ -135,7 +134,9 @@ class OcrParams:
 # the feed's area, #891)
 # 26: text in any script is compared by its letters and digits, not only A-Z and 0-9 (:func:`norm`,
 # #1085 A137); ASCII text gives the same events, replayed from the raw OCR cache
-GENERIC_VERSION = 26
+# 27: the default kill words are killed, eliminated, destroyed and assist only, and a feed gets
+# the vehicle groups of its names only with the preset's own ``kill_words`` (#1085 A143)
+GENERIC_VERSION = 27
 # Reads of a source whose part gave no frames before the cached result is kept as it is.
 MAX_INCOMPLETE_READS = 2
 
@@ -337,17 +338,6 @@ def player_side(actor: str, target: str, tags: tuple[str, ...]) -> tuple[bool, b
 
 
 # --------------------------------------------------------------------------- pixels
-
-
-def hud_mask(bgr: np.ndarray) -> np.ndarray:
-    """Boolean mask of likely HUD pixels: white text, blue and orange boxes."""
-    b, g, r = (bgr[..., i].astype(np.int16) for i in range(3))
-    mn = np.minimum(np.minimum(b, g), r)
-    mx = np.maximum(np.maximum(b, g), r)
-    white = (mn > 200) & (mx - mn < 40)
-    blue = (b > 150) & (r < 120) & (b - r > 80)
-    orange = (r > 200) & (g > 90) & (g < 190) & (b < 100)
-    return white | blue | orange
 
 
 _HUES = (  # upper hue limits (degrees) of the colour names
@@ -576,11 +566,6 @@ def _icon_name(text: str, min_len: int) -> bool:
         and not _ICON_NAME_BAD.search(text)
         and text.count("[") == text.count("]")
     )
-
-
-def _small(mask: np.ndarray, k: int = 4) -> np.ndarray:
-    h, w = mask.shape[0] // k * k, mask.shape[1] // k * k
-    return mask[:h, :w].reshape(h // k, k, w // k, k).mean(axis=(1, 3))
 
 
 # --------------------------------------------------------------------------- decoding
@@ -1658,16 +1643,13 @@ class Interpreter:
 
 
 _CLAN_RE = re.compile(r"^\s*(\[[^\]]{1,8}\]|\^[^\^]{1,8}\^|=[^=]{1,8}=|-[^-]{1,8}-)\s*")
-# Generic words that work from the first row on; no game's phrases belong here (a preset's
-# ``kill_words`` can list them)
+# Generic words that work from the first row on; no game's phrases belong here: a preset's
+# ``kill_words`` lists them ("shot down": "kill", "crashed": "crash", ...)
 DEFAULT_KILL_WORDS = {
     "destroyed": "kill",
-    "shot down": "kill",
     "killed": "kill",
     "eliminated": "kill",
     "assist": "assist",
-    "has crashed": "crash",
-    "crashed": "crash",
 }
 
 
@@ -1803,13 +1785,17 @@ class FeedParser:
     Team colours come from the preset (``"colors": {"red": "enemy", "blue":
     "ally", ...}``, keyed by the colour names :func:`text_hue` returns). A kill
     is the player's when the actor matches one of the player tags (fuzzy,
-    ignoring ``_ . -``).
+    ignoring ``_ . -``). Without the preset's own ``kill_words`` the generic
+    :data:`DEFAULT_KILL_WORDS` read the rows, and a ``"Name (group)"`` group fills no
+    ``killer_vehicle`` or ``victim_vehicle``.
     """
 
     def __init__(self, cfg: dict[str, Any], tags: tuple[str, ...], scale: float) -> None:
-        self.words = {
-            k.upper(): v for k, v in (cfg.get("kill_words") or DEFAULT_KILL_WORDS).items()
-        }
+        own = cfg.get("kill_words")
+        self.words = {k.upper(): v for k, v in (own or DEFAULT_KILL_WORDS).items()}
+        # "Name (Vehicle)": the group is a vehicle only in a feed whose preset words it
+        # (its own kill_words); else it is left out of the event's fields
+        self.vehicles = bool(own)
         self.colors: dict[str, str] = dict(cfg.get("colors") or {})
         # "one_line" or "auto"; older entry names ("two_line", "paren") read as "auto"
         self.entry = "one_line" if cfg.get("entry") == "one_line" else "auto"
@@ -1841,6 +1827,8 @@ class FeedParser:
     ) -> dict[str, Any] | None:
         a_name, a_veh = split_name(actor)
         t_name, t_veh = split_name(target)
+        if not self.vehicles:
+            a_veh = t_veh = None
         if _alnum_len(t_name) < self.min_name:
             return None
         if verb == "kill" and _alnum_len(a_name) < self.min_name:
@@ -2846,7 +2834,7 @@ class FrameRec:
     region's last det call; reads in regions whose kind looks at pixels
     (:data:`PIXEL_KINDS`) carry ``rows``, the crop rows ``[a, b]`` their
     boxes cover, whose pixels are stacked in ``bands``. A region skipped by its
-    ``every``, or that its "mask" gate did not let through, has no record.
+    ``every`` has no record.
     ``thumb`` is the :func:`_thumb_bgr` thumbnail of the :func:`_still_rect` area (None
     without "det" gates).
     """
@@ -2957,7 +2945,6 @@ class OcrReader:
         self.thumbs = any(r.gate == "det" for r in regions)  # the static-screen test
         x, y, w, h = _still_rect(regions, rects)
         self.still = (slice(y - union[1], y - union[1] + h), slice(x - union[0], x - union[0] + w))
-        self.last_mask: dict[str, np.ndarray | None] = {r.name: None for r in regions}
         self.last_layout: dict[str, list[tuple[int, ...]] | None] = {r.name: None for r in regions}
         self.last_rows: dict[str, list[tuple[float, float, float, float, float]]] = {}
         # det skip: per det-gated region the image of its last det run and that run's boxes
@@ -3011,11 +2998,10 @@ class OcrReader:
 
     def _look(
         self, r: Region, crop: np.ndarray
-    ) -> tuple[dict[str, Any] | None, list[tuple[float, float, float, float]] | None, list | None]:
+    ) -> tuple[dict[str, Any], list[tuple[float, float, float, float]] | None, list | None]:
         """The gate of region ``r`` and its OCR calls but the row recognition: ``(record,
-        rows, items)``. ``record`` is None when the "mask" gate did not let it through;
-        a det-gated region to read has its ``rows`` (``y0, x0, y1, x1``), a mask-gated one
-        its ``items``; neither when the layout did not change."""
+        rows, items)``: a det-gated region to read has its ``rows`` (``y0, x0, y1, x1``), a
+        read-gated one its ``items``; neither when the layout did not change."""
         if r.gate == "det":
             g: dict[str, Any] = {}
             if self.det_skip:
@@ -3043,17 +3029,7 @@ class OcrReader:
                     self.engine.detect(crop), r.min_text_h * self.scale, 10 * self.scale
                 )
             return g, [(y0, x0, y1, x1) for _, x0, x1, y0, y1 in rows], None
-        if r.gate == "read":
-            return {}, None, self._full_read(r, crop)
-        mask = _small(hud_mask(crop))
-        if mask.mean() < r.min_fill:
-            self.last_mask[r.name] = mask
-            return None, None, None
-        prev = self.last_mask[r.name]
-        if prev is not None and np.mean(np.abs(mask - prev) > 0.25) < r.min_change:
-            return None, None, None
-        self.last_mask[r.name] = mask
-        return {}, None, self._full_read(r, crop)
+        return {}, None, self._full_read(r, crop)  # the "read" gate
 
     def _full_read(self, r: Region, crop: np.ndarray) -> list[tuple[list, str, float]]:
         """Detection and recognition on the crop, enlarged first when ``r.upscale`` asks for
@@ -3089,8 +3065,6 @@ class OcrReader:
         each = getattr(self.engine, "map", None) or (lambda fn, xs: [fn(x) for x in xs])
         looks = each(lambda r: self._look(r, cut[r.name]), due)
         for r, (g, text_rows, items) in zip(due, looks, strict=True):
-            if g is None:
-                continue
             rec.regions[r.name] = g
             crop = cut[r.name]
             if text_rows is not None:
@@ -3110,21 +3084,17 @@ class OcrReader:
 
     def state(self) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
         """The reader's state: JSON (layouts, rows; with the det skip its last boxes) and
-        arrays (masks; with the det skip its images)."""
-        masks = {
-            f"mask{i}": m
-            for i, r in enumerate(self.regions)
-            if (m := self.last_mask[r.name]) is not None
-        }
+        arrays (with the det skip its images)."""
+        arrays: dict[str, np.ndarray] = {}
         state: dict[str, Any] = {"layout": self.last_layout, "rows": self.last_rows}
         if self.det_skip:
             state["boxes"] = self.last_boxes
-            masks |= {
+            arrays = {
                 f"anchor{i}": a
                 for i, r in enumerate(self.regions)
                 if (a := self.anchor.get(r.name)) is not None
             }
-        return state, masks
+        return state, arrays
 
     def restore(self, state: dict[str, Any], arrays: dict[str, np.ndarray]) -> None:
         """Continue from a :meth:`state`."""
@@ -3134,7 +3104,6 @@ class OcrReader:
             for r in self.regions
         }
         self.last_rows = {k: [tuple(v) for v in rows] for k, rows in state["rows"].items()}
-        self.last_mask = {r.name: arrays.get(f"mask{i}") for i, r in enumerate(self.regions)}
         self.last_boxes = {
             k: [list(b) for b in boxes] for k, boxes in state.get("boxes", {}).items()
         }

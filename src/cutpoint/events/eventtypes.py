@@ -45,29 +45,39 @@ from cutpoint.styles import style_names
 
 logger = logging.getLogger(__name__)
 
-# Banner prefixes that count as payoffs (scoring "banners", clip tails).
-BANNER_PAYOFFS = (
-    "WON ROUND",
-    "ROUND WON",
-    "LOST ROUND",
-    "ROUND LOST",
-    "VICTORY",
-    "DEFEAT",
-    "ACE",
-    "CLUTCH",
-    "TARGET DESTROYED",
-    "SHOT DOWN",
-    "MISSION ACCOMPLISHED",
+# The one banner list (#1085 A165): banner phrase -> its VLM window seed priority
+# (vlm_windows._seed_priority: the highest of the phrases a banner's text holds as whole words),
+# None for a banner that is neither a seed nor a payoff (only when it is the whole text). The
+# phrases with a seed are the payoff banners (scoring "banners", clip tails: a banner text that
+# starts with one, :data:`PAYOFF_BANNERS`).
+BANNER_PAYOFFS: dict[str, float | None] = {
+    "WON ROUND": 1.3,
+    "ROUND WON": 1.3,
+    "LOST ROUND": 1.3,
+    "ROUND LOST": 1.3,
+    "VICTORY": 1.3,
+    "DEFEAT": 1.3,
+    "ACE": 2.0,
+    "CLUTCH": 2.0,
+    "TARGET DESTROYED": 0.6,
+    "SHOT DOWN": 0.6,
+    "MISSION ACCOMPLISHED": 0.6,
     # generic and verb-style feed banners
-    "YOU HAVE BEEN DESTROYED",
-    "CREW KNOCKED OUT",
-    "MISSION FAILED",
-    "MISSION COMPLETE",
-    "YOU DIED",
-    "DOUBLE KILL",
-    "TRIPLE KILL",
-    "MULTI KILL",
-)
+    "YOU HAVE BEEN DESTROYED": 0.6,
+    "CREW KNOCKED OUT": 0.6,
+    "MISSION FAILED": 0.6,
+    "MISSION COMPLETE": 0.6,
+    "YOU DIED": 0.6,
+    "DOUBLE KILL": 0.6,
+    "TRIPLE KILL": 0.6,
+    "MULTI KILL": 0.6,
+    # shown while a round or match is still open: no seed, no payoff
+    "MATCH POINT": None,
+    "OVERTIME": None,
+    "ELIMINATED": None,
+}
+PAYOFF_BANNERS = tuple(k for k, v in BANNER_PAYOFFS.items() if v is not None)
+BANNER_SEED = 0.6  # VLM seed of any other banner
 MAX_SCORE = 12.0  # custom types: points per event, and reaction points
 MAX_COUNT = 3  # custom types: events counted per candidate
 MAX_TAIL_S = 10.0  # custom types: reaction kept after a payoff, seconds
@@ -216,7 +226,7 @@ DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
     ),
     EventType(
         "banners",
-        (Matcher("banner", prefix=BANNER_PAYOFFS), Matcher("multikill")),
+        (Matcher("banner", prefix=PAYOFF_BANNERS), Matcher("multikill")),
         score=6.0,
         max=2,
     ),

@@ -103,7 +103,7 @@ def is_payoff(e: dict[str, Any], settings: EventTailSettings) -> bool:
             return bool(d.get("player") or d.get("teamkill"))
         if e.get("type") == "banner":
             label = (e.get("label") or "").upper()
-            return any(label.startswith(b) for b in eventtypes.BANNER_PAYOFFS)
+            return label.startswith(eventtypes.PAYOFF_BANNERS)
         return e.get("type") == "multikill"
     if kind == "vlm":
         return max(e.get("funny") or 0, e.get("hype") or 0) >= settings.vlm_min

@@ -25,8 +25,9 @@ Preset JSON::
 (:mod:`cutpoint.events.eventtypes`), whose banner ``prefix`` phrases are
 added to the phrases of JSON presets.
 
-Region entries take any :class:`Region` field (``min_change``, ``min_fill``,
-...); missing ones use the defaults. Other keys are ignored: region discovery
+Region entries take any :class:`Region` field (``gate``, ``every``, ``det_scale``,
+...); missing ones use the defaults (``gate`` ``"det"``). A ``gate`` other than ``"det"`` or
+``"read"`` (the ``"mask"`` gate of older presets) reads as ``"det"`` with one WARNING. Other keys are ignored: region discovery
 marks the extra notice regions it adds where text shows outside every other
 region with ``"origin": "outside"``, the regions the vision HUD map added
 (:mod:`cutpoint.events.hud_map`) with ``"origin": "vision"`` and the vision model's name for a
@@ -65,13 +66,8 @@ class Region:
             "replay" (a replay or killcam marker the vision HUD map found: text there marks
             a replay, whose kills are no kills of the player;
             :func:`cutpoint.events.killfeed.mark_replay_kills`).
-        min_change: Fraction of the downscaled HUD-pixel mask that must change
-            before the region is OCR'd again ("mask" gate).
-        min_fill: Minimum fraction of HUD pixels for the region to be OCR'd at
-            all (big banner text fills ~3-8% of the banner region).
-        gate: When to run recognition: "mask" (the HUD-colour pixel mask
-            changed), "det" (game-agnostic: RapidOCR text *detection* on the
-            crop; recognition only when the text-box layout changed) or "read"
+        gate: When to run recognition: "det" (the default: RapidOCR text *detection*
+            on the crop; recognition only when the text-box layout changed) or "read"
             (detection and recognition on every frame the region is due).
         every: Process the region on every n-th sampled frame only (banners
             need ~1 fps, kill feeds the full OCR rate).
@@ -79,7 +75,7 @@ class Region:
             (reference px) count.
         det_scale: "det" gate: run text detection on the crop downscaled by
             this factor (big text survives 0.35x; feeds need ~0.6x).
-        upscale: "mask" and "read" gates: OCR the crop enlarged to this factor of its
+        upscale: "read" gate: OCR the crop enlarged to this factor of its
             1920x1080 reference size (small, thin digits read far better at 2.5x); 1:
             as decoded. Left out of the cache key at 1, so older keys stay.
         marker: "replay" regions: the marker text discovery's OCR read there most often (the
@@ -93,9 +89,7 @@ class Region:
     w: int
     h: int
     kind: str
-    min_change: float = 0.015
-    min_fill: float = 0.002  # skip OCR when fewer HUD pixels than this fraction
-    gate: str = "mask"
+    gate: str = "det"
     every: int = 1
     min_text_h: int = 0
     det_scale: float = 1.0
@@ -132,6 +126,7 @@ def marker_seen(text: str, marker: str) -> bool:
     return m.size >= max(3, 0.6 * max(len(a), len(b)))
 
 
+GATES = ("det", "read")  # the gates a region may have (Region.gate)
 REF_W, REF_H = 1920, 1080  # the reference frame the region rectangles are in
 _WARNED: set[tuple[Any, ...]] = set()  # region warnings given, one per region and place
 
@@ -188,7 +183,17 @@ def _regions(data: dict[str, Any], where: str = "preset") -> tuple[Region, ...]:
     built = []
     for r in as_list(data.get("regions")):
         try:
-            built.append(Region(**{k: v for k, v in r.items() if k in names}))
+            entry = {k: v for k, v in r.items() if k in names}
+            if entry.get("gate", "det") not in GATES:
+                if (where, "gate") not in _WARNED:
+                    _WARNED.add((where, "gate"))
+                    logger.warning(
+                        "%s: region gate %r is not supported any more: read with the det gate",
+                        where,
+                        entry["gate"],
+                    )
+                entry["gate"] = "det"
+            built.append(Region(**entry))
         except (AttributeError, TypeError):
             shown = repr(r)[:80]
             if (where, shown) not in _WARNED:

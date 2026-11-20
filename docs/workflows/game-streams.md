@@ -95,7 +95,8 @@ dropped. With such a preset, menu and scoreboard frames produce no OCR events ou
 and icon kills read on menu frames (a settings row such as "Subtitles | Enabled") are dropped too;
 an icon kill first read as a still screen opens is not taken as feed activity, so a still menu
 is still found as one.
-A region proposed as a `feed` needs a score of at least 0.02, as a banner or notice does, and a
+A region proposed as a `feed` needs a score of at least 0.02, as a banner or notice does (every
+feed that reaches it is kept, however strong another feed is; the label step sorts out chat), and a
 group of text whose rows change text height (stream chat over a battle log) is split into one
 proposal per text size. Then the shared vision model (Ollama, or the hosted Vision model of the
 Models tab of `cutpoint ui`) looks at up to four crops of each proposal and says what it is:
@@ -249,7 +250,7 @@ check's `discovery.fit_ref`): the extra regions are listed under
 INFO line says to copy them into the preset's `regions` to have OCR read them. `overlay.jpg`
 draws them in magenta.
 
-A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice`, `banner` or `score` (see [Score readout](#score-readout)); optional `gate`: `mask` (default, a HUD colour mask), `det` (text detection, works for any game) or `read` (detection and recognition every time, for `score`); optional `every`; optional `upscale`, for `mask` and `read`: read the crop enlarged to this many times its reference size),
+A preset JSON has `regions` (`name`, `x`, `y`, `w`, `h`, `kind`: `feed`, `notice`, `banner` or `score` (see [Score readout](#score-readout)); optional `gate`: `det` (default: text detection, recognition only when the text layout changed) or `read` (detection and recognition every time, for `score`); an older preset's `"gate": "mask"` reads as `det`, with one WARNING; optional `every`; optional `upscale`, for `read`: read the crop enlarged to this many times its reference size),
 `banner_phrases`, `player_tags`, `match` hints and optional `feed` settings. Coordinates are in
 1920x1080 reference pixels and are scaled per axis to the video. A small example, saved as
 `my-game.json`:
@@ -337,9 +338,11 @@ test compares, so adding one does not change the other regions' events.
 ## Kill feed rows without a preset
 
 Without a preset (or with one that sets no `kill_words`), these generic kill words read text rows:
-`destroyed`, `shot down`, `killed`, `eliminated`, `assist`, `crashed` and `has crashed`. `wrecked`,
-`set afire`, `critically damaged`, `severely damaged` and `has been wrecked` are no longer default
-words, so `Kip wrecked Alder` is not read unless a preset's `kill_words` lists the word.
+`destroyed`, `killed`, `eliminated` and `assist`. A game's own verbs (`shot down`, `crashed`,
+`has crashed`, `wrecked`, `set afire`, ...) are not default words, so `Kip shot down Alder` is not
+read unless a preset's `kill_words` lists the word (`"crashed": "crash"` for a crash verb). Region
+discovery does not learn kill words: write them into the preset's `feed`. A name's bracket group
+(`Kip (Tiger II)`) is kept as the vehicle of the kill only with the preset's own `kill_words`.
 
 A clock-stamped log
 (`2:20 Name destroyed` over a wrapped line) is joined into one row first; only the kill words read

@@ -108,11 +108,15 @@ def load_source(path: Path, duration: float | None = None) -> Source:
 
 def iter_audio_blocks(
     src: Source, block_s: float, overlap_s: float = 0.0
-) -> Iterator[tuple[float, np.ndarray]]:
-    """Yield ``(abs_start_time, float32 samples)`` blocks of the cached 16 kHz audio.
+) -> Iterator[tuple[float, np.ndarray, bool, bool]]:
+    """Yield ``(abs_start_time, float32 samples, first, last)`` blocks of the cached 16 kHz
+    audio.
 
     Blocks overlap by ``overlap_s`` so models get context at the edges. Only
-    one block is in memory at a time.
+    one block is in memory at a time. ``first`` and ``last`` mark the first and last block
+    of each :class:`AudioPart`: no other block covers their outer edge, so a caller that
+    drops block edges keeps those (a multi-part ``--recover`` source has such edges at every
+    seam, not only at its start and end).
 
     Raises:
         ValueError: ``overlap_s`` is negative, or ``block_s`` or ``block_s - overlap_s``
@@ -134,8 +138,9 @@ def iter_audio_blocks(
                 w.setpos(pos)
                 raw = w.readframes(min(size, n_total - pos))
                 samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                yield part.offset + pos / WAV_SR, samples
-                if pos + size >= n_total:
+                last = pos + size >= n_total
+                yield part.offset + pos / WAV_SR, samples, pos == 0, last
+                if last:
                     break
                 pos += step
 

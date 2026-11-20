@@ -1649,7 +1649,7 @@ Default layers: `audio ocr vlm`; action-cam projects: `audio voice visual crash 
 | `--game KEY`, `--player TAG` | HUD preset (`auto` or a preset key: a name without `/`, `\`, `:` or NUL, not empty, `.` or `..`; otherwise `bad_args`) and your in-game name(s) |
 | `--discover-regions` / `--no-discover` | Force or disable HUD region discovery |
 | `--preset-scope {user,project}` | Where a discovered preset is saved |
-| `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry: `--window` more than 0, `--pre` and `--post` 0 or more, a `--window-at` (and `--avoid`) end after its start; a bad value is `bad_args` |
+| `--max-windows N`, `--window S`, `--pre S`, `--post S`, `--window-at "GLOB@START-END"` | Model window count and geometry: `--max-windows` 1 or more (default 60; for action-cam one per seed plus riding coverage, 60-150), `--window` more than 0, `--pre` and `--post` 0 or more, a `--window-at` (and `--avoid`) end after its start; a bad value is `bad_args` |
 | `--sheets` | Debugging aid: write contact sheets to `<project>\visual_check`, to check the visual layer by eye. Changes no result |
 | `--no-rescore` | Do not touch `highlights.json` |
 | `--batch-size N` | Close each layer's model after N sources (the vision model at the next source boundary after at least N `vlm` windows, never within one source's windows; the crash layer's CLIP after N dense windows) and load it again; the results are the same. Default 0: keep it loaded |
@@ -1660,11 +1660,11 @@ Tuning options, rarely needed:
 | Option | Meaning |
 |---|---|
 | `--audio-thr GROUP=P`, `--audio-floor GROUP=P` | PANNs absolute threshold and relative-rule floor per sound group (`Laughter`, `Scream`, `Cheering`, `Explosion`), P from 0 to 1, for example `Laughter=0.1` |
-| `--ocr-fps F` | Frames per second read by the HUD OCR (default 3.0) |
+| `--ocr-fps F` | Frames per second read by the HUD OCR, more than 0 (default 3.0; a bad value is `bad_args`) |
 | `--no-hwaccel` | Decode on the CPU for the OCR |
 | `--ocr-det-skip` / `--no-ocr-det-skip` | Skip the text detection of a HUD region that has not changed since detection last ran there, as on [`analyze`](#analyze). Without the flag, `events` reads as the analysis did, so it reuses that read: on when `analyze --ocr-det-skip` recorded `"ocr_det_skip": true` in the `settings` of `highlights.json`, off when it did not (older projects too). Only without a recorded analysis: [`ocr_det_skip`](configuration.md#ocr_det_skip) in `config.json`, else off |
 | `--ocr-debug DIR` | Save region crops of OCR events to `DIR` |
-| `--discover-bursts N` | Frame bursts sampled by HUD region discovery, 4 frames each (default 40) |
+| `--discover-bursts N` | Frame bursts sampled by HUD region discovery, 4 frames each, 1 or more (default 40; a bad value is `bad_args`) |
 | `--frames N` | Frames per model window, 12 to 16 (default 14) |
 | `--no-transcript` | Do not send the transcript excerpt to the model |
 

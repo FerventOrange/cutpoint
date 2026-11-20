@@ -175,3 +175,31 @@ def test_the_result_is_cached_and_a_second_run_does_not_decode(decode) -> None:
     assert again is not None and again.t.tolist() == first.t.tolist()
     assert len(decode.asked) == 1
     assert V.compute_visual(decode.src, None, params, force=True) is None  # force skips the cache
+
+
+# --------------------------------------------------------------------------- #1085 A168
+
+
+def test_keyframes_spaced_out_after_the_probe_decode_again_at_one_fps(decode, caplog) -> None:
+    """The probe sees 1 s keyframes, but the file spaces them 4 s apart later."""
+    decode.times = [0.0, 1.0, 2.0, 3.0, 7.0, 11.0, 15.0]
+    with caplog.at_level("INFO"):
+        data = V.compute_visual(decode.src, Models(), V.VisualParams(hwaccel=False))
+    assert [a[2] for a in decode.asked] == [True, False]  # keyframes, then fps=1
+    assert data.meta["mode"] == "fps=1" and data.meta["keyframe_gap_s"] == 4.0
+    assert data.meta["frames"] == len(decode.times)  # only the second pass is kept
+    assert "decoding again at 1 fps" in caplog.text
+
+
+def test_dense_keyframes_keep_the_one_pass(decode) -> None:
+    decode.times = [0.0, 1.0, 2.0, 3.0, 4.0]
+    data = V.compute_visual(decode.src, Models(), V.VisualParams())
+    assert [a[2] for a in decode.asked] == [True]
+    assert data.meta["mode"] == "keyframes" and data.meta["keyframe_gap_s"] == 1.0
+
+
+def test_a_gap_inside_an_avoided_range_does_not_decode_again(decode) -> None:
+    decode.times = [0.0, 1.0, 2.0, 9.0, 10.0]  # ffmpeg skipped a bad stretch
+    data = V.compute_visual(decode.src, Models(), V.VisualParams(), avoid=[(3.0, 8.0)])
+    assert [a[2] for a in decode.asked] == [True]
+    assert data.meta["mode"] == "keyframes"

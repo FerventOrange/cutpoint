@@ -1653,18 +1653,27 @@ def proposals_to_regions(proposals: list[dict[str, Any]]) -> list[Region]:
     """Turn the best proposals into :class:`Region` objects (padded by :data:`REGION_PAD`,
     clipped).
 
-    ``feed`` regions keep the det gate at full rate; banners and notices are
+    Every ``feed``, ``banner`` and ``notice`` proposal of :data:`MIN_REGION_SCORE` or more
+    is a candidate; the :data:`MAX_REGIONS` slots go to the best feed, then the banners, then
+    the notices by score, then the other feeds by score (a real second feed gets a slot when
+    there is room). ``feed`` regions keep the det gate at full rate; banners and notices are
     sampled at a third of the OCR rate. ``dynamic`` proposals are left out
     unless nothing else was found. ``score`` proposals become ``score`` regions after
     them (:func:`score_region`), not counted in :data:`MAX_REGIONS`.
     """
-    best = max((p["score"] for p in proposals if p["kind"] == "feed"), default=0.0)
-    keep = [
+    # every feed of MIN_REGION_SCORE or more: a strong feed (or chat scored as one) does not
+    # drop a second real feed; the label step (apply_labels) sorts chat out (#1085 A145)
+    ok = [
         p
         for p in proposals
-        if (p["kind"] == "feed" and p["score"] >= max(0.25 * best, MIN_REGION_SCORE))
-        or (p["kind"] in ("banner", "notice") and p["score"] >= MIN_REGION_SCORE)
+        if p["kind"] in ("feed", "banner", "notice") and p["score"] >= MIN_REGION_SCORE
     ]
+    # weak feeds (chat among them) must not take the slots of banners and notices: the best
+    # feed, the banners, the notices by score, then the other feeds by score
+    feeds = sorted((p for p in ok if p["kind"] == "feed"), key=lambda p: -p["score"])
+    banners = [p for p in ok if p["kind"] == "banner"]
+    notices = sorted((p for p in ok if p["kind"] == "notice"), key=lambda p: -p["score"])
+    keep = feeds[:1] + banners + notices + feeds[1:]
     keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup", "score")]
     out = []
     for p in keep[:MAX_REGIONS]:

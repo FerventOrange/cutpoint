@@ -34,7 +34,7 @@ from cutpoint import cache
 from cutpoint.config import source_path
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source, layer_cache_path, transcript_excerpt
-from cutpoint.events.eventtypes import EventType, first_match
+from cutpoint.events.eventtypes import BANNER_PAYOFFS, BANNER_SEED, EventType, first_match
 from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
 from cutpoint.ffmpeg_utils import grab_images
 from cutpoint.utils import clock, context_block, context_hash, json_object
@@ -56,11 +56,13 @@ class VlmRequestError(RuntimeError):
     """The shared vision client gave no usable reply (the reason is logged)."""
 
 
-# Version of the generic prompt. 6 added the neutral variant (#596); the combat variant
-# is the text of 5 byte for byte, so its windows keep ``COMBAT_PROMPT_VERSION`` and their
-# old cache entries.
-PROMPT_VERSION = 6
-COMBAT_PROMPT_VERSION = 5
+# Version of the generic prompt. 6 added the neutral variant (#596), whose combat variant
+# kept the text of 5 byte for byte (``COMBAT_PROMPT_VERSION``). 7 (combat) and 8 (neutral):
+# the prompts no longer ask the model to listen to audio it is never sent, but to use the
+# transcript and detector hints for laughter and tone (#1085 A164). The two never share a
+# number, so a source's windows are never read under the other variant.
+PROMPT_VERSION = 8
+COMBAT_PROMPT_VERSION = 7
 # The generic version the action-cam caches were keyed with; the action-cam text itself
 # is versioned by ``ACTION_CAM_PROMPT_VERSION``, so a generic change does not re-key them.
 ACTION_CAM_BASE_PROMPT = 5
@@ -99,7 +101,7 @@ RESPONSE_SCHEMA: dict[str, Any] = {
 # hash (``aw``) is part of the cache key, so windows are described again for another wording.
 # No scorer reads ``crash_fall``, ``fast_open`` or ``trees`` (cutpoint.actioncam reads the
 # others): they are for the AI Chat's vocabulary only (cutpoint.assistant.context, .pacing).
-ACTION_CAM_PROMPT_VERSION = 1
+ACTION_CAM_PROMPT_VERSION = 2  # 2: no "listen" to audio that is never sent (#1085 A164)
 ACTION_CAM_TAGS = (
     "jump_air",
     "landing",
@@ -196,7 +198,7 @@ DESCRIBE_COMBAT = (
     "talk to the action: if a conversation is followed by a kill, a death, a "
     "round win or laughter, say so explicitly ('after the argument, the player "
     "gets a kill and the team laughs'). Look at the frames for weapons, kills "
-    "and deaths, and listen to the audio for laughter and tone. "
+    "and deaths, and use the transcript and detector hints for laughter and tone. "
 )
 DESCRIBE_NEUTRAL = (
     "Describe what actually happens in this window, in time order: what the "
@@ -208,8 +210,8 @@ DESCRIBE_NEUTRAL = (
     "talk to the action: if a conversation is followed by a success, a fail, a "
     "close call or laughter, say so explicitly ('after the argument, the player "
     "messes up and the team laughs'). Describe only what the frames show and the "
-    "audio says; do not add actions you cannot see or hear. Listen to the audio "
-    "for laughter and tone. "
+    "transcript says; do not add actions you cannot see or read. Use the transcript "
+    "and detector hints for laughter and tone. "
 )
 FUNNY_COMBAT = (
     "  funny: 0-1 no joke; 3-4 light banter; 6-7 a clear joke or people "
@@ -309,14 +311,17 @@ class VlmParams:
     window_s: float = 15.0
     pre_s: float = 3.0
     post_s: float = 12.0
-    max_windows: int = 60
+    # None: auto (resolve_counts): 60, action-cam one per seed + riding coverage, 60-150
+    max_windows: int | None = None
     frames: int = 14  # for windows up to 18 s; longer ones get up to 16
     forced: tuple[tuple[str, float, float], ...] = ()  # (name glob, start, end)
     transcript: bool = True
     # action-cam prompt + tags in the project's activity wording (set by the pipeline for
     # action-cam projects; None: the game prompt)
     action_cam: ActionCamWording | None = None
-    max_fill_windows: int = 0  # action-cam: extra windows over stopped / lift footage
+    # action-cam: extra windows over stopped / lift footage. None: auto (resolve_counts),
+    # 150 for action-cam, else 0
+    max_fill_windows: int | None = None
     # vision model that describes the windows, set by the pipeline
     # ("<provider>@<host>:<model>", "ollama@127.0.0.1:11434:qwen3.5:9b" for an Ollama)
     model: str = ""
@@ -381,6 +386,50 @@ TELEMETRY_SEEDS = {"crash": 2.0, "airtime": 1.0, "coverage": 0.25}
 GAP_FILL_TYPES = ("stopped/lift",)
 
 
+DEFAULT_MAX_WINDOWS = 60  # windows described per run (not action-cam)
+CAM_FILL_WINDOWS = 150  # action-cam: gap-fill windows over stopped / lift footage
+CAM_MIN_WINDOWS, CAM_MAX_WINDOWS = 60, 150  # action-cam auto window count
+
+
+def resolve_counts(
+    params: VlmParams, action_cam: bool, layer1: dict[str, list[dict[str, Any]]]
+) -> VlmParams:
+    """``params`` with its auto counts (None) resolved, the one place they are: ``max_windows``
+    :data:`DEFAULT_MAX_WINDOWS`, for action-cam one per telemetry or laughter, scream or cheer
+    seed of ``layer1`` within :data:`CAM_MIN_WINDOWS`-:data:`CAM_MAX_WINDOWS`;
+    ``max_fill_windows`` :data:`CAM_FILL_WINDOWS` for action-cam, else 0. A count given stays."""
+    if params.max_windows is None:
+        n = DEFAULT_MAX_WINDOWS
+        if action_cam:
+            seeds = sum(
+                1
+                for evs in layer1.values()
+                for e in evs
+                if (e.get("kind") == "telemetry" and e.get("type") != "coverage_masked")
+                or e.get("label") in ("Laughter", "Scream", "Cheering")
+            )
+            n = max(CAM_MIN_WINDOWS, min(CAM_MAX_WINDOWS, seeds))
+        params = replace(params, max_windows=n)
+    if params.max_fill_windows is None:
+        params = replace(params, max_fill_windows=CAM_FILL_WINDOWS if action_cam else 0)
+    return params
+
+
+def _banner_seed(text: str) -> float | None:
+    """VLM seed of a banner whose upper-case text is ``text``, from the one banner list
+    (:data:`~cutpoint.events.eventtypes.BANNER_PAYOFFS`): None when the text is a no-seed
+    phrase, else the highest seed of the phrases it holds as whole words, else
+    :data:`~cutpoint.events.eventtypes.BANNER_SEED`."""
+    if BANNER_PAYOFFS.get(text, 0.0) is None:
+        return None
+    seeds = [
+        v
+        for k, v in BANNER_PAYOFFS.items()
+        if v is not None and re.search(rf"(?<![A-Z0-9]){re.escape(k)}(?![A-Z0-9])", text)
+    ]
+    return max(seeds, default=BANNER_SEED)
+
+
 def _seed_priority(
     ev: dict[str, Any], types: tuple[EventType, ...] = (), style: tuple[str, ...] = ()
 ) -> float | None:
@@ -403,16 +452,7 @@ def _seed_priority(
     if ev.get("kind") == "ocr":
         typ, text = ev.get("type"), (ev.get("text") or "").upper()
         if typ == "banner":
-            if text == "ACE" or "CLUTCH" in text:
-                return 2.0
-            if any(
-                k in text
-                for k in ("WON ROUND", "ROUND WON", "VICTORY", "DEFEAT", "LOST ROUND", "ROUND LOST")
-            ):
-                return 1.3
-            if text in ("MATCH POINT", "OVERTIME", "ELIMINATED"):
-                return None
-            return 0.6
+            return _banner_seed(text)
         if typ == "kill":
             if ev.get("teamkill"):
                 return 2.0
@@ -549,10 +589,10 @@ def select_windows(
         else:
             merged.append(Window(w.source, w.start, w.end, w.priority, list(w.reasons)))
     merged.sort(key=lambda w: -w.priority)
-    chosen = merged[: params.max_windows]
+    chosen = merged[: DEFAULT_MAX_WINDOWS if params.max_windows is None else params.max_windows]
     extra = 0
     for w in fill:  # gap fill: never merged, so existing windows keep their cache keys
-        if extra >= params.max_fill_windows:
+        if extra >= (params.max_fill_windows or 0):
             break
         if not any(c.source == w.source and w.start < c.end and c.start < w.end for c in chosen):
             chosen.append(w)
@@ -671,8 +711,8 @@ def build_messages(
             "type": "text",
             "text": (
                 f"This is a {dur:.0f}-second window of a {view}{game.name} recording, "
-                f"starting at {clock(win.start)} in {name or src.name}. The single audio track "
-                "mixes "
+                f"starting at {clock(win.start)} in {name or src.name}. No audio is sent: the "
+                "transcript and the detector hints come from its one audio track, which mixes "
                 "game sound, the player's microphone and friends on voice chat. "
                 f"{len(frames)} frames follow, each labelled with seconds from the window start."
             ),
@@ -751,8 +791,9 @@ def build_messages_action_cam(
             "type": "text",
             "text": (
                 f"This is a {dur:.0f}-second window of a {w.text('recording')}, starting at "
-                f"{clock(win.start)} in {name or src.name}. The audio is the camera microphone: "
-                f"{w.text('audio')}. {len(frames)} frames follow, each labelled with "
+                f"{clock(win.start)} in {name or src.name}. No audio is sent: the transcript and "
+                f"the detector hints come from the camera microphone ({w.text('audio')}). "
+                f"{len(frames)} frames follow, each labelled with "
                 "seconds from the window start."
             ),
         }
@@ -764,7 +805,8 @@ def build_messages_action_cam(
             "text": (
                 "Describe what actually happens in this window, in time order: "
                 f"{w.text('describe')}. Camera telemetry hints (accelerometer) are reliable "
-                "for airtime and impacts. Listen for laughter, cheering and screams.\n"
+                "for airtime and impacts. Use the transcript and detector hints for laughter, "
+                "cheering and screams.\n"
                 + w.tag_help()
                 + "Scoring rubric (integers 0-10):\n"
                 + f"  hype: {w.text('hype')}\n"
