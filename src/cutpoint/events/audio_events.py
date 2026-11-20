@@ -279,7 +279,7 @@ def pooled_probabilities(
 
     Every block's frames are max-pooled into one absolute time grid, so
     overlapping blocks join seamlessly (block edges, which lack context, are
-    dropped except at the very start and end of the audio).
+    dropped except at the start and end of each audio part).
 
     Returns:
         Pooled probabilities; row 0 is at time 0 and rows are ``params.pool_s`` apart.

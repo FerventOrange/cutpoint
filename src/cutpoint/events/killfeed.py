@@ -2998,7 +2998,7 @@ class OcrReader:
 
     def _look(
         self, r: Region, crop: np.ndarray
-    ) -> tuple[dict[str, Any] | None, list[tuple[float, float, float, float]] | None, list | None]:
+    ) -> tuple[dict[str, Any], list[tuple[float, float, float, float]] | None, list | None]:
         """The gate of region ``r`` and its OCR calls but the row recognition: ``(record,
         rows, items)``: a det-gated region to read has its ``rows`` (``y0, x0, y1, x1``), a
         read-gated one its ``items``; neither when the layout did not change."""
@@ -3065,8 +3065,6 @@ class OcrReader:
         each = getattr(self.engine, "map", None) or (lambda fn, xs: [fn(x) for x in xs])
         looks = each(lambda r: self._look(r, cut[r.name]), due)
         for r, (g, text_rows, items) in zip(due, looks, strict=True):
-            if g is None:
-                continue
             rec.regions[r.name] = g
             crop = cut[r.name]
             if text_rows is not None:

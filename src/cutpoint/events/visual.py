@@ -18,7 +18,7 @@ Frames: GoPro HEVC has a keyframe every 1.001 s, so a keyframe-only decode
 no decode cost; reading the file is the bottleneck. Sources whose keyframes
 are sparser than 1.5 s (gameplay recordings) are decoded fully through
 ``fps=1``. The spacing is probed on the first 12 s, so after a keyframe-only pass the gaps
-between the decoded frames are checked too: a median or largest gap over 1.5 s (outside the
+between the decoded frames are checked too: a largest gap over 1.5 s (outside the
 avoided ranges; a scene-adaptive encoder that spaces its keyframes out later) decodes the
 source again through ``fps=1``. Frame times come from ``showinfo``.
 
@@ -205,14 +205,13 @@ def keyframe_spacing(path: Path, probe_s: float = KEYFRAME_PROBE_S) -> float | N
 
 
 def _keyframe_gap(decoded: list[float], avoid: list[tuple[float, float]] | None) -> float | None:
-    """The larger of the median and the largest gap between the ``decoded`` frame times of a
-    keyframe-only pass, leaving out gaps that overlap an ``avoid`` range (bad sectors, where
+    """The largest gap between the ``decoded`` frame times of a keyframe-only pass, leaving out gaps that overlap an ``avoid`` range (bad sectors, where
     ffmpeg skips packets); None with fewer than two frames or no gap left."""
     ts = sorted(decoded)
     gaps = [b - a for a, b in pairwise(ts) if not any(lo < b and a < hi for lo, hi in avoid or [])]
     if not gaps:
         return None
-    return max(float(np.median(gaps)), max(gaps))
+    return max(gaps)
 
 
 def iter_frames(path: Path, width: int, height: int, keyframes: bool, hwaccel: bool) -> Any:

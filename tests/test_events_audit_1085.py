@@ -141,3 +141,16 @@ def test_one_banner_list_feeds_seeds_and_payoffs() -> None:
 )
 def test_banner_seed_tiers(text: str, seed: float | None) -> None:
     assert vw._seed_priority({"kind": "ocr", "type": "banner", "text": text}) == seed
+
+
+def test_weak_feeds_do_not_take_the_slots_of_a_banner_and_a_notice() -> None:
+    """PR #1220 F1: the best feed, then the banners, then the other feeds and notices by
+    score fill the MAX_REGIONS slots."""
+    proposals = [
+        _proposal(f"feed{i}", "feed", 1.0 if i == 0 else 0.05, 40 + 50 * i) for i in range(6)
+    ]
+    proposals += [_proposal("banner", "banner", 0.03, 900), _proposal("notice", "notice", 0.3, 960)]
+    names = [r.name for r in proposals_to_regions(proposals)]
+    assert len(names) == 6
+    assert names[:3] == ["feed0", "banner", "notice"]
+    assert "banner" in names and "notice" in names

@@ -1654,18 +1654,28 @@ def proposals_to_regions(proposals: list[dict[str, Any]]) -> list[Region]:
     clipped).
 
     Every ``feed``, ``banner`` and ``notice`` proposal of :data:`MIN_REGION_SCORE` or more
-    is kept. ``feed`` regions keep the det gate at full rate; banners and notices are
+    is a candidate; the :data:`MAX_REGIONS` slots go to the best feed, then the banners, then
+    the other feeds and the notices by score. ``feed`` regions keep the det gate at full rate; banners and notices are
     sampled at a third of the OCR rate. ``dynamic`` proposals are left out
     unless nothing else was found. ``score`` proposals become ``score`` regions after
     them (:func:`score_region`), not counted in :data:`MAX_REGIONS`.
     """
     # every feed of MIN_REGION_SCORE or more: a strong feed (or chat scored as one) does not
     # drop a second real feed; the label step (apply_labels) sorts chat out (#1085 A145)
-    keep = [
+    ok = [
         p
         for p in proposals
         if p["kind"] in ("feed", "banner", "notice") and p["score"] >= MIN_REGION_SCORE
     ]
+    # weak feeds must not take the slots of banners and notices: the best feed first, then
+    # the banners, then the rest by score
+    feeds = sorted((p for p in ok if p["kind"] == "feed"), key=lambda p: -p["score"])
+    banners = [p for p in ok if p["kind"] == "banner"]
+    rest = sorted(
+        (p for p in ok if p["kind"] == "notice" or (p["kind"] == "feed" and p is not feeds[0])),
+        key=lambda p: -p["score"],
+    )
+    keep = feeds[:1] + banners + rest
     keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup", "score")]
     out = []
     for p in keep[:MAX_REGIONS]:
