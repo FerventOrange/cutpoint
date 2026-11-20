@@ -21,9 +21,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from cutpoint import cache, category, folders, jsonout, progress, runstate, tsrepair
-from cutpoint.assemble import assemble, temporary_clips
-from cutpoint.clips import export_clips
-from cutpoint.encode import Lut
+from cutpoint.assemble import JoinOptions, assemble, temporary_clips
+from cutpoint.clips import ExportOptions, Selection, export_clips
 from cutpoint.kinds import KINDS, Kind
 from cutpoint.planning import report_clips
 from cutpoint.projectfiles import HIGHLIGHTS
@@ -100,7 +99,7 @@ def run_edit(
     project: Path,
     kind: Kind,
     *,
-    vertical: bool = False,
+    export: ExportOptions | None = None,
     force: bool = False,
     events: bool = False,
     vision: bool | None = None,
@@ -111,10 +110,6 @@ def run_edit(
     visual_index: bool | None = None,
     ocr_det_skip: bool | None = None,
     vision_detect_all: bool = False,
-    compress_peaks: str = "off",
-    lut: Lut | None = None,
-    color: str | None = None,
-    color_strength: float = 1.0,
     keep_clips: bool = True,
     output_format: str = "mp4",
     vision_time_share: float | None = None,
@@ -132,11 +127,10 @@ def run_edit(
     (opt-in: None or False writes the frame embeddings only for the styles that always do);
     ``ocr_det_skip`` is ``analyze --ocr-det-skip`` (None or False: off), also for ``events``;
     ``vision_detect_all`` is ``analyze --vision-detect-all`` (off with ``vision`` False).
-    ``compress_peaks``
+    ``export``: the clips' export options (:class:`~cutpoint.clips.ExportOptions`; None: the
+    defaults), such as ``vertical``, ``lut`` and ``color``; its ``compress_peaks``
     (``clips``/``assemble --compress-peaks``) is baked into the clips, so the final keeps it
-    without compressing twice. ``lut`` (:func:`~cutpoint.encode.check_lut`) grades the clips
-    as ``clips --lut`` does, ``color`` and ``color_strength`` as ``clips --color`` and
-    ``--color-strength`` (None: config.json's ``color``); the final keeps the grade.
+    without compressing twice, and the final keeps the grade.
     ``vision_time_share`` is analyze's (None: config.json's ``vision_time_share``), and so is
     ``context`` (``--context``, #1068; also the hint of this run's footage question).
 
@@ -147,7 +141,7 @@ def run_edit(
 
     Returns:
         ``<project>/<edit_name(first input)>-final.mp4`` (``-final_vertical.mp4`` with
-        ``vertical``; ``.fcpxml`` / ``.otio`` for a timeline format), a hard link or copy of
+        ``export.vertical``; ``.fcpxml`` / ``.otio`` for a timeline format), a hard link or copy of
         what was assembled.
 
     Raises:
@@ -159,11 +153,12 @@ def run_edit(
         ModuleNotFoundError: With ``events``, if the events extra is missing and a layer
             other than vlm is left after ``skip`` (before any analysis).
     """
+    export = export or ExportOptions()
     with progress.run(progress.EDIT_STEPS) as steps:
         from cutpoint.analyze import analyze  # noqa: PLC0415
 
         steps.start("transcribe")  # the checks below fail the first step
-        to = _edit_targets(inputs, project, vertical, force, keep_clips, output_format)
+        to = _edit_targets(inputs, project, export.vertical, force, keep_clips, output_format)
         if kind.style == AUTO:
             style: Style | AutoRequest = AutoRequest(kind.emphasis)
         else:
@@ -205,12 +200,8 @@ def run_edit(
             kind,
             to,
             steps,
-            vertical=vertical,
+            export=export,
             force=force,
-            compress_peaks=compress_peaks,
-            lut=lut,
-            color=color,
-            color_strength=color_strength,
             keep_clips=keep_clips,
             output_format=output_format,
         )
@@ -319,12 +310,8 @@ def _export_and_join(
     to: _EditTargets,
     steps: progress.Run,
     *,
-    vertical: bool,
+    export: ExportOptions,
     force: bool,
-    compress_peaks: str,
-    lut: Lut | None,
-    color: str | None,
-    color_strength: float,
     keep_clips: bool,
     output_format: str,
 ) -> Path:
@@ -343,15 +330,9 @@ def _export_and_join(
             else:
                 export_clips(
                     project,
-                    top=kind.top,
-                    max_total=kind.max_total,
-                    order=kind.order,
-                    vertical=vertical,
+                    selection=Selection(top=kind.top, order=kind.order, max_total=kind.max_total),
+                    options=export,
                     force=force,
-                    compress_peaks=compress_peaks,
-                    lut=lut,
-                    color=color,
-                    color_strength=color_strength,
                     **temporary,
                 )
         if keep_clips:
@@ -360,11 +341,13 @@ def _export_and_join(
         return assemble(
             work,
             None if keep_clips else project / to.final_name,
-            transition=kind.transition,
-            loudnorm=kind.loudnorm,
-            captions=kind.captions,
-            compress_peaks=compress_peaks,
-            output_format=output_format,
+            join=JoinOptions(
+                transition=kind.transition,
+                loudnorm=kind.loudnorm,
+                captions=kind.captions,
+                compress_peaks=export.compress_peaks,
+                output_format=output_format,
+            ),
         )
 
 

@@ -48,17 +48,16 @@ import shutil
 import subprocess
 import sys
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from functools import partial
 from itertools import pairwise
 from pathlib import Path, PurePath
-from typing import Any
 
 from cutpoint import cache, folders, jsonout, paths, srt
-from cutpoint.clips import export_clips
+from cutpoint.clips import ExportOptions, Selection, export_clips
 from cutpoint.config import AUDIO_TRANSITIONS, OUTPUT_FORMATS
 from cutpoint.encode import (
     A_FMT,
@@ -1183,15 +1182,14 @@ def _join(
     infos: list[MediaInfo],
     clips_dir: Path,
     out: Path,
-    transition: str,
-    fade_dur: float,
-    audio_fade: float,
+    join: JoinOptions,
+    *,
     peaks: list[str] | None = None,
-    audio_transition: str | None = None,
-    joins: list[str] | None = None,
+    kinds: list[str] | None = None,
 ) -> float | list[float]:
-    """Join ``files`` into ``out`` with cuts or crossfades (see :func:`assemble`); ``peaks``
-    are the per-clip :func:`peak_filters`, ``joins`` each join's transition
+    """Join ``files`` into ``out`` with cuts or crossfades as ``join`` says (its
+    ``transition``, ``fade_dur``, ``audio_fade`` and ``audio_transition``; see :func:`assemble`);
+    ``peaks`` are the per-clip :func:`peak_filters`, ``kinds`` each join's transition
     (:func:`join_kinds`), which replace ``transition``.
 
     Mixed joins take :func:`crossfade_copy`, else :func:`crossfade`, as all fades do.
@@ -1200,9 +1198,10 @@ def _join(
         The crossfade duration used (0 for cuts), or one per join for mixed joins, for
         :func:`clip_offsets`.
     """
-    audio = audio_transition or default_audio_transition(transition)
-    if len(files) > 1 and (transition == "fade" or joins is not None):
-        fade_dur = join_fade(infos, transition, fade_dur, joins)
+    transition, fade_dur, audio_fade = join.transition, join.fade_dur, join.audio_fade
+    audio = join.audio_transition or default_audio_transition(transition)
+    if len(files) > 1 and (transition == "fade" or kinds is not None):
+        fade_dur = join_fade(infos, transition, fade_dur, kinds)
         transition = "fade" if fade_dur else "cut"
     if len(files) == 1 or transition == "cut":
         fades = _edge_fades(clips_dir, files, audio_fade)
@@ -1373,47 +1372,74 @@ def check_transitions(transition: str, audio_transition: str | None) -> str | No
     return None
 
 
-def assemble(
-    clips_dir: Path,
-    out: Path | None = None,
-    *,
-    transition: str = "cut",
-    fade_dur: float = 0.25,
-    loudnorm: bool = False,
-    captions: bool = False,
-    caption_model: str | None = None,
-    audio_fade: float = 0.25,
-    compress_peaks: str = "off",
-    audio_transition: str | None = None,
-    output_format: str = "mp4",
-    joins: list[dict[str, str]] | None = None,
-) -> Path:
-    """Assemble ``clips_dir`` into ``out``, or write its timeline instead.
+@dataclass(frozen=True)
+class JoinOptions:
+    """How :func:`assemble` joins the clips: the options of ``cutpoint assemble``, built once
+    where a run starts (the CLI's ``assemble``, ``edit``) and passed down.
 
-    ``output_format`` (:data:`OUTPUT_FORMATS`): ``mp4`` joins the clips into ``out`` and writes
-    no timeline. ``fcpxml`` or ``otio`` writes only ``<out stem>.fcpxml`` or ``.otio`` next to
-    where ``out`` would be, referencing the clips as they are: nothing is joined or encoded,
-    so ``loudnorm``, ``captions``, ``caption_model``, ``audio_fade`` and ``compress_peaks``
-    do not apply. The timeline has the cuts or crossfades the join would have.
+    Attributes:
+        transition: ``cut`` or ``fade`` between the clips.
+        fade_dur: Crossfade length (s) of ``fade``.
+        loudnorm: Normalize the final loudness.
+        captions: Burn in captions (``caption_model``: the Whisper model for them).
+        caption_model: See ``captions``.
+        audio_fade: Audio fade in/out (s) added to each clip that has no fade baked in by
+            ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored when the audio
+            crossfades (``transition="fade"`` by default), unless the join falls back to cuts
+            (no room for a one-frame crossfade).
+        compress_peaks: ``off``, ``light`` or ``strong``
+            (:data:`~cutpoint.encode.PEAK_PRESETS`) compresses loud peaks and levels the clips
+            that do not have it baked in; the final audio then always ends with the true-peak
+            limiter (with or without ``loudnorm``).
+        audio_transition: ``cut`` or ``crossfade`` (:data:`AUDIO_TRANSITIONS`); None follows
+            ``transition`` (:func:`default_audio_transition`). ``crossfade`` needs
+            ``transition="fade"``.
+        output_format: :data:`OUTPUT_FORMATS`: ``mp4`` joins the clips; ``fcpxml`` or
+            ``otio`` writes that timeline instead (see :func:`assemble`).
+        joins: Entries of :func:`read_joins` for single joins; the others keep ``transition``.
+            A Fade join uses ``audio_transition``, always a crossfade under
+            ``transition="cut"``, and a Cut join an audio cut. ``audio_fade`` then applies to
+            every edge without an audio crossfade.
+    """
+
+    transition: str = "cut"
+    fade_dur: float = 0.25
+    loudnorm: bool = False
+    captions: bool = False
+    caption_model: str | None = None
+    audio_fade: float = 0.25
+    compress_peaks: str = "off"
+    audio_transition: str | None = None
+    output_format: str = "mp4"
+    joins: list[dict[str, str]] | None = None
+
+
+def _check_join(join: JoinOptions) -> None:
+    """Refuse an ``audio_transition`` that does not go with the ``transition`` of ``join``, and
+    an unknown ``output_format``.
+
+    Raises:
+        ValueError: Naming the problem.
+    """
+    if (why := check_transitions(join.transition, join.audio_transition)) is not None:
+        raise ValueError(why)
+    if join.output_format not in OUTPUT_FORMATS:
+        raise ValueError(f"unknown output format {join.output_format!r}")
+
+
+def assemble(clips_dir: Path, out: Path | None = None, *, join: JoinOptions | None = None) -> Path:
+    """Assemble ``clips_dir`` into ``out`` as ``join`` says (None: the defaults of
+    :class:`JoinOptions`), or write its timeline instead.
+
+    ``join.output_format`` (:data:`OUTPUT_FORMATS`): ``mp4`` joins the clips into ``out`` and
+    writes no timeline. ``fcpxml`` or ``otio`` writes only ``<out stem>.fcpxml`` or ``.otio``
+    next to where ``out`` would be, referencing the clips as they are: nothing is joined or
+    encoded, so ``loudnorm``, ``captions``, ``caption_model``, ``audio_fade`` and
+    ``compress_peaks`` do not apply. The timeline has the cuts or crossfades the join would
+    have.
 
     Subtitles ``<out>.srt`` are written from the clips' cached source transcripts
     (see :func:`cutpoint.srt.write_final_srt`), timed to the joined video (the timeline).
-
-    ``audio_fade``: audio fade in/out (s) added to each clip that has no fade
-    baked in by ``cutpoint clips`` / ``cutpoint extend`` (0 = add none). Ignored when the
-    audio crossfades (``transition="fade"`` by default), unless the join falls back to cuts
-    (no room for a one-frame crossfade).
-
-    ``audio_transition``: ``cut`` or ``crossfade`` (:data:`AUDIO_TRANSITIONS`); None follows
-    ``transition`` (:func:`default_audio_transition`). ``crossfade`` needs ``transition="fade"``.
-
-    ``joins``: entries of :func:`read_joins` for single joins; the others keep ``transition``.
-    A Fade join uses ``audio_transition``, always a crossfade under ``transition="cut"``, and a
-    Cut join an audio cut. ``audio_fade`` then applies to every edge without an audio crossfade.
-
-    ``compress_peaks``: ``off``, ``light`` or ``strong`` (:data:`~cutpoint.encode.PEAK_PRESETS`)
-    compresses loud peaks and levels the clips that do not have it baked in; the final audio
-    then always ends with the true-peak limiter (with or without ``loudnorm``).
 
     Like ``clips``, a replace of ``clips_dir`` killed hard is first finished or undone
     (:func:`~cutpoint.folders.recover_swap`), and the folder is locked for the run.
@@ -1427,13 +1453,12 @@ def assemble(
         ValueError: If ``audio_transition`` does not go with ``transition``, or
             ``output_format`` is unknown.
     """
-    if (why := check_transitions(transition, audio_transition)) is not None:
-        raise ValueError(why)
-    if output_format not in OUTPUT_FORMATS:
-        raise ValueError(f"unknown output format {output_format!r}")
-    audio = audio_transition or default_audio_transition(transition)
-    if joins is not None and transition == "cut":
+    join = join or JoinOptions()
+    _check_join(join)
+    audio = join.audio_transition or default_audio_transition(join.transition)
+    if join.joins is not None and join.transition == "cut":
         audio = "crossfade"  # what a Fade join uses; the Cut joins cut the audio whatever this is
+    join = replace(join, audio_transition=audio)
     # one run at a time: another would remove a run's staging folder
     with folders.swap_lock(clips_dir):
         folders.recover_swap(clips_dir)  # leftovers of a hard-killed clips / extend, before listing
@@ -1445,87 +1470,48 @@ def assemble(
         files = list_clips(clips_dir, exclude={out})
         if not files:
             raise FileNotFoundError(f"No .mp4 clips in {clips_dir}")
-        if output_format != "mp4":
-            return _write_timeline(
-                clips_dir, files, out, output_format, transition, fade_dur, audio, joins
-            )
-        mix = _Mix(
-            transition=transition,
-            fade_dur=fade_dur,
-            loudnorm=loudnorm,
-            captions=captions,
-            caption_model=caption_model,
-            audio_fade=audio_fade,
-            compress_peaks=compress_peaks,
-            audio_transition=audio,
-            joins=joins,
-        )
-        return _write_mp4(clips_dir, files, out, mix)
+        if join.output_format != "mp4":
+            return _write_timeline(clips_dir, files, out, join)
+        return _write_mp4(clips_dir, files, out, join)
 
 
-@dataclass(frozen=True)
-class _Mix:
-    """How :func:`_write_mp4` joins the clips: the options of :func:`assemble` of those names
-    (``audio_transition`` decided: ``cut`` or ``crossfade``)."""
-
-    transition: str
-    fade_dur: float
-    loudnorm: bool
-    captions: bool
-    caption_model: str | None
-    audio_fade: float
-    compress_peaks: str
-    audio_transition: str
-    joins: list[dict[str, str]] | None
-
-
-def _write_mp4(clips_dir: Path, files: list[Path], out: Path, mix: _Mix) -> Path:
-    """Join ``files`` of ``clips_dir`` (locked) into ``out`` as ``mix`` says, and write
-    ``<out>.srt``; the mp4 output of :func:`assemble`."""
+def _write_mp4(clips_dir: Path, files: list[Path], out: Path, join: JoinOptions) -> Path:
+    """Join ``files`` of ``clips_dir`` (locked) into ``out`` as ``join`` says (its
+    ``audio_transition`` decided: ``cut`` or ``crossfade``), and write ``<out>.srt``; the mp4
+    output of :func:`assemble`."""
     kinds = hard_cuts(
-        clips_dir, files, mix.transition, join_kinds(files, mix.transition, mix.joins)
+        clips_dir, files, join.transition, join_kinds(files, join.transition, join.joins)
     )
     # A run that fails before writing anything leaves no empty output folder behind.
     with folders.output_dir(out.parent):
         infos = [probe(f) for f in files]
-        mode = mix.transition
-        if mix.audio_transition != default_audio_transition(mix.transition):
-            mode += f", audio {mix.audio_transition}"
+        mode = join.transition
+        if join.audio_transition != default_audio_transition(join.transition):
+            mode += f", audio {join.audio_transition}"
         logger.info(
             "Assembling %d clips (%s): %s", len(files), mode, ", ".join(f.name for f in files)
         )
 
-        peaks = peak_filters(clips_dir, files, infos, mix.compress_peaks)
-        limit = mix.loudnorm or mix.compress_peaks != "off"
-        language = srt.clips_language(clips_dir) if mix.captions else None
+        peaks = peak_filters(clips_dir, files, infos, join.compress_peaks)
+        limit = join.loudnorm or join.compress_peaks != "off"
+        language = srt.clips_language(clips_dir) if join.captions else None
         # Written to a temporary name: final.mp4 only appears once complete.
         with folders.atomic_output(out) as part:
-            stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or mix.captions) else part
+            stage = out.with_name(f".{out.stem}.stage.mp4") if (limit or join.captions) else part
             try:
-                used_fade = _join(
-                    files,
-                    infos,
-                    clips_dir,
-                    stage,
-                    mix.transition,
-                    mix.fade_dur,
-                    mix.audio_fade,
-                    peaks,
-                    mix.audio_transition,
-                    kinds,
-                )
+                used_fade = _join(files, infos, clips_dir, stage, join, peaks=peaks, kinds=kinds)
                 if limit:
                     lufs, tp = normalize_with_ceiling(
-                        stage, out, mix.captions, mix.caption_model, part, mix.loudnorm, language
+                        stage, out, join.captions, join.caption_model, part, join.loudnorm, language
                     )
                     logger.info("Final audio: %.1f LUFS integrated, true peak %+.2f dBTP", lufs, tp)
-                elif mix.captions:
+                elif join.captions:
                     post_process(
                         stage,
                         out,
                         False,
-                        mix.captions,
-                        mix.caption_model,
+                        join.captions,
+                        join.caption_model,
                         dst=part,
                         language=language,
                     )
@@ -1537,7 +1523,7 @@ def _write_mp4(clips_dir: Path, files: list[Path], out: Path, mix: _Mix) -> Path
     logger.info("Wrote %s (%.2fs)", out, duration)
     _warn_earlier(out, "mp4")
     srt_path = srt.write_final_srt(clips_dir, files, infos, used_fade, out)
-    _report_joins(files, mix.joins, used_fade)
+    _report_joins(files, join.joins, used_fade)
     jsonout.output("format", "mp4")
     jsonout.output("final", out)
     jsonout.output("srt", srt_path)
@@ -1546,21 +1532,14 @@ def _write_mp4(clips_dir: Path, files: list[Path], out: Path, mix: _Mix) -> Path
     return out
 
 
-def _write_timeline(
-    clips_dir: Path,
-    files: list[Path],
-    out: Path,
-    kind: str,
-    transition: str,
-    fade_dur: float,
-    audio_transition: str,
-    joins: list[dict[str, str]] | None = None,
-) -> Path:
-    """The ``kind`` timeline (``fcpxml`` or ``otio``) of :func:`assemble`, and ``<out>.srt``:
-    the clips are only probed, nothing is joined or encoded."""
+def _write_timeline(clips_dir: Path, files: list[Path], out: Path, join: JoinOptions) -> Path:
+    """The ``join.output_format`` timeline (``fcpxml`` or ``otio``) of :func:`assemble`, and
+    ``<out>.srt``: the clips are only probed, nothing is joined or encoded (``join``: its
+    ``audio_transition`` decided)."""
+    kind, transition, joins = join.output_format, join.transition, join.joins
     infos = [probe(f) for f in files]
     kinds = hard_cuts(clips_dir, files, transition, join_kinds(files, transition, joins))
-    fade = join_fade(infos, transition, fade_dur, kinds)
+    fade = join_fade(infos, transition, join.fade_dur, kinds)
     logger.info(
         "Writing the %s timeline of %d clips (%s): %s",
         kind,
@@ -1569,7 +1548,7 @@ def _write_timeline(
         ", ".join(f.name for f in files),
     )
     with folders.output_dir(out.parent):
-        path = write_timeline(infos, out, kind, fade, audio_cut=audio_transition == "cut")
+        path = write_timeline(infos, out, kind, fade, audio_cut=join.audio_transition == "cut")
     duration = clip_offsets(infos, fade)[-1] + infos[-1].vduration  # as the timeline's length
     logger.info("Wrote %s (%.2fs, %d clips in %s)", path, duration, len(files), clips_dir)
     _warn_earlier(out, kind)
@@ -1699,27 +1678,17 @@ def assemble_project(
     project: Path,
     out: Path | None = None,
     *,
-    export: Mapping[str, Any] | None = None,
-    vertical: bool = False,
+    selection: Selection | None = None,
+    export: ExportOptions | None = None,
+    join: JoinOptions | None = None,
     force: bool = False,
-    output_format: str = "mp4",
-    transition: str = "cut",
-    fade_dur: float = 0.25,
-    loudnorm: bool = False,
-    captions: bool = False,
-    caption_model: str | None = None,
-    audio_fade: float = 0.25,
-    compress_peaks: str = "off",
-    audio_transition: str | None = None,
-    joins: list[dict[str, str]] | None = None,
 ) -> Path:
     """Export the moments of ``project`` and assemble them (``cutpoint assemble <project>``).
 
-    ``export``: the selection and export settings of
-    :func:`~cutpoint.clips.export_clips` (``top``, ``ids``, ``segments``, ``max_total``,
-    ``order``, tails, crop, ``lut``, ``color``, 360 options ...); ``vertical``, ``audio_fade``
-    and ``compress_peaks`` go to both the export (baked into the clips) and the join, as in
-    ``cutpoint edit``. The other options are :func:`assemble`'s.
+    ``selection`` and ``export``: the moments and export options of
+    :func:`~cutpoint.clips.export_clips` (its ``vertical``, ``audio_fade`` and
+    ``compress_peaks`` are baked into the clips; ``join`` gives the join the same ones, as in
+    ``cutpoint edit``). ``join``: :func:`assemble`'s options. None: the defaults.
 
     ``mp4``: the clips are exported into :func:`temporary_clips` and removed after the join, so
     the project keeps only ``out`` (default ``<project>/final.mp4``, ``final_vertical.mp4``
@@ -1737,30 +1706,16 @@ def assemble_project(
             unknown, ``force`` is given with ``mp4``, or the drive has too little free space;
             and as :func:`~cutpoint.clips.export_clips` and :func:`assemble` raise.
     """
-    if (why := check_transitions(transition, audio_transition)) is not None:
-        raise ValueError(why)
-    if output_format not in OUTPUT_FORMATS:
-        raise ValueError(f"unknown output format {output_format!r}")
-    shape = {"vertical": vertical, "audio_fade": audio_fade, "compress_peaks": compress_peaks}
-    join = {
-        "transition": transition,
-        "fade_dur": fade_dur,
-        "loudnorm": loudnorm,
-        "captions": captions,
-        "caption_model": caption_model,
-        "audio_fade": audio_fade,
-        "audio_transition": audio_transition,
-        "output_format": output_format,
-        "joins": joins,
-    }
-    if output_format != "mp4":  # baked into the kept clips; the timeline uses them as they are
-        clips_dir = export_clips(project, force=force, **dict(export or {}), **shape)
-        return assemble(clips_dir, out, **join)
+    export, join = export or ExportOptions(), join or JoinOptions()
+    _check_join(join)
+    if join.output_format != "mp4":  # baked into the kept clips; the timeline uses them as they are
+        clips_dir = export_clips(project, selection=selection, options=export, force=force)
+        return assemble(clips_dir, out, join=join)
     if force:
         raise jsonout.ArgumentError(
             "--force replaces kept clips; assembling a project into an mp4 keeps none"
         )
-    out = out or project / ("final_vertical.mp4" if vertical else "final.mp4")
+    out = out or project / ("final_vertical.mp4" if export.vertical else "final.mp4")
     with temporary_clips(project) as tmp:
-        export_clips(project, out_dir=tmp, temporary=True, **dict(export or {}), **shape)
-        return assemble(tmp, out, compress_peaks=compress_peaks, **join)
+        export_clips(project, selection=selection, options=export, out_dir=tmp, temporary=True)
+        return assemble(tmp, out, join=join)

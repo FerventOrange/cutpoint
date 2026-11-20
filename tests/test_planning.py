@@ -406,6 +406,15 @@ def test_plan_clips_errors(plan_env):
         run([_moment("y", SRC_A, 1.0, 5.0)], crop="1920:1080:8:0")
 
 
+def _edges(on: bool) -> clips.EdgeSettings:
+    """Edge settings with the smart tail and the speech pass ``on`` or off, no event tails."""
+    return clips.EdgeSettings(
+        TailSettings(enabled=on),
+        EventTailSettings(enabled=False),
+        boundaries.SpeechSettings(enabled=on),
+    )
+
+
 def test_render_and_manifest_after_read_error(plan_env, monkeypatch, tmp_path, caplog):
     run, _ = plan_env
     plans = run(
@@ -421,7 +430,8 @@ def test_render_and_manifest_after_read_error(plan_env, monkeypatch, tmp_path, c
 
     monkeypatch.setattr(clips, "export_clip_checked", fake_checked)
     fmt = OutputFormat(1920, 1080, 30)
-    results = clips.render_clips(plans, tmp_path, fmt=fmt, vertical=False, audio_fade=0.25)
+    options = clips.ExportOptions(audio_fade=0.25)
+    results = clips.render_clips(plans, tmp_path, fmt=fmt, options=options)
     assert [r.out for r in results] == calls == [tmp_path / p.name for p in plans]
     assert (results[0].end, results[0].read_error) == (21.0, err)
     assert (results[1].end, results[1].read_error) == (10.0, None)
@@ -433,15 +443,10 @@ def test_render_and_manifest_after_read_error(plan_env, monkeypatch, tmp_path, c
         plans,
         results,
         order="segments",
-        fmt=fmt,
-        vertical=False,
         style=get_style("gaming"),
-        tail=TailSettings(enabled=False),
-        event_settings=EventTailSettings(enabled=False),
-        padding=None,
-        speech=boundaries.SpeechSettings(enabled=False),
-        audio_fade=0.25,
-        crop=None,
+        fmt=fmt,
+        options=options,
+        edges=_edges(False),
     )
     entries = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))["clips"]
     first = entries[0]
@@ -520,12 +525,12 @@ def test_manifest_records_compress_peaks_only_where_applied(plan_env, tmp_path, 
     plans = run([_moment("a", SRC_A, 10.0, 20.0), _moment("b", SRC_B, 5.0, 9.0)])
     results = [clips.RenderResult(tmp_path / p.name, p.end, None, None, None) for p in plans]
     peaks = [",acompressor=x", ""] if preset != "off" else ["", ""]
+    for plan, peak in zip(plans, peaks, strict=True):
+        plan.peak = peak
     clips.write_manifest(
-        tmp_path, tmp_path, plans, results, order="segments", fmt=OutputFormat(1920, 1080, 30),
-        vertical=False, style=get_style("gaming"), tail=TailSettings(enabled=False),
-        event_settings=EventTailSettings(enabled=False), padding=None,
-        speech=boundaries.SpeechSettings(enabled=False), audio_fade=0.25, crop=None,
-        compress_peaks=preset, peaks=peaks,
+        tmp_path, tmp_path, plans, results, order="segments", style=get_style("gaming"),
+        fmt=OutputFormat(1920, 1080, 30), options=clips.ExportOptions(compress_peaks=preset),
+        edges=_edges(False),
     )  # fmt: skip
     doc = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     entries = doc["clips"]
@@ -559,10 +564,8 @@ def test_manifest_header_says_whether_smart_tail_and_speech_were_applied(
     )
     results = [clips.RenderResult(tmp_path / p.name, p.end, None, None, None) for p in plans]
     clips.write_manifest(
-        tmp_path, tmp_path, plans, results, order="segments", fmt=OutputFormat(1920, 1080, 30),
-        vertical=False, style=get_style("gaming"), tail=TailSettings(enabled=on),
-        event_settings=EventTailSettings(enabled=False), padding=None,
-        speech=boundaries.SpeechSettings(enabled=on), audio_fade=0.25, crop=None,
+        tmp_path, tmp_path, plans, results, order="segments", style=get_style("gaming"),
+        fmt=OutputFormat(1920, 1080, 30), options=clips.ExportOptions(), edges=_edges(on),
     )  # fmt: skip
     doc = json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert doc["smart_tail"]["enabled"] is tails
@@ -600,7 +603,11 @@ def test_export_line_says_smart_tail_off_when_no_clip_gets_one(
     monkeypatch.setattr(clips.sources, "source_words", lambda _src, _lang=None: None)
     monkeypatch.setattr(clips.sources, "audio_window", lambda *a: None)
     clips.export_clips(
-        project, segments=seg, smart_tail_on=on, tail_min=1.5, tail_max=5.0, speech_aware=False
+        project,
+        selection=clips.Selection(segments=seg),
+        options=clips.ExportOptions(
+            smart_tail_on=on, tail_min=1.5, tail_max=5.0, speech_aware=False
+        ),
     )
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Exporting 1")]
     assert line.endswith(f"(segments order); {clause}")
@@ -643,7 +650,9 @@ def test_clips_of_a_deleted_user_style_use_its_recorded_base(home, monkeypatch):
     project = _deleted_style_project(home, style_base="commentary")
     before = (project / "highlights.json").read_bytes()
     _fake_export(monkeypatch)
-    clips.export_clips(project, top=1, speech_aware=False)
+    clips.export_clips(
+        project, selection=clips.Selection(top=1), options=clips.ExportOptions(speech_aware=False)
+    )
     doc = json.loads((project / "clips" / "manifest.json").read_text(encoding="utf-8"))
     base = get_style("commentary")
     assert doc["order"] == base.default_order == "chronological"

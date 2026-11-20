@@ -336,15 +336,19 @@ def test_manifest_records_the_makeup_of_compressed_clips_only():
     plan = SimpleNamespace(
         entry={"id": "h1", "source": "s.mp4", "end": 2.0, "score": 50},
         src=Path("s.mp4"), start=1.0, keep=(1.0, 2.0), name="001_x.mp4", crop=None,
-        crop_source=None, pad_rec=None, speech=None, payoffs=None,
-        tail=SimpleNamespace(to_json=lambda: {"extension": 0.0}),
+        crop_source=None, pad_rec=None, speech=None, payoffs=None, peak=",acompressor=x",
+        makeup=6.5, grade=None, tail=SimpleNamespace(to_json=lambda: {"extension": 0.0}),
     )  # fmt: skip
     res = SimpleNamespace(end=2.0, read_error=None, pano=None, srt=None)
-    on = clips._entry(plan, res, 0.25, "strong", 6.5)
+    on = clips._entry(plan, res, 0.25, "strong")
     assert on["compress_peaks"] == "strong" and on["compress_peaks_makeup_db"] == 6.5
-    assert clips._entry(plan, res, 0.25, "light", 0.0)["compress_peaks_makeup_db"] == 0.0
+    plan.makeup = 0.0
+    assert clips._entry(plan, res, 0.25, "light")["compress_peaks_makeup_db"] == 0.0
     off = clips._entry(plan, res, 0.25)
     assert "compress_peaks" not in off and "compress_peaks_makeup_db" not in off
+    plan.peak = ""  # a clip left alone in a compressed run
+    alone = clips._entry(plan, res, 0.25, "light")
+    assert "compress_peaks" not in alone and "compress_peaks_makeup_db" not in alone
 
 
 # -- config and CLI ---------------------------------------------------------------------
@@ -379,10 +383,10 @@ def test_cli_flag_overrides_config_and_rejects_unknown_presets(home, command, ca
 
 def test_assemble_cli_passes_the_preset(home, tmp_path, monkeypatch):
     got: dict = {}
-    monkeypatch.setattr("cutpoint.assemble.assemble", lambda d, out, **kw: got.update(kw))
+    monkeypatch.setattr("cutpoint.assemble.assemble", lambda d, out, join: got.update(join=join))
     (tmp_path / "clips").mkdir()
     assert cli.main(["assemble", str(tmp_path / "clips"), "--compress-peaks", "strong"]) == 0
-    assert got["compress_peaks"] == "strong" and got["loudnorm"] is False
+    assert got["join"].compress_peaks == "strong" and got["join"].loudnorm is False
 
 
 # -- real ffmpeg ------------------------------------------------------------------------
@@ -510,8 +514,8 @@ def test_assemble_limits_without_loudnorm_whenever_compress_peaks_is_on(
         lambda _d, files, _i, p: [""] * len(files) if p == "off" or baked else [",acompressor=x"],
     )  # fmt: skip
 
-    def join(files, infos, clips_dir, out, *a):
-        calls["join_peaks"] = a[3]  # transition, fade_dur, audio_fade, peaks, audio_transition
+    def join(files, infos, clips_dir, out, join, *, peaks, kinds):
+        calls["join_peaks"] = peaks
         out.write_bytes(b"joined")
         return 0.0
 
@@ -523,7 +527,7 @@ def test_assemble_limits_without_loudnorm_whenever_compress_peaks_is_on(
     monkeypatch.setattr(assemble, "_join", join)
     monkeypatch.setattr(assemble, "normalize_with_ceiling", ceiling)
     monkeypatch.setattr("cutpoint.srt.write_final_srt", lambda *a, **k: None)
-    assemble.assemble(d, tmp_path / "final.mp4", compress_peaks=preset)
+    assemble.assemble(d, tmp_path / "final.mp4", join=assemble.JoinOptions(compress_peaks=preset))
     assert calls.get("ceiling", "not run") == (False if limited else "not run")
     assert calls["join_peaks"] == ([""] if preset == "off" or baked else [",acompressor=x"])
     assert (tmp_path / "final.mp4").read_bytes() == (b"final" if limited else b"joined")

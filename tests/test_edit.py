@@ -48,7 +48,8 @@ def pipeline(home, tmp_path, monkeypatch):
     def export_clips(project, **kw):
         inspect.signature(real_export).bind(project, **kw)
         calls.append(("clips", (project,), kw))
-        out = kw.get("out_dir") or project / ("clips_vertical" if kw["vertical"] else "clips")
+        vertical = kw["options"].vertical
+        out = kw.get("out_dir") or project / ("clips_vertical" if vertical else "clips")
         out.mkdir(exist_ok=True)
         (out / "001_a.mp4").write_bytes(b"clip")
         state.listed = sorted(p.name for p in project.iterdir())  # while the clips exist
@@ -59,7 +60,7 @@ def pipeline(home, tmp_path, monkeypatch):
         calls.append(("assemble", (clips_dir, out), kw))
         if out is None:
             stem = "final" + clips_dir.name[5:]
-            out = clips_dir.parent / f"{stem}.{kw['output_format']}"
+            out = clips_dir.parent / f"{stem}.{kw['join'].output_format}"
         out.write_bytes(b"final video")
         if state.write_srt:
             text = "1\n00:00:00,000 --> 00:00:01,000\nhi\n\n"
@@ -81,9 +82,10 @@ def test_edit_runs_the_steps_in_order_and_names_the_final(pipeline, home):
     project = home / "projects" / "My Clip"
     assert [c[0] for c in calls] == ["analyze", "clips", "assemble"]
     assert calls[0][1] == ([video], "funny", project)
-    assert (calls[1][2]["top"], calls[1][2]["order"]) == (8, "chronological")  # funny-moments
+    selection = calls[1][2]["selection"]
+    assert (selection.top, selection.order) == (8, "chronological")  # funny-moments
     assert calls[2][1] == (project / "clips", None)
-    assert calls[2][2]["captions"] is True
+    assert calls[2][2]["join"].captions is True
     named = project / "My Clip-final.mp4"
     assert named.read_bytes() == b"final video"
     assert named.with_suffix(".srt").read_text(encoding="utf-8").endswith("hi\n\n")
@@ -547,7 +549,7 @@ def test_edit_format_keeps_the_clips_and_copies_the_timeline(pipeline, home, fmt
     assert cli.main(["edit", str(pipeline.video), "--format", fmt]) == 0
     project = home / "projects" / "My Clip"
     assert pipeline.calls[2][1] == (project / "clips", None)
-    assert pipeline.calls[2][2]["output_format"] == fmt
+    assert pipeline.calls[2][2]["join"].output_format == fmt
     assert (project / f"My Clip-final.{fmt}").read_bytes() == b"final video"
     assert (project / "My Clip-final.srt").is_file()
     assert not (project / "My Clip-final.mp4").exists()

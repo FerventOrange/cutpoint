@@ -273,6 +273,7 @@ def _reusable(
 def extend_clips(
     clips_dir: Path,
     padding: Padding,
+    *,
     out_dir: Path | None = None,
     force: bool = False,
     speech: boundaries.SpeechSettings | None = None,
@@ -387,28 +388,42 @@ def extend_clips(
             if work != out_dir:  # staged: all or nothing; only the files named are replaced
                 folders.swap_in(work, out_dir, replaced.replace)
         warn_kept(out_dir, replaced, "a source of these clips is never replaced;")
-        skipped = job.skipped
-        if skipped and not in_place:
-            jsonout.warn(
-                "skipped_clips",
-                f"Not re-exported from {clips_dir.absolute()}: "
-                + "; ".join(f"{n}: {why}" for n, why in skipped.items()),
-                [clips_dir / n for n in skipped],
-            )
-        logger.info(
-            "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
-            len(entries),
-            padding.start,
-            padding.end,
-            out_dir,
-            f" ({reused} copied unchanged from {reuse_dir})" if reuse_dir else "",
-            f"; skipped {len(skipped)} without a manifest entry"
-            if skipped and not in_place
-            else "",
-        )
-        report_clips(out_dir)
-        jsonout.output("seconds", {"start": padding.start, "end": padding.end})
+        skipped = job.skipped if not in_place else {}  # in place they stay: Kept names them
+        _report_extend(clips_dir, out_dir, padding, len(entries), skipped, reused, reuse_dir)
         return out_dir
+
+
+def _report_extend(
+    clips_dir: Path,
+    out_dir: Path,
+    padding: Padding,
+    count: int,
+    skipped: dict[str, str],
+    reused: int,
+    reuse_dir: Path | None,
+) -> None:
+    """Report a finished :func:`extend_clips` run: ``count`` clips re-exported from
+    ``clips_dir`` into ``out_dir`` with ``padding``, ``reused`` of them copied from
+    ``reuse_dir``, and the clips ``skipped`` (``{file name: why}``, a ``skipped_clips``
+    ``--json`` warning)."""
+    if skipped:
+        jsonout.warn(
+            "skipped_clips",
+            f"Not re-exported from {clips_dir.absolute()}: "
+            + "; ".join(f"{n}: {why}" for n, why in skipped.items()),
+            [clips_dir / n for n in skipped],
+        )
+    logger.info(
+        "Re-exported %d clip(s) with +%gs / +%gs padding to %s%s%s",
+        count,
+        padding.start,
+        padding.end,
+        out_dir,
+        f" ({reused} copied unchanged from {reuse_dir})" if reuse_dir else "",
+        f"; skipped {len(skipped)} without a manifest entry" if skipped else "",
+    )
+    report_clips(out_dir)
+    jsonout.output("seconds", {"start": padding.start, "end": padding.end})
 
 
 @dataclass

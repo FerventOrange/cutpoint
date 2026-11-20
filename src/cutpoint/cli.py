@@ -68,6 +68,7 @@ from cutpoint.utils import (
 )
 
 if TYPE_CHECKING:
+    from cutpoint.clips import ExportOptions, Selection
     from cutpoint.encode import Lut
 
 logger = logging.getLogger("cutpoint")
@@ -352,6 +353,7 @@ def _edit_project(a: argparse.Namespace) -> Path:
 
 
 def _cmd_edit(a: argparse.Namespace) -> None:
+    from cutpoint.clips import ExportOptions  # noqa: PLC0415 - the export stack
     from cutpoint.edit import resolve_kind, run_edit  # noqa: PLC0415
 
     targets = [Path(t) for t in a.inputs]
@@ -364,7 +366,13 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         targets,
         project,
         resolve_kind(a.kind, style=a.style, top=a.top, max_total=a.max_total),
-        vertical=a.vertical,
+        export=ExportOptions(
+            vertical=a.vertical,
+            compress_peaks=_compress_peaks(a),
+            lut=lut,
+            color=color,
+            color_strength=color_strength,
+        ),
         force=a.force,
         events=a.events,
         vision=_vision(a),
@@ -375,10 +383,6 @@ def _cmd_edit(a: argparse.Namespace) -> None:
         visual_index=_visual_index(a),
         ocr_det_skip=_ocr_det_skip(a),
         vision_detect_all=_vision_detect_all(a),
-        compress_peaks=_compress_peaks(a),
-        lut=lut,
-        color=color,
-        color_strength=color_strength,
         keep_clips=a.keep_clips,
         output_format=a.output_format,
         context=a.context,
@@ -409,36 +413,43 @@ def _segments_file(a: argparse.Namespace, *, mix: bool = False) -> Path | None:
     return segments
 
 
-def _export_options(a: argparse.Namespace) -> dict:
-    """``export_clips`` arguments of the export options (:func:`_add_selection_arguments` but
-    ``--segments``, ``--mix`` and ``--order``, :func:`_add_export_arguments` but
-    ``--vertical``, ``--force``, ``--audio-fade`` and ``--compress-peaks``), ``--lut`` and
-    ``--color`` checked."""
+def _export_options(a: argparse.Namespace) -> ExportOptions:
+    """The export options of ``clips`` and ``assemble <project>`` (:func:`_add_export_arguments`
+    but ``--force``), ``--lut`` and ``--color`` checked."""
+    from cutpoint.clips import ExportOptions  # noqa: PLC0415 - the export stack
     from cutpoint.planning import Padding  # noqa: PLC0415
 
     lut = _lut(a)
     color, color_strength = _color(a, lut)
-    return {
-        "top": a.top,
-        "ids": a.ids,
-        "max_total": a.max_total,
-        "crop": a.crop,
-        "smart_tail_on": a.smart_tail,
-        "tail_min": a.tail_min,
-        "tail_max": a.tail_max,
-        "event_tails": a.event_tails,
-        "event_window": a.event_window,
-        "extend": Padding.from_args(a.extend, a.extend_start, a.extend_end),
-        "speech_aware": a.speech_aware,
-        "speech_max_extend": a.speech_max_extend,
-        "speech_max_lead": a.speech_max_lead,
-        "pano_source": a.pano_source,
-        "pano_cmd_every": a.pano_cmd_every,
-        "size": a.size,
-        "lut": lut,
-        "color": color,
-        "color_strength": color_strength,
-    }
+    return ExportOptions(
+        vertical=a.vertical,
+        size=a.size,
+        crop=a.crop,
+        smart_tail_on=a.smart_tail,
+        tail_min=a.tail_min,
+        tail_max=a.tail_max,
+        event_tails=a.event_tails,
+        event_window=a.event_window,
+        extend=Padding.from_args(a.extend, a.extend_start, a.extend_end),
+        speech_aware=a.speech_aware,
+        speech_max_extend=a.speech_max_extend,
+        speech_max_lead=a.speech_max_lead,
+        audio_fade=a.audio_fade,
+        compress_peaks=_compress_peaks(a),
+        lut=lut,
+        color=color,
+        color_strength=color_strength,
+        pano_source=a.pano_source,
+        pano_cmd_every=a.pano_cmd_every,
+    )
+
+
+def _selection(a: argparse.Namespace, segments: Path | None, order: str | None) -> Selection:
+    """The moments of ``clips`` and ``assemble <project>``: ``--top``, ``--ids`` and
+    ``--max-total``, with ``segments`` and ``order``."""
+    from cutpoint.clips import Selection  # noqa: PLC0415 - the export stack
+
+    return Selection(top=a.top, ids=a.ids, segments=segments, order=order, max_total=a.max_total)
 
 
 def _cmd_clips(a: argparse.Namespace) -> None:
@@ -457,16 +468,12 @@ def _cmd_clips(a: argparse.Namespace) -> None:
             run_mix(project, out=segments)
     export_clips(
         project,
-        order=order,
-        segments=segments,
+        selection=_selection(a, segments, order),
+        options=options,
         out_dir=resolve_project_path(a.out, bare_names=False)
         if a.out
         else (project / ("clips_mix_vertical" if a.vertical else "clips_mix") if a.mix else None),
-        vertical=a.vertical,
         force=a.force,
-        audio_fade=a.audio_fade,
-        compress_peaks=_compress_peaks(a),
-        **options,
     )
 
 
@@ -1049,22 +1056,27 @@ def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
 
 
 def _cmd_assemble(a: argparse.Namespace) -> None:
-    from cutpoint.assemble import assemble, assemble_project, read_joins  # noqa: PLC0415
+    from cutpoint.assemble import (  # noqa: PLC0415
+        JoinOptions,
+        assemble,
+        assemble_project,
+        read_joins,
+    )
 
     given = resolve_project_path(a.clips_dir, bare_names=False)
     out = resolve_project_path(a.out, bare_names=False) if a.out else None
-    join = {
-        "transition": a.transition,
-        "fade_dur": a.fade_dur,
-        "loudnorm": a.loudnorm,
-        "captions": a.captions,
-        "caption_model": a.model,
-        "audio_fade": a.audio_fade,
-        "compress_peaks": _compress_peaks(a),
-        "audio_transition": a.audio_transition,
-        "output_format": a.output_format,
-        "joins": read_joins(resolve_project_path(a.joins, bare_names=False)) if a.joins else None,
-    }
+    join = JoinOptions(
+        transition=a.transition,
+        fade_dur=a.fade_dur,
+        loudnorm=a.loudnorm,
+        captions=a.captions,
+        caption_model=a.model,
+        audio_fade=a.audio_fade,
+        compress_peaks=_compress_peaks(a),
+        audio_transition=a.audio_transition,
+        output_format=a.output_format,
+        joins=read_joins(resolve_project_path(a.joins, bare_names=False)) if a.joins else None,
+    )
     project = _assemble_project(a, given)
     if project is None:
         if used := [d for d, default in a.project_defaults.items() if getattr(a, d) != default]:
@@ -1073,11 +1085,12 @@ def _cmd_assemble(a: argparse.Namespace) -> None:
                 f"or --segments; {given} is not one"
             )
         _set_clips_project(given)
-        assemble(given, out, **join)
+        assemble(given, out, join=join)
         return
     jsonout.set_project(project)
-    export = {**_export_options(a), "segments": _segments_file(a), "order": a.order}
-    assemble_project(project, out, export=export, vertical=a.vertical, force=a.force, **join)
+    export = _export_options(a)
+    selection = _selection(a, _segments_file(a), a.order)
+    assemble_project(project, out, selection=selection, export=export, join=join, force=a.force)
 
 
 def _check_assemble(parser: argparse.ArgumentParser, a: argparse.Namespace) -> None:

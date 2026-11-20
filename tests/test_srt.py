@@ -170,7 +170,11 @@ def test_event_tails_without_events_json_is_a_json_warning(home, monkeypatch):
     install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
     with jsonout.run("clips") as res:
-        clips.export_clips(project, segments=seg, event_tails=True)
+        clips.export_clips(
+            project,
+            selection=clips.Selection(segments=seg),
+            options=clips.ExportOptions(event_tails=True),
+        )
     assert [(w["code"], w["files"]) for w in res.warnings] == [
         ("event_tails_no_events", [str(project / "events.json")])
     ]
@@ -181,7 +185,7 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    clips.export_clips(project, segments=seg)
+    clips.export_clips(project, selection=clips.Selection(segments=seg))
     assert (out / "001_a.srt").read_text(encoding="utf-8").startswith("1\n00:00:01,000 --> ")
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["clips"][0]["srt"] == "001_a.srt"
@@ -191,7 +195,7 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     (out / "notes.srt").write_text("mine", encoding="utf-8")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
     caplog.set_level(logging.INFO)
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
     assert not (out / "001_a.srt").exists()
     assert (out / "notes.srt").read_text(encoding="utf-8") == "mine"
     assert "srt" not in json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
@@ -201,7 +205,7 @@ def test_clips_write_srt_and_force_replaces_only_their_own(home, monkeypatch, ca
     (out / "001_a.srt").write_text("mine too", encoding="utf-8")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
     caplog.clear()
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
     assert (out / "001_a.srt").read_text(encoding="utf-8") == "mine too"
     assert "srt" not in json.loads((out / "manifest.json").read_text(encoding="utf-8"))["clips"][0]
     assert any(r.levelname == "WARNING" and "001_a.srt" in r.message for r in caplog.records)
@@ -228,11 +232,11 @@ def test_clips_force_removes_the_listed_srt_of_a_clip_deleted_during_review(home
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    clips.export_clips(project, segments=seg)
+    clips.export_clips(project, selection=clips.Selection(segments=seg))
     (out / "001_a.mp4").unlink()  # rejected during review
     pick = json.loads(seg.read_text(encoding="utf-8"))[0] | {"label": "b"}
     seg.write_text(json.dumps([pick]), encoding="utf-8")
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
     assert not (out / "001_a.srt").exists()
     assert (out / "001_b.srt").is_file()
 
@@ -244,7 +248,7 @@ def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeyp
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    clips.export_clips(project, segments=seg)
+    clips.export_clips(project, selection=clips.Selection(segments=seg))
     if not (out / "001_A.mp4").exists():
         pytest.skip("case-sensitive file system")
     data = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
@@ -254,7 +258,7 @@ def test_clips_force_keeps_a_clip_renamed_in_case_only_and_its_srt(home, monkeyp
     (out / "001_a.srt").rename(out / "001_joke.srt")
     pick = json.loads(seg.read_text(encoding="utf-8"))[0] | {"label": "b"}
     seg.write_text(json.dumps([pick]), encoding="utf-8")
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
     assert (out / "001_joke.mp4").read_bytes() == b"new"  # the first run's clip, kept
     assert (out / "001_joke.srt").is_file()
     assert (out / "001_b.mp4").is_file()
@@ -302,7 +306,7 @@ def test_assemble_writes_final_srt_on_the_crossfaded_timeline(tmp_path, monkeypa
     )  # fmt: skip
     by_source = {"a.mp4": _words((0.2, 0.6, "one")), "b.mp4": _words((51.0, 51.4, "two"))}
     monkeypatch.setattr(sources, "source_words", lambda src, _lang=None: by_source.get(src.name))
-    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.5)
+    final = assemble.assemble(clips_dir, join=assemble.JoinOptions(transition="fade", fade_dur=0.5))
     text = (tmp_path / "final.srt").read_text(encoding="utf-8")
     assert final == tmp_path / "final.mp4"
     # clip 2 starts at its first clip's video length minus the 0.5 s crossfade
@@ -361,7 +365,11 @@ def _two_language_projects(home: Path, **seg: Any) -> dict[str | None, Path]:
 def _export(project: Path, monkeypatch, **kw: Any) -> Path:
     monkeypatch.setattr(clips, "probe", lambda p: _info(p, 200.0))
     install_fake_export(monkeypatch, clips)
-    clips.export_clips(project, segments=project / "seg.json", **kw)
+    clips.export_clips(
+        project,
+        selection=clips.Selection(segments=project / "seg.json"),
+        options=clips.ExportOptions(**kw),
+    )
     return project / "clips"
 
 
