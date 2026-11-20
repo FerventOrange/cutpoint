@@ -131,6 +131,29 @@ def test_feed_missing_stays_quiet_in_a_game_without_kills() -> None:
     assert selfcheck.feed_missing(hl_of(), elsewhere) == []
 
 
+def test_same_named_sources_are_checked_by_their_own_stats_key(home) -> None:
+    """#1085 A148: two rec.mp4 sources have stats keys of their own (rec.mp4~digest); only the
+    one the vision model saw kills in warns, by its file name and path."""
+    from cutpoint.events.menu_spans import ocr_stats_key  # noqa: PLC0415
+
+    x, y = "D:/x/rec.mp4", "D:/y/rec.mp4"
+    kx, ky = ocr_stats_key(x, [x, y]), ocr_stats_key(y, [x, y])
+    assert kx != ky and "~" in kx
+    told = vlm_kills(selfcheck.KILLS_MIN_VLM_MENTIONS, x)
+    seen = [{"kind": "vlm", "source": y, "description": "A quiet walk."}] * 3
+
+    def ev(stats: dict[str, Any]) -> dict[str, Any]:
+        return {**ev_of(stats, [*told, *seen]), "sources": [x, y]}
+
+    hl = hl_of(sources=[{"path": x}, {"path": y}])
+    quiet = selfcheck.feed_quiet(hl, ev({kx: stat(22, 1.0), ky: stat(22, 1.0)}))
+    assert codes(quiet) == ["feed_quiet"] and quiet[0]["files"] == [x]  # y: no kill feed
+    assert "rec.mp4: 22 lines" in quiet[0]["message"] and "~" not in quiet[0]["message"]
+    missing = selfcheck.feed_missing(hl, ev({kx: no_region(), ky: no_region()}))
+    assert codes(missing) == ["feed_missing"] and missing[0]["files"] == [x]
+    assert "found in rec.mp4, so" in missing[0]["message"]
+
+
 def with_vlm(ev: dict[str, Any]) -> dict[str, Any]:
     ev["settings"]["layers"] = ["audio", "ocr", "vlm"]
     return ev

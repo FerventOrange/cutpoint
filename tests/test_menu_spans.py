@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,12 @@ from conftest import StubTranscriber, write
 from cutpoint import cache, sources
 from cutpoint.analyze import label_for
 from cutpoint.events import pipeline, scoring
-from cutpoint.events.menu_spans import drop_menu_time, merge_menu_frames
+from cutpoint.events.menu_spans import (
+    drop_menu_time,
+    merge_menu_frames,
+    ocr_stats_key,
+    source_menu_spans,
+)
 from cutpoint.styles import get_style
 
 SRC = "/footage/rec.mp4"
@@ -278,3 +284,33 @@ def test_label_for_follows_the_hint_then_laughter_then_loudness():
     assert label_for({"laughter": 0.6, "loudness": 0.9}, style) == "laugh"
     assert label_for({"laughter": 0.1, "loudness": 0.7}, style) == "loud-moment"
     assert label_for({}, style) == "gaming-moment"
+
+
+def test_same_named_sources_have_menu_spans_of_their_own(tmp_path, caplog) -> None:
+    # A148: the OCR stats of two sources of one file name are keyed apart
+    a, b = write(tmp_path / "x" / "rec.mp4"), write(tmp_path / "y" / "rec.mp4")
+    paths = [str(a), str(b)]
+    ka, kb = ocr_stats_key(a, paths), ocr_stats_key(b, paths)
+    assert ka != kb and ka.startswith("rec.mp4~") and kb.startswith("rec.mp4~")
+    assert ocr_stats_key(SRC, [SRC, "/other/clip.mp4"]) == "rec.mp4"  # unique: its name
+    os.utime(a, (1_000_000, 1_000_000))  # touched after events: the key stays (F4)
+    assert ocr_stats_key(a, paths) == ka == ocr_stats_key(str(a), [a, b])
+    gone = [str(tmp_path / "off" / "rec.mp4"), str(tmp_path / "line" / "rec.mp4")]
+    assert ocr_stats_key(gone[0], gone) == ocr_stats_key(Path(gone[0]), gone)  # offline too
+    ev = {
+        "sources": paths,
+        "stats": {"ocr": {ka: {"menu_spans": [[0, 5]]}, kb: {"menu_spans": [[10, 20]]}}},
+    }
+    with caplog.at_level(logging.INFO):
+        assert source_menu_spans(ev) == {str(a): [[0, 5]], str(b): [[10, 20]]}
+    assert "Menu time not trimmed" not in caplog.text
+
+
+def test_an_old_stat_of_a_shared_name_is_skipped_with_one_info_line(tmp_path, caplog) -> None:
+    a, b = write(tmp_path / "x" / "rec.mp4"), write(tmp_path / "y" / "rec.mp4")
+    ev = {"sources": [str(a), str(b)], "stats": {"ocr": {"rec.mp4": {"menu_spans": [[0, 5]]}}}}
+    with caplog.at_level(logging.INFO):
+        assert source_menu_spans(ev) == {}
+    lines = [r for r in caplog.records if "Menu time not trimmed" in r.getMessage()]
+    assert len(lines) == 1 and lines[0].levelno == logging.INFO
+    assert "rec.mp4" in lines[0].getMessage()

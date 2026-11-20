@@ -159,3 +159,40 @@ def test_audio_device_is_the_device_of_this_run(tmp_path: Path, run_stats):
     assert run_stats([src])["audio_device"] == "cuda"  # a cache miss: PANNs runs
     _cache(src, [])
     assert "audio_device" not in run_stats([src])
+
+
+def test_a_cached_audio_layer_unloads_no_ollama_model(tmp_path: Path, run, monkeypatch):
+    # A160: the user's Ollama models stay loaded when the audio layer loads nothing; PANNs'
+    # memory guard frees them only when memory is short
+    from cutpoint.events import common  # noqa: PLC0415
+
+    unloads: list[object] = []
+    monkeypatch.setattr(common, "unload_ollama", lambda *a, **k: unloads.append(a) or [])
+    srcs = [_source(tmp_path, "a")]
+    _cache(srcs[0], [])
+    made, calls = run(srcs)
+    assert made == [] and calls == [] and unloads == []
+    assert not hasattr(pipeline, "unload_ollama")
+
+
+def test_run_events_leaves_the_callers_parameters_as_they_were(tmp_path: Path, monkeypatch):
+    # A149/A162: the model, project and wording set during the run go to copies
+    from cutpoint.events.killfeed import OcrParams  # noqa: PLC0415
+    from cutpoint.events.vlm_windows import VlmParams  # noqa: PLC0415
+
+    srcs = [_source(tmp_path, "a")]
+    _cache(srcs[0], [])
+    stub_run_events(monkeypatch, srcs)
+
+    def stop(project, sources):
+        raise _Stop
+
+    monkeypatch.setattr(sheets, "write_visual_sheets", stop)
+    ocr, vlm = OcrParams(game="auto"), VlmParams(max_windows=None)
+    before = (repr(ocr), repr(vlm))
+    with pytest.raises(_Stop):
+        pipeline.run_events(
+            tmp_path, layers=("audio",), ocr=ocr, vlm=vlm, discover=False, sheets=True
+        )
+    assert (repr(ocr), repr(vlm)) == before
+    assert ocr.project is None and vlm.model == ""

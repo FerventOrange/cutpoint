@@ -38,7 +38,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -125,7 +125,7 @@ class OcrPrefetch:
     Args:
         project: The project folder (project-local presets, ``OcrParams.project``).
         sources: Every source of the analysis, in order (their games need a preset).
-        params: The OCR parameters ``run_events`` will use (its ``project`` is set here).
+        params: The OCR parameters ``run_events`` will use (a copy with ``project`` is kept).
         batch_size: ``--batch-size`` (#109): the engine is dropped before every this many
             sources and made again by the next read (0: one engine for all of them).
     """
@@ -133,10 +133,9 @@ class OcrPrefetch:
     def __init__(
         self, project: Path, sources: Sequence[Path], params: OcrParams, batch_size: int = 0
     ) -> None:
-        params.project = project
         self.project = project
         self.sources = list(sources)
-        self.params = params
+        self.params = replace(params, project=project)  # a copy: the caller's stays as it is
         self.batch_size = batch_size
         # the engine run_events uses too, so one is made at most
         self.make_engine: Callable[[], OcrEngine] = functools.cache(lambda: OcrEngine())

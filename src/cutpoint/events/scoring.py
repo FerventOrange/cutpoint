@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import cache, projectfiles, repeats, scorer, selfcheck, sources
+from cutpoint.events.audio_events import DEFAULT_GROUPS
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
@@ -71,7 +72,8 @@ EVIDENCE_KEYS = (
 TYPED_KINDS = ("ocr", "audio")
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
-REACTION_SOUNDS = ("Laughter", "Scream")
+# audio events that are a reaction after an event (:func:`has_reaction`); cheering is not one
+AFTER_EVENT_SOUNDS = ("Laughter", "Scream")
 # A nominee's analysis score is at least this share of its source's best (a dialogue stretch's:
 # DIALOGUE_FLOOR). A whole dialogue stretch over DIALOGUE_WIDEN_MAX_S has exactly its share,
 # whatever its grids say.
@@ -86,14 +88,18 @@ NOMINEE_FLOOR = 0.6
 DIALOGUE_FLOOR = 0.75
 DIALOGUE_FLOOR_PER_H, DIALOGUE_FLOOR_MIN = 2.5, 2
 LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
-# A heard laugh with a confidence below this (the detector's own absolute threshold,
-# ``audio_events.DEFAULT_GROUPS``: weaker peaks pass only its relative rule, and at 0.04-0.1 they
-# include speech and game sounds) makes no moment of its own and gives it no label unless something
-# nearby backs it (:func:`laugh_backed`); a stronger one does as before.
-LAUGH_STRONG = 0.12
+# A heard laugh the detector found only by its relative rule (``details.relative``: its peak is
+# below the laughter group's absolute threshold, at 0.04-0.1 it includes speech and game sounds)
+# makes no moment of its own and gives it no label unless something nearby backs it
+# (:func:`laugh_backed`); a stronger one does as before. LAUGH_STRONG is that threshold of
+# ``audio_events.DEFAULT_GROUPS``, for laughter evidence without the flag (a candidate's
+# ``signals.events.laughter``, an event without ``details``).
+LAUGH_STRONG = next(g.abs_thr for g in DEFAULT_GROUPS if g.name == "Laughter")
 BACKUP_S = 5.0  # the backup of a weak laugh is this close to it
 LOUD_SPEECH = 0.6  # loudness (0-1 grid) that, with speech, backs a weak laugh
 SCREAM_SOUNDS = ("Scream", "Cheering")  # audio events that score scream points
+# the audio events that score laughter or scream points (:func:`seeds`, :func:`event_boost`)
+REACTION_SOUNDS = (*LAUGH_SOUNDS, *SCREAM_SOUNDS)
 DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
 # Points of a dialogue event at confidence 1. Goals and funny situations score more: a kill 6
 # (a teamkill 12, a banner 6), laughter up to 12, a scream up to 6. A stretch of talk is
@@ -129,7 +135,11 @@ def has_reaction(
     """
     end = t + REACTION_WINDOW_S
     for e in events:
-        if e.get("kind") == "audio" and e.get("label") in REACTION_SOUNDS and t < e["start"] <= end:
+        if (
+            e.get("kind") == "audio"
+            and e.get("label") in AFTER_EVENT_SOUNDS
+            and t < e["start"] <= end
+        ):
             return True
     if not segments:
         return False
@@ -168,7 +178,8 @@ def repeat_weights(
     types: tuple[EventType, ...] = DEFAULT_EVENT_TYPES,
     span_s: float | None = None,
 ) -> dict[int, float]:
-    """The weight (0-1] of each event of ``events`` (one source's, by ``id``) that counts for a
+    """The weight (0-1] of each event of ``events`` (one source's, by its index in ``events``)
+    that counts for a
     type with ``damp_repeats``: the repeat factor of its text (:func:`repeat_key`) among that
     type's events of the source (:func:`cutpoint.repeats.repeat_factor`), over the source's
     length ``span_s`` (None: up to the end of its last event). Events of other types are left out
@@ -177,9 +188,9 @@ def repeat_weights(
     if not damped:
         return {}
     keyed: list[tuple[int, str]] = []
-    for e in events:
+    for i, e in enumerate(events):
         if e.get("kind") in TYPED_KINDS and (t := first_match(types, e)) and t.name in damped:
-            keyed.append((id(e), f"{t.name}:{repeat_key(e)}"))
+            keyed.append((i, f"{t.name}:{repeat_key(e)}"))
     if span_s is None:
         span_s = max((float(e.get("end") or 0.0) for e in events), default=0.0)
     factors = repeats.repeat_factors((k for _, k in keyed), span_s)
@@ -227,7 +238,7 @@ def event_boost(
     the same for every length.
 
     An event of a type with ``damp_repeats`` (announcements) adds its weight in ``repeat``
-    (:func:`repeat_weights` of the source's events, by ``id``; None: worked out from ``events``)
+    (:func:`repeat_weights` of ``events``, by index; None: worked out from ``events``)
     to ``n`` instead of 1: a caption shown all through the source counts less each time. The
     evidence still counts it as one.
     """
@@ -243,7 +254,7 @@ def event_boost(
     if repeat is None and any(scored[n].damp_repeats for n in scored):
         repeat = repeat_weights(events, types)
     reactions = dict.fromkeys(reacting, 0)
-    for e in events:
+    for i, e in enumerate(events):
         if e["end"] < a or e["start"] > b:
             continue
         if e["kind"] == "audio":
@@ -262,7 +273,7 @@ def event_boost(
             t = first_match(types, e)
             if t and t.name in scored:
                 counts[t.name] += 1
-                worth[t.name] += (repeat or {}).get(id(e), 1.0)
+                worth[t.name] += (repeat or {}).get(i, 1.0)
             if (
                 t
                 and t.name in reacting
@@ -421,11 +432,7 @@ def seeds(
         if any(a <= e["start"] < b for a, b in menu or ()):
             continue
         length = max(0.0, e["end"] - e["start"])
-        if (
-            e["kind"] == "audio"
-            and (e["label"] in LAUGH_SOUNDS or e["label"] in SCREAM_SOUNDS)
-            and e["confidence"]
-        ):
+        if e["kind"] == "audio" and e["label"] in REACTION_SOUNDS and e["confidence"]:
             if e["label"] in LAUGH_SOUNDS and not laugh_backed(e, events, backup):
                 continue
             out.append(Seed(e["label"].lower(), e["start"], e["end"], length))
@@ -468,7 +475,7 @@ def sound_backed(e: dict[str, Any], events: list[dict[str, Any]]) -> bool:
     return any(
         o is not e
         and o["kind"] == "audio"
-        and o["label"] in (*LAUGH_SOUNDS, *SCREAM_SOUNDS)
+        and o["label"] in REACTION_SOUNDS
         and o["confidence"]
         and o["end"] >= a
         and o["start"] <= b
@@ -476,16 +483,25 @@ def sound_backed(e: dict[str, Any], events: list[dict[str, Any]]) -> bool:
     )
 
 
+def _strong_laugh(e: dict[str, Any]) -> bool:
+    """Whether the laugh ``e`` passed the detector's absolute threshold (see :data:`LAUGH_STRONG`)."""
+    details = e.get("details")
+    if isinstance(details, dict) and isinstance(details.get("relative"), bool):
+        return not details["relative"]
+    return (e["confidence"] or 0) >= LAUGH_STRONG
+
+
 def laugh_backed(
     e: dict[str, Any],
     events: list[dict[str, Any]],
     backup: Callable[[dict[str, Any]], bool] | None = None,
 ) -> bool:
-    """Whether the heard laugh ``e`` may make a moment of its own: its confidence is at least
-    :data:`LAUGH_STRONG`, or another laughter, scream or cheering sound is near it
+    """Whether the heard laugh ``e`` may make a moment of its own: the detector found it by its
+    absolute threshold (not ``details.relative``; without the flag: its confidence is at least
+    :data:`LAUGH_STRONG`), or another laughter, scream or cheering sound is near it
     (:func:`sound_backed`), or ``backup(e)`` (the transcript has a laughter word or marker
     near it, or loud speech covers it; asked last, as it reads the caches)."""
-    if (e["confidence"] or 0) >= LAUGH_STRONG or sound_backed(e, events):
+    if _strong_laugh(e) or sound_backed(e, events):
         return True
     return bool(backup and backup(e))
 
@@ -643,7 +659,7 @@ def widen_for_dialogue(
     :func:`restore_widened` gives the label back). Returns how many candidates were widened."""
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
 
-    widened: set[int] = set()
+    widened: list[dict[str, Any]] = []  # each widened candidate once
     for src, evs in by_src.items():
         stretches = sorted(
             (e for e in evs if e.get("kind") == "text" and e.get("type") == DIALOGUE_TYPE),
@@ -724,7 +740,8 @@ def widen_for_dialogue(
                 best.pop("dialogue_description", None)
             else:
                 best["dialogue_description"] = e.get("description") or ""
-            widened.add(id(best))
+            if all(w is not best for w in widened):
+                widened.append(best)
     return len(widened)
 
 
@@ -913,9 +930,9 @@ def nominate(
             base = [c.get("score_pre_events", c["score"]) for c in own if c["source"] == src]
             best = max(base) if base else 0.0
             raised = _raised_talk(recs, part.duration)
-            for r in recs:
+            for i, r in enumerate(recs):
                 r["grid_score"] = r["score"]
-                floor = (DIALOGUE_FLOOR if id(r) in raised else NOMINEE_FLOOR) * best
+                floor = (DIALOGUE_FLOOR if i in raised else NOMINEE_FLOOR) * best
                 # a long stretch has the floor itself, not the best moment inside it
                 r["score"] = floor if is_long_dialogue(r) else max(r["score"], floor)
             room = analyze.candidate_cap(style, explicit) - sum(
@@ -925,12 +942,13 @@ def nominate(
             if len(recs) > cap:
                 src_types = types.get(src, DEFAULT_EVENT_TYPES)
                 weights = repeat_weights(by_src[src], src_types, source_spans(hl).get(src))
-                worth = {
-                    id(r): r["score"]
+                worth = [
+                    r["score"]
                     + event_boost(r, by_src[src], src_types, style=names, repeat=weights)[0]
                     for r in recs
-                }
-                recs = sorted(recs, key=lambda r: (-worth[id(r)], -r["grid_score"]))[:cap]
+                ]
+                order = sorted(range(len(recs)), key=lambda i: (-worth[i], -recs[i]["grid_score"]))
+                recs = [recs[i] for i in order[:cap]]
             new += recs
         logger.info(
             "Nominated %d candidate(s) for %d event(s) no candidate covers",
@@ -949,18 +967,18 @@ def nominate(
 
 
 def _raised_talk(recs: list[dict[str, Any]], span_s: float) -> set[int]:
-    """The ids of the nominees of ``recs`` (one part ``span_s`` seconds long, scored from its
+    """The indexes in ``recs`` of the nominees (one part ``span_s`` seconds long, scored from its
     grids) that a dialogue stretch made and that get :data:`DIALOGUE_FLOOR`: the
     max(:data:`DIALOGUE_FLOOR_MIN`, floor(:data:`DIALOGUE_FLOOR_PER_H` x hours + 0.5)) with the best
     grid score (the earlier on a tie)."""
     talk = [
-        r
-        for r in recs
+        i
+        for i, r in enumerate(recs)
         if any(str(n).startswith("dialogue-") for n in r["signals"]["events"]["nominated"])
     ]
     k = max(DIALOGUE_FLOOR_MIN, math.floor(DIALOGUE_FLOOR_PER_H * span_s / 3600.0 + 0.5))
-    ranked = sorted(talk, key=lambda r: (-r["score"], r["start"]))
-    return {id(r) for r in ranked[:k]}
+    ranked = sorted(talk, key=lambda i: (-recs[i]["score"], recs[i]["start"]))
+    return set(ranked[:k])
 
 
 def _type_labels(c: dict[str, Any]) -> set[str]:

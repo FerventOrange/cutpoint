@@ -77,7 +77,7 @@ def _finding(code: str, message: str, hint: str, files: Iterable[str] = ()) -> d
 
 
 def _name(path: str) -> str:
-    """A source's file name, from a Windows or a POSIX path (events.json keys stats by it)."""
+    """A source's file name, from a Windows or a POSIX path."""
     return PureWindowsPath(path).name
 
 
@@ -123,14 +123,13 @@ def feed_quiet(hl: dict[str, Any], ev: dict[str, Any]) -> list[dict[str, Any]]:
     if not _gaming(hl):
         return []
     found: list[str] = []
-    told = _vlm_kills(ev)
-    described = Counter(
-        _name(str(e.get("source")))
-        for e in ev.get("events") or []
-        if isinstance(e, dict) and e.get("kind") == "vlm"
-    )
-    for name, stat in _ocr_stats(ev).items():
-        if described.get(name, 0) and told.get(name, 0) < KILLS_MIN_VLM_MENTIONS:
+    keys: list[str] = []
+    paths = _key_paths(ev)
+    told = _vlm_per_key(ev, paths, kills=True)
+    described = _vlm_per_key(ev, paths, kills=False)
+    for key, stat in _ocr_stats(ev).items():
+        name = _shown(key, paths)
+        if described.get(key, 0) and told.get(key, 0) < KILLS_MIN_VLM_MENTIONS:
             continue  # the vision model described this source and saw no kills: no kill feed
         for region in _dict(stat.get("feed_regions")).values():
             lines = _dict(region).get("lines")
@@ -145,10 +144,10 @@ def feed_quiet(hl: dict[str, Any], ev: dict[str, Any]) -> list[dict[str, Any]]:
             rate = lines / gameplay
             if rate < FEED_QUIET_LINES_PER_HOUR:
                 found.append(f"{name}: {lines} lines in {gameplay:.1f} h of gameplay")
+                keys.append(key)
                 logger.debug("%s: feed %.0f lines/h of gameplay", name, rate)
     if not found:
         return []
-    names = [f.split(":")[0] for f in found]
     return [
         _finding(
             "feed_quiet",
@@ -158,9 +157,51 @@ def feed_quiet(hl: dict[str, Any], ev: dict[str, Any]) -> list[dict[str, Any]]:
             "and deaths are probably missed",
             "Check the feed region the analysis discovered (its box may be wrong), or ignore "
             "this if the game has no kill feed",
-            _source_paths(hl, ev, names),
+            _key_files(hl, ev, dict.fromkeys(keys), paths),
         )
     ]
+
+
+def _key_paths(ev: dict[str, Any]) -> dict[str, str]:
+    """The source path of each OCR stats key of events.json (the file name, or for a name two
+    sources share the name and a digest, :func:`cutpoint.events.menu_spans.ocr_stats_key`)."""
+    from cutpoint.events.menu_spans import ocr_stats_key  # noqa: PLC0415 - events on demand
+
+    paths = [s for s in ev.get("sources") or [] if isinstance(s, str)]
+    return {ocr_stats_key(p, paths): p for p in paths}
+
+
+def _vlm_per_key(ev: dict[str, Any], paths: dict[str, str], kills: bool) -> Counter[str]:
+    """The VLM descriptions (``kills``: those that mention a kill) per OCR stats key of their
+    source (``paths``: :func:`_key_paths`), and for a key that is not the file name under the
+    name too (an events.json from before same-named sources had keys of their own)."""
+    keys = {p: k for k, p in paths.items()}
+    out: Counter[str] = Counter()
+    for e in ev.get("events") or []:
+        if not isinstance(e, dict) or e.get("kind") != "vlm":
+            continue
+        if kills and not KILL_WORDS.search(str(e.get("description") or "")):
+            continue
+        src = str(e.get("source"))
+        key = keys.get(src, _name(src))
+        out[key] += 1
+        if key != _name(src):
+            out[_name(src)] += 1
+    return out
+
+
+def _shown(key: str, paths: dict[str, str]) -> str:
+    """The file name of the source of an OCR stats key (an unknown key as it is)."""
+    return _name(paths[key]) if key in paths else key
+
+
+def _key_files(
+    hl: dict[str, Any], ev: dict[str, Any], keys: Iterable[str], paths: dict[str, str]
+) -> list[str]:
+    """The source paths of OCR stats keys: by ``paths``, else by file name."""
+    keys = list(keys)
+    known = [paths[k] for k in keys if k in paths]
+    return known + _source_paths(hl, ev, [k for k in keys if k not in paths])
 
 
 def _vlm_kills(ev: dict[str, Any]) -> Counter[str]:
@@ -180,9 +221,10 @@ def feed_missing(hl: dict[str, Any], ev: dict[str, Any]) -> list[dict[str, Any]]
     kills stays quiet)."""
     if not _gaming(hl) or not _tags(ev):
         return []
-    told = _vlm_kills(ev)
-    names = []
-    for name, stat in _ocr_stats(ev).items():
+    paths = _key_paths(ev)
+    told = _vlm_per_key(ev, paths, kills=True)
+    keys = []
+    for key, stat in _ocr_stats(ev).items():
         regions = stat.get("feed_regions")
         frames, menu = stat.get("frames"), stat.get("menu_frames") or 0
         if (
@@ -192,21 +234,23 @@ def feed_missing(hl: dict[str, Any], ev: dict[str, Any]) -> list[dict[str, Any]]
             and frames > 0
             and isinstance(menu, int)
             and menu < frames
-            and told.get(name, 0) >= KILLS_MIN_VLM_MENTIONS
+            and told.get(key, 0) >= KILLS_MIN_VLM_MENTIONS
         ):
-            names.append(name)
-    if not names:
+            keys.append(key)
+    if not keys:
         return []
     return [
         _finding(
             "feed_missing",
-            "No kill feed region was found in " + ", ".join(names) + ", so no kills are read "
+            "No kill feed region was found in "
+            + ", ".join(_shown(k, paths) for k in keys)
+            + ", so no kills are read "
             "although player_tags is set",
             "Move or rename the game's HUD preset (`<presets>/<game>.json` or the project's "
             "`hud_presets/<game>.json`) and run `cutpoint events <project>` again so discovery "
             "makes a new one, or copy the `feed` region from the `proposal.json` of `events "
             "--discover-regions` into the preset; ignore this if the game has no kill feed",
-            _source_paths(hl, ev, names),
+            _key_files(hl, ev, keys, paths),
         )
     ]
 

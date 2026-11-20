@@ -103,6 +103,21 @@ REF_VERSION = 2
 CELL = 24  # reference pixels per grid cell
 GW, GH = REF_W // CELL, REF_H // CELL
 MENU_CELL_W, MENU_CELL_H = REF_W // 8, REF_H // 6  # coarse 8 x 6 grid for the menu test
+# Region kinds (cluster_regions): a region whose label variety is below READOUT_VARIETY or
+# whose letter share is below READOUT_ALPHA is a readout (gauges, compass, ammo: labels fixed,
+# numbers change). A side region (centre within SIDE_EDGE of the left or right edge) of small
+# text (median height below SMALL_TEXT_H) with FEED_MIN_ROWS rows per frame on average is a
+# feed; a centred region (centre within BANNER_CENTRE of the middle) of larger text is a
+# banner, and one within NOTICE_CENTRE of the middle a notice. Rows count per ROW_BIN px of
+# box centre height.
+SMALL_TEXT_H = 0.034 * REF_H
+READOUT_VARIETY = 0.15
+READOUT_ALPHA = 0.45
+FEED_MIN_ROWS = 1.3
+SIDE_EDGE = 0.3
+BANNER_CENTRE = 0.25
+NOTICE_CENTRE = 0.2
+ROW_BIN = 14
 # Feed growth (_grow_feed): a feed's oldest rows show only when it is full, too rarely for
 # their cells to count as dynamic. A row one pitch above or below the feed is added when
 # text of the feed's height and x-span sits there in FEED_GROW_SHARE of the feed's frames
@@ -115,7 +130,7 @@ MENU_CELL_W, MENU_CELL_H = REF_W // 8, REF_H // 6  # coarse 8 x 6 grid for the m
 # height at most.
 FEED_GROW_SHARE = 0.05
 FEED_GROW_BURSTS = 2
-FEED_GROW_VARIETY = 0.15  # the readout cut of cluster_regions
+FEED_GROW_VARIETY = READOUT_VARIETY  # the readout cut of cluster_regions
 FEED_GROW_MIN_FRAMES = 2
 FEED_GROW_VARIED = 0.75
 FEED_GROW_FULL_SHARE = 0.5
@@ -1054,7 +1069,7 @@ def cluster_regions(
             continue
         texts = [b["text"] for _, bs in inside for b in bs]
         heights = [b["y1"] - b["y0"] for _, bs in inside for b in bs]
-        rows = [len({round((b["y0"] + b["y1"]) / 2 / 14) for b in bs}) for _, bs in inside]
+        rows = [len({round((b["y0"] + b["y1"]) / 2 / ROW_BIN) for b in bs}) for _, bs in inside]
         scores = _score_rows([bs for _, bs in inside])
         cx = (x0 + x1) / 2 / REF_W
         med_h = float(np.median(heights))
@@ -1062,20 +1077,20 @@ def cluster_regions(
         appear = len(inside) / n
         variety = _label_variety(texts)
         alpha = _alpha_share(texts)
-        side = min(cx, 1 - cx) < 0.3  # feeds hug the left/right edge
+        side = min(cx, 1 - cx) < SIDE_EDGE  # feeds hug the left/right edge
         icon_share, icon_bursts, icon_names, icon_both = _icon_lines(inside)
         # a feed of icon kill lines shows one or two rows, and its few names repeat
         icon_feed = (
             side
-            and med_h < 0.034 * REF_H
+            and med_h < SMALL_TEXT_H
             and icon_share >= FEED_ICON_SHARE
             and icon_bursts >= FEED_ICON_BURSTS
             and icon_names >= FEED_ICON_NAMES
             and icon_both >= FEED_ICON_BOTH
         )
-        if (variety < 0.15 or alpha < 0.45) and not icon_feed:
+        if (variety < READOUT_VARIETY or alpha < READOUT_ALPHA) and not icon_feed:
             kind = "readout"  # gauges, compass, ammo: labels fixed, numbers change
-        elif (mean_rows >= 1.3 or icon_feed) and side and med_h < 0.034 * REF_H:
+        elif (mean_rows >= FEED_MIN_ROWS or icon_feed) and side and med_h < SMALL_TEXT_H:
             if scores >= FEED_SCORE_ROWS:
                 kind = "popup"  # score popups: a value over a label, not read
             else:
@@ -1083,9 +1098,9 @@ def cluster_regions(
                 y0, y1, grown = _grow_feed(game_frames, (x0, y0, x1, y1), med_h, len(inside))
                 lo, hi = span[gx0, gy0, gx1, gy1]
                 y0, y1 = max(y0, lo), min(y1, hi)
-        elif med_h >= 0.034 * REF_H and 0.25 < cx < 0.75:
+        elif med_h >= SMALL_TEXT_H and BANNER_CENTRE < cx < 1 - BANNER_CENTRE:
             kind = "banner"
-        elif 0.3 < cx < 0.7:
+        elif 0.5 - NOTICE_CENTRE < cx < 0.5 + NOTICE_CENTRE:
             kind = "notice"
         else:
             kind = "dynamic"
@@ -1122,7 +1137,7 @@ def cluster_regions(
             }
         )
     if not any(p["kind"] == "banner" for p in proposals):
-        ban = _banner_proposal(game_frames, 0.034 * REF_H)
+        ban = _banner_proposal(game_frames, SMALL_TEXT_H)
         if ban:
             proposals.append(ban)
     # readouts stay unread; the score slots in them (and anywhere else) are read on their own

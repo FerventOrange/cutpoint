@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from cutpoint import cache, paths
+from cutpoint import cache, jsonout, paths
 from cutpoint.events import eventtypes, regions, scoring, tails
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source
@@ -652,3 +652,38 @@ def test_self_kill_is_no_streak_kill():
     derive_streaks(events)
     (multi,) = [e for e in events if e["type"] == "multikill"]
     assert multi["text"] == "DOUBLE KILL (zed, yan)" and multi["kills"] == 2
+
+
+def test_resolve_warns_once_per_game_and_error(tmp_path, home, caplog, monkeypatch):
+    # A170: a preset that cannot be read changes the scores: one WARNING says so
+    monkeypatch.setattr(eventtypes, "_warned_resolve", set())
+
+    def broken(game, project):
+        raise ValueError("bad preset")
+
+    monkeypatch.setattr(eventtypes, "load_preset", broken)
+    evs = [{"source": str(tmp_path / f"{n}.mp4"), "kind": "ocr"} for n in "ab"]
+    data = {"settings": {"ocr": {"game": "foo"}}, "events": evs}
+    with caplog.at_level("WARNING"), jsonout.run("events") as res:
+        got = eventtypes.resolve(tmp_path, data)
+        eventtypes.resolve(tmp_path, data)  # a second pass: no new line
+    assert set(got.values()) == {eventtypes.DEFAULT_EVENT_TYPES}
+    warns = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warns) == 1 and "bad preset" in warns[0].getMessage()
+    assert "foo" in warns[0].getMessage()
+    # F3: the --json envelope has it too, once, naming the first source it hit
+    (w,) = [w for w in res.warnings if w["code"] == "preset_unreadable"]
+    assert "HUD preset foo could not be read (bad preset)" in w["message"]
+    assert w["files"] == [evs[0]["source"]]
+
+
+def test_a_vlm_reply_object_parses_as_its_json_text():
+    # A166: the reply dict goes to parse_reply as it is; the result is the same
+    reply = {
+        "events": [{"t": 1.5, "what": "a kill", "funny": 2, "hype": 8}],
+        "summary": "s",
+        "funny_score": 3,
+        "highlight_score": 7.6,
+        "label": "Big Kill!",
+    }
+    assert vw.parse_reply(reply) == vw.parse_reply(json.dumps(reply)) is not None

@@ -174,8 +174,8 @@ sudo apt install fontconfig fonts-dejavu-core
 `cutpoint events` runs its layers one after another so only one model is loaded at a time.
 Close other GPU programs (games, other models). The VLM layer, run by the Ollama vision model, is
 the heaviest; lower its request size with `events --frames 12`, or skip it with `--no-vlm`.
-Ollama models are unloaded before the other layers start, and the vision model is unloaded
-when the VLM layer is done.
+Ollama models are unloaded only when the memory guard finds too little free memory for a model
+(`memory_guard` in `config.json`), and the vision model is unloaded when the VLM layer is done.
 
 ## `events` is very slow
 
