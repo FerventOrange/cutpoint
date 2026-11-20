@@ -222,7 +222,7 @@ def test_a_clip_after_the_join_is_exported_from_the_copy(media, scans, home, tmp
           "sources": [{"path": str(src), "duration": 8.0, "timeline": record[str(src)]}]}  # fmt: skip
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
 
-    out = clips.export_clips(project, top=1)
+    out = clips.export_clips(project, selection=clips.Selection(top=1))
 
     exported = sorted(out.glob("*.mp4"))
     assert len(exported) == 1
@@ -233,7 +233,7 @@ def test_a_clip_after_the_join_is_exported_from_the_copy(media, scans, home, tmp
     # the copy a project needs is made again by clips when it is gone
     _copy_of(src).unlink()
     scans.calls.clear()
-    clips.export_clips(project, top=1, force=True)
+    clips.export_clips(project, selection=clips.Selection(top=1), force=True)
     assert _copy_of(src).is_file()
     assert len(scans.remuxes) == 1
 
@@ -581,7 +581,7 @@ def _exported(media, tmp_path) -> tuple[Path, Path]:
     hl = {"style": "funny", "suggested_top": 1, "candidates": [cand],
           "sources": [{"path": str(src), "duration": 8.0, "timeline": record[str(src)]}]}  # fmt: skip
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
-    return src, clips.export_clips(project, top=1)
+    return src, clips.export_clips(project, selection=clips.Selection(top=1))
 
 
 def test_extend_makes_the_copy_again_when_it_is_gone(media, scans, home, tmp_path, monkeypatch):

@@ -264,7 +264,9 @@ def test_vaapi_clip_export_and_assemble_keep_crop_scale_pad_and_captions(vaapi, 
     assert (clip.width, clip.height) == (320, 240) and clip.duration == pytest.approx(2.0, abs=0.2)
     _assert_red_letterboxed(_first_frame(clips / "001.mp4"))
 
-    final = assemble.assemble(clips, tmp_path / "final.mp4", transition="fade", fade_dur=0.5)
+    final = assemble.assemble(
+        clips, tmp_path / "final.mp4", join=assemble.JoinOptions(transition="fade", fade_dur=0.5)
+    )
     joined = ffmpeg_utils.probe(final)
     assert (joined.width, joined.height) == (320, 240)
     assert joined.duration == pytest.approx(3.5, abs=0.3)

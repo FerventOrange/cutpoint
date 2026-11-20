@@ -94,12 +94,12 @@ def test_the_copied_crossfade_has_the_old_frames_and_audio(tmp_path, monkeypatch
     clips = export_clips(tmp_path)
     kw = {"transition": "fade", "fade_dur": 0.25, "audio_transition": audio}
     monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
-    old = assemble.assemble(clips, **kw)
+    old = assemble.assemble(clips, join=assemble.JoinOptions(**kw))
     shutil.move(old, tmp_path / "old.mp4")
     monkeypatch.delenv("CUTPOINT_FADE_COPY")
     caplog.clear()
     caplog.set_level(logging.INFO)
-    new = assemble.assemble(clips, **kw)
+    new = assemble.assemble(clips, join=assemble.JoinOptions(**kw))
     assert "stream-copied the rest" in caplog.text
     assert _frames_and_audio(new) == _frames_and_audio(tmp_path / "old.mp4")
     assert _frames_and_audio(new)[0] == str(150 + 126 + 150 - 2 * 8)  # 0.25 s = 8 frames
@@ -128,7 +128,9 @@ def test_a_60_fps_window_of_no_whole_milliseconds_takes_the_fast_path(
     clips = export_clips(tmp_path, "60", SHORT)
     kw = {"transition": "fade", "fade_dur": 16 / 60}
     monkeypatch.setenv("CUTPOINT_FADE_COPY", "0")
-    old = shutil.move(assemble.assemble(clips, **kw), tmp_path / "old.mp4")
+    old = shutil.move(
+        assemble.assemble(clips, join=assemble.JoinOptions(**kw)), tmp_path / "old.mp4"
+    )
     monkeypatch.delenv("CUTPOINT_FADE_COPY")
     windows, real = [], assemble._encode_run
 
@@ -140,7 +142,7 @@ def test_a_60_fps_window_of_no_whole_milliseconds_takes_the_fast_path(
     monkeypatch.setattr(assemble, "_encode_run", encode_run)
     caplog.clear()
     caplog.set_level(logging.INFO)
-    new = assemble.assemble(clips, **kw)
+    new = assemble.assemble(clips, join=assemble.JoinOptions(**kw))
     assert "stream-copied the rest" in caplog.text
     assert "re-encoding the whole video" not in caplog.text
     assert [w[:2] for w in windows] == [(44, Fraction(44, 60))] * 2
@@ -232,7 +234,7 @@ def test_a_percent_sign_in_the_project_path_still_takes_the_fast_path(
     folder.mkdir()
     clips = export_clips(folder, spans=SHORT)
     caplog.set_level(logging.INFO)
-    final = assemble.assemble(clips, transition="fade", fade_dur=0.25)
+    final = assemble.assemble(clips, join=assemble.JoinOptions(transition="fade", fade_dur=0.25))
     assert "stream-copied the rest" in caplog.text
     assert _frames_and_audio(final)[0] == str(120 + 105 + 90 - 2 * 8)
     assert not list(final.parent.glob(".*fadecopy*"))
@@ -250,7 +252,7 @@ def test_a_missing_copied_piece_falls_back_to_the_old_join(tmp_path, monkeypatch
 
     monkeypatch.setattr(assemble, "run", no_segments)
     caplog.set_level(logging.INFO)
-    final = assemble.assemble(clips, transition="fade", fade_dur=0.25)
+    final = assemble.assemble(clips, join=assemble.JoinOptions(transition="fade", fade_dur=0.25))
     assert "re-encoding the whole video (ffmpeg failed: the segment muxer wrote no piece" in (
         caplog.text
     )
@@ -374,7 +376,8 @@ def test_the_fade_copy_switch_forces_the_old_join(tmp_path, monkeypatch):
     monkeypatch.setattr(assemble, "crossfade", lambda *a, **_: joined.append("old") or a[3])
     infos = _pair(tmp_path)
     files = [i.path for i in infos]
-    used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", "fade", 1.0, 0.25)
+    join = assemble.JoinOptions(transition="fade", fade_dur=1.0)
+    used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", join)
     assert (used, joined) == (1.0, ["old"])
     assert not list(tmp_path.glob(".*fadecopy*"))
 
@@ -408,7 +411,7 @@ def _words(_src, _lang=None):
 
 
 def _assemble_to(clips: Path, folder: Path, **kw) -> Path:
-    return assemble.assemble(clips, folder / "final.mp4", **kw)
+    return assemble.assemble(clips, folder / "final.mp4", join=assemble.JoinOptions(**kw))
 
 
 @needs_ffmpeg
@@ -478,7 +481,7 @@ def test_clips_the_fast_path_cannot_join_get_the_old_join_and_the_reason(
     clips = export_clips(tmp_path, "30", SHORT)
     _make_clip(clips / "002_m.mp4", **odd)
     caplog.set_level(logging.INFO)
-    final = assemble.assemble(clips, transition="fade", fade_dur=1.0)
+    final = assemble.assemble(clips, join=assemble.JoinOptions(transition="fade", fade_dur=1.0))
     assert "re-encoding the whole video (" in caplog.text
     assert reason in caplog.text
     assert "stream-copied the rest" not in caplog.text

@@ -180,7 +180,7 @@ def exported(home, monkeypatch):
     monkeypatch.setattr(clips, "probe", lambda p: media_info(p, 200.0))
     install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    clips.export_clips(project, segments=seg)
+    clips.export_clips(project, selection=clips.Selection(segments=seg))
     write(out / "001_a.mp4", b"old")
     data = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
     data["clips"][0] |= {"file": "001_A.mp4", "srt": "001_A.srt"}
@@ -192,7 +192,7 @@ def test_clips_force_replaces_a_clip_listed_in_another_case(exported, case_insen
     project, seg, out = exported
     case_insensitive(out)
 
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
 
     assert sorted(p.name for p in out.iterdir()) == ["001_a.mp4", "001_a.srt", "manifest.json"]
     assert (out / "001_a.mp4").read_bytes() == b"new"
@@ -206,7 +206,7 @@ def test_clips_force_on_a_case_sensitive_folder_keeps_the_other_spelling(
     disk is not the listed clip, so the run stops before replacing it."""
     project, seg, out = exported
     with pytest.raises(FileExistsError, match=r"001_a\.mp4"):
-        clips.export_clips(project, segments=seg, force=True)
+        clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
     assert (out / "001_a.mp4").read_bytes() == b"old"
 
 
@@ -217,12 +217,12 @@ def test_clips_force_pairs_a_listed_srt_renamed_in_case(home, monkeypatch, case_
     monkeypatch.setattr(clips, "probe", lambda p: media_info(p, 200.0))
     install_fake_export(monkeypatch, clips)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: WORDS)
-    clips.export_clips(project, segments=seg)
+    clips.export_clips(project, selection=clips.Selection(segments=seg))
     (out / "001_a.srt").rename(out / "001_A.srt")
     case_insensitive(out)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
 
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
 
     assert sorted(p.name for p in out.iterdir()) == ["001_a.mp4", "manifest.json"]
 

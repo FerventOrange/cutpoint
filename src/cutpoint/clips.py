@@ -537,6 +537,9 @@ class ClipPlan:
         pano: Rendered by the 360 exporter (never cropped).
         crop: Crop box applied before scaling (None: no crop).
         crop_source: Where the crop came from (manifest ``crop_source``).
+        peak: Peak compression filter (:func:`peak_filters`; "" for none).
+        makeup: Its makeup gain (dB; None for a clip left alone).
+        grade: Its grade (:class:`~cutpoint.encode.Grade`; None for none).
     """
 
     name: str
@@ -553,6 +556,9 @@ class ClipPlan:
     pano: bool = False
     crop: Crop | None = None
     crop_source: str = "default"
+    peak: str = ""
+    makeup: float | None = None
+    grade: Grade | None = None
 
 
 @dataclass(frozen=True)
@@ -572,6 +578,112 @@ class RenderResult:
     read_error: dict[str, Any] | None = None
     pano: dict[str, Any] | None = None
     srt: str | None = None
+
+
+@dataclass(frozen=True)
+class Selection:
+    """The moments :func:`export_clips` exports: the ``segments`` file (hand-picked JSON,
+    exported exactly, in its order; ``order="arc"`` reorders a ``cutpoint mix`` file, see
+    :func:`order_moments`), else the candidates ``ids``, else the top ``top`` by score, else the
+    best moments that fit the style's ``target_total`` (:func:`cutpoint.default_fit.fit_target`;
+    ``suggested_top`` is their count). ``max_total`` keeps the best-scoring moments whose summed
+    length fits (e.g. 60 s for a Short). Candidates marked ``must_include`` (confident crashes,
+    ``cutpoint crashes``) are always added to an automatic selection and kept under
+    ``max_total``. ``order``: the clip order (default: the style's; ``segments`` for a
+    segments file).
+    """
+
+    top: int | None = None
+    ids: list[str] | None = None
+    segments: Path | None = None
+    order: str | None = None
+    max_total: float | None = None
+
+
+@dataclass(frozen=True)
+class ExportOptions:
+    """How :func:`export_clips` cuts and encodes the clips: the export options of ``cutpoint
+    clips``, built once where a run starts (the CLI's ``clips``, ``edit`` and ``assemble
+    <project>``) and passed down.
+
+    Attributes:
+        vertical: 9:16 output (center crop).
+        size: ``(width, height)`` forced instead of the largest source's (useful when 16:9 and
+            taller sources such as GoPro 8:7 are mixed; give the taller ones a ``crop`` so they
+            fill the frame); ignored with ``vertical``.
+        crop: ``auto``, ``none`` or ``W:H:X:Y`` for every source; None uses
+            ``<project>/project.json``'s per-source ``crop`` map, else no crop.
+        smart_tail_on, tail_min, tail_max: Override the style's smart-tail settings
+            (:mod:`cutpoint.tail`; segments: the project's analysis style, else gaming), as a
+            moment's ``tail`` / ``smart_tail`` override these.
+        event_tails, event_window: Event tails (:mod:`cutpoint.events.tails`): when
+            ``<project>/events.json`` exists (or ``event_tails`` is True), a clip whose speech
+            is followed within ``event_window`` s (default 10) by a payoff event (player kill,
+            teamkill, round banner, laughter, strong VLM moment) is extended to cover it plus
+            1.5 s. ``event_tails=False`` disables this; a moment's ``"tail"`` or
+            ``"smart_tail": false`` also does.
+        extend: Padding added to both ends of every clip *after* the tails (see
+            :mod:`cutpoint.extend`), clamped to the source and its readable range; a moment's
+            ``extend`` / ``extend_start`` / ``extend_end`` override it. The pre-pad in/out
+            points are recorded.
+        speech_aware, speech_max_extend, speech_max_lead: Speech-aware boundaries (see
+            :mod:`cutpoint.boundaries`; default: the style's ``speech_aware``, on for every
+            built-in style) run last: an in or out point inside an utterance moves to its
+            start/end (at most ``speech_max_lead`` / ``speech_max_extend`` s), and clips of the
+            same source are kept from overlapping. A moment's ``"speech_aware": false`` opts
+            out; a fixed ``"tail"`` keeps its end. Without the pass, padded clips may overlap.
+        audio_fade: Seconds of audio fade-in/out baked into every clip (0 = off).
+        compress_peaks: ``off``, ``light`` or ``strong`` (:data:`~cutpoint.encode.PEAK_PRESETS`):
+            loud peaks are compressed and the clips leveled toward each other, then a true-peak
+            limiter ends each clip's audio (manifest ``compress_peaks``, so ``assemble`` does
+            not compress them again).
+        lut: (:func:`~cutpoint.encode.check_lut`) every clip is graded with it after the BT.709
+            conversion (:func:`~cutpoint.encode.lut_filter`), recorded per clip as ``lut`` and
+            ``lut_strength`` so ``extend`` grades the same way; ``assemble`` leaves the grade as
+            is.
+        color, color_strength: ``off``, ``auto`` or ``underwater`` (None: ``color`` in
+            config.json, never for ``gaming`` footage nor with ``lut``, see :func:`_color_mode`)
+            at ``color_strength`` (0-1): each clip gets its own automatic grade
+            (:func:`~cutpoint.color.auto_grade`), recorded per clip as ``color`` (skipped clips
+            too, with the reason) so ``extend`` grades the same way without measuring again. It
+            cannot be combined with ``lut``.
+        pano_source, pano_cmd_every: 360 sources (Insta360 X3 clips registered in
+            ``<project>/pano.json`` by ``cutpoint 360 scan``) are rendered to flat video along a
+            director path (see :mod:`cutpoint.pano.render`): ``pano_source`` picks the input
+            (``auto``: SDK stitch > Studio export > raw dual fisheye) and ``pano_cmd_every`` the
+            camera update interval in frames. Everything else (numbering, tails, padding,
+            speech-aware boundaries, fades) is unchanged.
+    """
+
+    vertical: bool = False
+    size: tuple[int, int] | None = None
+    crop: str | None = None
+    smart_tail_on: bool | None = None
+    tail_min: float | None = None
+    tail_max: float | None = None
+    event_tails: bool | None = None
+    event_window: float | None = None
+    extend: Padding | None = None
+    speech_aware: bool | None = None
+    speech_max_extend: float | None = None
+    speech_max_lead: float | None = None
+    audio_fade: float = DEFAULT_AUDIO_FADE_S
+    compress_peaks: str = "off"
+    lut: Lut | None = None
+    color: str | None = None
+    color_strength: float = 1.0
+    pano_source: str = "auto"
+    pano_cmd_every: int | None = None
+
+
+@dataclass(frozen=True)
+class EdgeSettings:
+    """The clip edge settings of a run, from its style and :class:`ExportOptions`: smart
+    ``tail``, ``event_settings`` (event tails) and ``speech`` (speech-aware boundaries)."""
+
+    tail: TailSettings
+    event_settings: EventTailSettings
+    speech: boundaries.SpeechSettings
 
 
 def plan_edges(
@@ -836,32 +948,22 @@ def render_clips(
     out_dir: Path,
     *,
     fmt: OutputFormat,
-    vertical: bool,
-    audio_fade: float,
+    options: ExportOptions,
     pano: PanoExporter | None = None,
-    protected_srts: set[str] | None = None,
-    clips_dir: Path | None = None,
-    peaks: list[str] | None = None,
-    language: str | None = None,
-    grades: list[Grade | None] | None = None,
+    subs: srt.ClipSubtitles | None = None,
     workers: int = 1,
     resume: ClipResume | None = None,
 ) -> list[RenderResult]:
-    """Encode every planned clip into ``out_dir`` (360 clips through ``pano``), each with
-    its ``.srt`` subtitles from the cached source transcript (none, with one INFO line,
-    for sources without one; see :mod:`cutpoint.srt`).
+    """Encode every planned clip into ``out_dir`` at ``fmt`` (360 clips through ``pano``), each
+    with its plan's peak filter and grade (:attr:`ClipPlan.peak`, :attr:`ClipPlan.grade`; 360
+    clips get no peak filter), ``options.vertical`` and ``options.audio_fade``, and with its
+    ``.srt`` subtitles from the cached source transcript (none, with one INFO line, for sources
+    without one; see :mod:`cutpoint.srt`).
 
-    ``peaks``: per-plan peak compression filter (:func:`peak_filters`; 360 clips get none).
-
-    ``protected_srts``: :func:`~cutpoint.config.path_key` of ``.srt`` names in the clips
-    folder that an earlier run did not write; a clip with such a name gets no ``.srt``
-    (one WARNING names them). ``clips_dir``: that clips folder (default ``out_dir``; the
-    staging folder is not it).
-
-    ``language``: transcript language of the subtitles (None: the detected one).
-
-    ``grades``: per-plan grade (:class:`~cutpoint.encode.Grade`, None for none), 360 clips
-    included.
+    ``subs``: writes the subtitles (default: a :class:`~cutpoint.srt.ClipSubtitles` of the
+    detected language, protecting no names); give one with the ``.srt`` names of the clips
+    folder that an earlier run did not write (a clip with such a name gets no ``.srt``, one
+    WARNING names them) and the transcript language of the analysis.
 
     ``workers``: clips encoded at once (:func:`export_workers`; 360 plans are always encoded
     one at a time); the results, logs and subtitles stay in plan order.
@@ -876,11 +978,10 @@ def render_clips(
         ValueError: If a 360 plan is given without ``pano``.
     """
     results: list[RenderResult] = []
-    subs = srt.ClipSubtitles(protected_srts, language, clips_dir or out_dir)
-    peaks = peaks or [""] * len(plans)
-    grades = grades or [None] * len(plans)
+    subs = subs or srt.ClipSubtitles()
+    audio_fade = options.audio_fade
 
-    def encode(plan: ClipPlan, peak: str, grade: Grade | None) -> dict[str, Any] | None:
+    def encode(plan: ClipPlan) -> dict[str, Any] | None:
         if resume is not None and plan.name in resume.taken:
             return None
         read_err = export_clip_checked(
@@ -890,11 +991,11 @@ def render_clips(
             plan.end,
             out_dir / plan.name,
             fmt,
-            vertical,
+            options.vertical,
             plan.crop,
             exact_fade(plan.entry, audio_fade),
-            peak,
-            grade,
+            plan.peak,
+            plan.grade,
         )
         if resume is not None:
             resume.add(plan.name, read_err)
@@ -903,14 +1004,10 @@ def render_clips(
     pool = None
     if workers > 1 and not any(p.pano for p in plans):
         _warm_source_checks(plans)
-        jobs = [
-            lambda p=p, k=k, g=g: encode(p, k, g)
-            for p, k, g in zip(plans, peaks, grades, strict=True)
-        ]
-        pool = _ExportPool(jobs, workers)
+        pool = _ExportPool([lambda p=p: encode(p) for p in plans], workers)
     with pool or nullcontext():
-        for i, (plan, peak, grade) in enumerate(zip(plans, peaks, grades, strict=True)):
-            m, start, end, tail = plan.entry, plan.start, plan.end, plan.tail
+        for i, plan in enumerate(plans):
+            m, end = plan.entry, plan.end
             out = out_dir / plan.name
             pano_rec = None
             if plan.pano:
@@ -918,40 +1015,47 @@ def render_clips(
                     raise ValueError(f"{plan.name}: 360 plan needs a PanoExporter")
                 read_err, pano_rec = pano.export(
                     m["source"],
-                    start,
+                    plan.start,
                     end,
                     out,
                     audio_fade=exact_fade(m, audio_fade),
                     kind=m.get("kind"),
-                    grade=grade,
+                    grade=plan.grade,
                     selected=(plan.keep[0], min(float(m["end"]), plan.keep[1])),
                 )
             else:
-                read_err = pool.result(i) if pool is not None else encode(plan, peak, grade)
+                read_err = pool.result(i) if pool is not None else encode(plan)
             if read_err and read_err["end"] < end:
                 end = read_err["end"]
-            logger.info(
-                "  %s  <- %s [%.2f-%.2f] tail +%.2fs (%s)%s%s",
-                plan.name,
-                plan.src.name,
-                start,
-                end,
-                max(0.0, tail.extension),
-                tail.reason
-                + (
-                    ", trimmed by read error"
-                    if read_err and read_err.get("failure_time") is not None
-                    else ""
-                ),
-                f" pad -{plan.pad_rec['applied']['start']:.2f}/+{plan.pad_rec['applied']['end']:.2f}"
-                if plan.pad_rec
-                else "",
-                f" crop {plan.crop}" if plan.crop else "",
-            )
-            sub = subs.write(out, m["source"], start, end)
+            _log_render(plan, end, read_err)
+            sub = subs.write(out, m["source"], plan.start, end)
             results.append(RenderResult(out, end, read_err, pano_rec, sub))
     subs.report(len(plans))
     return results
+
+
+def _log_render(plan: ClipPlan, end: float, read_err: dict[str, Any] | None) -> None:
+    """The INFO line of one clip :func:`render_clips` rendered (``end``: its final out point;
+    ``read_err``: its read-error record)."""
+    tail = plan.tail
+    logger.info(
+        "  %s  <- %s [%.2f-%.2f] tail +%.2fs (%s)%s%s",
+        plan.name,
+        plan.src.name,
+        plan.start,
+        end,
+        max(0.0, tail.extension),
+        tail.reason
+        + (
+            ", trimmed by read error"
+            if read_err and read_err.get("failure_time") is not None
+            else ""
+        ),
+        f" pad -{plan.pad_rec['applied']['start']:.2f}/+{plan.pad_rec['applied']['end']:.2f}"
+        if plan.pad_rec
+        else "",
+        f" crop {plan.crop}" if plan.crop else "",
+    )
 
 
 def peak_filters(plans: list[ClipPlan], preset: str) -> tuple[list[str], list[float | None]]:
@@ -985,17 +1089,18 @@ def _entry(
     plan: ClipPlan,
     res: RenderResult,
     audio_fade: float,
-    peaks: str = "",
-    makeup: float | None = None,
+    compress_peaks: str = "off",
     size: int | None = None,
-    grade: Grade | None = None,
 ) -> dict[str, Any]:
-    """manifest.json record of one rendered clip (``peaks``: its :func:`peak_filters` preset,
-    recorded as ``compress_peaks`` when the clip got compression, with its ``makeup`` gain as
-    ``compress_peaks_makeup_db``; ``size``: the clip's size in bytes, see
-    :func:`~cutpoint.planning.manifest_entries`; ``grade``: its grade, recorded with its
-    ``to_json()`` keys, such as ``lut`` and ``lut_strength``)."""
+    """manifest.json record of one rendered clip (``compress_peaks``: the run's
+    :func:`peak_filters` preset, recorded when the clip got compression (:attr:`ClipPlan.peak`),
+    with its :attr:`~ClipPlan.makeup` gain as ``compress_peaks_makeup_db``; ``size``: the clip's
+    size in bytes, see :func:`~cutpoint.planning.manifest_entries`; its
+    :attr:`~ClipPlan.grade` is recorded with its ``to_json()`` keys, such as ``lut`` and
+    ``lut_strength``)."""
     m, src, start, end = plan.entry, plan.src, plan.start, res.end
+    grade = plan.grade
+    peaks = compress_peaks if plan.peak and compress_peaks != "off" else ""
     return {
         "file": plan.name,
         "size": size,
@@ -1020,7 +1125,7 @@ def _entry(
         "audio_fade": exact_fade(m, audio_fade),
         **({"exact": True} if m.get("exact") is True else {}),
         **({"compress_peaks": peaks} if peaks else {}),
-        **({"compress_peaks_makeup_db": makeup or 0.0} if peaks else {}),
+        **({"compress_peaks_makeup_db": plan.makeup or 0.0} if peaks else {}),
         **({"kind": m["kind"]} if m.get("kind") else {}),
         **({"category": m["category"]} if m.get("category") else {}),
         **({"pano": res.pano} if res.pano else {}),
@@ -1044,37 +1149,26 @@ def write_manifest(
     results: list[RenderResult],
     *,
     order: str,
-    fmt: OutputFormat,
-    vertical: bool,
     style: Style,
-    tail: TailSettings,
-    event_settings: EventTailSettings,
-    padding: Padding | None,
-    speech: boundaries.SpeechSettings,
-    audio_fade: float,
-    crop: str | None,
-    compress_peaks: str = "off",
-    peaks: list[str] | None = None,
-    makeup: list[float | None] | None = None,
-    grades: list[Grade | None] | None = None,
+    fmt: OutputFormat,
+    options: ExportOptions,
+    edges: EdgeSettings,
 ) -> None:
     """Write ``<out_dir>/manifest.json`` for the rendered clips (and log the tail total).
 
-    ``compress_peaks`` is recorded when not ``off``, and on each clip ``peaks`` gave a filter,
-    with its ``makeup`` (:func:`peak_filters`). ``grades``: each clip's grade, recorded on it.
+    ``options.compress_peaks`` is recorded when not ``off``, and on each clip its
+    :attr:`~ClipPlan.peak` gave a filter, with its makeup; each clip's grade is recorded on it.
     """
+    tail, speech = edges.tail, edges.speech
     total_ext = 0.0
     for plan in plans:
         total_ext += plan.tail.extension
     for plan, res in zip(plans, results, strict=True):
         if res.read_error and res.read_error["end"] < plan.end:  # trimmed by a read error
             total_ext -= plan.end - max(res.end, min(plan.end, plan.entry["end"]))
-    peaks = peaks or [""] * len(plans)
-    makeup = makeup or [None] * len(plans)
-    grades = grades or [None] * len(plans)
     entries = [
-        _entry(p, r, audio_fade, compress_peaks if f else "", m, file_size(out_dir / p.name), g)
-        for p, r, f, m, g in zip(plans, results, peaks, makeup, grades, strict=True)
+        _entry(p, r, options.audio_fade, options.compress_peaks, file_size(out_dir / p.name))
+        for p, r in zip(plans, results, strict=True)
     ]
     logger.info(
         "Smart tail added %.1fs over %d of %d clips",
@@ -1082,7 +1176,7 @@ def write_manifest(
         sum(1 for e in entries if e["tail"]["extension"] > 0),
         len(entries),
     )
-    padding = padding or Padding()
+    padding = options.extend or Padding()
     # The header says what was applied: off when every clip turned it off ("smart_tail": false
     # or a fixed "tail"; "speech_aware": false), as a sequence's segments can.
     tails_on = _smart_tail_used(tail, [p.entry for p in plans])
@@ -1098,7 +1192,7 @@ def write_manifest(
                 "width": fmt.width,
                 "height": fmt.height,
                 "fps": fmt.fps,
-                "vertical": vertical,
+                "vertical": options.vertical,
             },
             "smart_tail": {
                 "style": style.name,
@@ -1107,12 +1201,16 @@ def write_manifest(
                 "tail_max": tail.tail_max,
                 "settle": tail.settle,
             },
-            "event_tails": event_settings.to_json(),
+            "event_tails": edges.event_settings.to_json(),
             "extend": {"start": padding.start, "end": padding.end},
             "speech_aware": speech.to_json() | {"enabled": speech_on},
-            "audio_fade": audio_fade,
-            **({"compress_peaks": compress_peaks} if compress_peaks != "off" else {}),
-            "crop": crop,
+            "audio_fade": options.audio_fade,
+            **(
+                {"compress_peaks": options.compress_peaks}
+                if options.compress_peaks != "off"
+                else {}
+            ),
+            "crop": options.crop,
             "clips": entries,
         },
     )
@@ -1329,25 +1427,22 @@ def _check_options(color_strength: float, crop: str | None) -> None:
 
 
 def _ordered_moments(
-    project: Path,
-    style: Style,
-    segments: Path | None,
-    order: str | None,
-    top: int | None,
-    ids: list[str] | None,
-    max_total: float | None,
+    project: Path, style: Style, selection: Selection
 ) -> tuple[list[dict[str, Any]], str]:
     """``(moments in clip order, order)`` of :func:`export_clips`: the ``segments`` file's
     (order ``segments``, or ``arc``), else the selected candidates in ``order`` (default: the
     ``style``'s)."""
-    if segments is not None:
-        ordered = load_segments(segments)
+    order = selection.order
+    if selection.segments is not None:
+        ordered = load_segments(selection.segments)
         if order == "arc":  # the file's order is the day's order
             ordered = order_moments(index_sources(ordered), "arc")
         else:
             order = "segments"
     else:
-        chosen, _ = select_moments(project, top=top, ids=ids, max_total=max_total)
+        chosen, _ = select_moments(
+            project, top=selection.top, ids=selection.ids, max_total=selection.max_total
+        )
         order = order or style.default_order
         ordered = order_moments(chosen, order)
     return ordered, order
@@ -1428,11 +1523,8 @@ def _clip_resume(
     out_dir: Path,
     work: Path,
     plans: list[ClipPlan],
-    peaks: list[str],
-    grades: list[Grade | None],
     fmt: OutputFormat,
-    vertical: bool,
-    audio_fade: float,
+    options: ExportOptions,
 ) -> ClipResume | None:
     """The finished clips of an interrupted run into ``out_dir`` with the same plan are taken
     over; the next run takes this one's over when it is interrupted (none when ``work`` is
@@ -1449,13 +1541,13 @@ def _clip_resume(
                     p.start,
                     p.end,
                     fmt,
-                    vertical,
+                    options.vertical,
                     p.crop,
-                    exact_fade(p.entry, audio_fade),
-                    k,
-                    g,
+                    exact_fade(p.entry, options.audio_fade),
+                    p.peak,
+                    p.grade,
                 )
-                for p, k, g in zip(plans, peaks, grades, strict=True)
+                for p in plans
                 if not p.pano
             },
         )
@@ -1464,103 +1556,195 @@ def _clip_resume(
     return resume
 
 
+@dataclass(frozen=True)
+class _Setup:
+    """What :func:`export_clips` decides before it claims the clips folder (:func:`_setup`).
+
+    Attributes:
+        hl: highlights.json (empty without one).
+        style: The recorded style.
+        ordered: The moments in clip order.
+        order: Their order.
+        color_mode: The ``--color`` mode of the run (:func:`_color_mode`).
+        edges: Its edge settings.
+        events: The project's events.json by source, or None (no event tails).
+        project_cfg: The project's project.json.
+        language: Transcript language the analysis forced (None: the detected one).
+    """
+
+    hl: dict[str, Any]
+    style: Style
+    ordered: list[dict[str, Any]]
+    order: str
+    color_mode: str
+    edges: EdgeSettings
+    events: dict[str, list[dict[str, Any]]] | None
+    project_cfg: dict[str, Any] | None
+    language: str | None
+
+
+def _setup(project: Path, selection: Selection, options: ExportOptions) -> _Setup:
+    """The options of :func:`export_clips` checked, its moments and settings."""
+    _check_options(options.color_strength, options.crop)
+    highlights = projectfiles.load_highlights(project)
+    hl = highlights if isinstance(highlights, dict) else {}
+    language = (hl.get("settings") or {}).get("language")
+    known_style = recorded_name(hl) is not None
+    # The recorded style: a deleted user style degrades to the built-in base the file records;
+    # a file (or none) that records no style gets auto's style for unclear footage (#1002)
+    style: Style = analysis_style(hl)
+    ordered, order = _ordered_moments(project, style, selection)
+    color_mode = _color_mode(options.color, options.lut, style, known_style=known_style)
+    tail = TailSettings.from_style(
+        style, enabled=options.smart_tail_on, tail_min=options.tail_min, tail_max=options.tail_max
+    )
+    speech = boundaries.SpeechSettings.from_style(
+        style,
+        enabled=options.speech_aware,
+        max_extend=options.speech_max_extend,
+        max_lead=options.speech_max_lead,
+    )
+    events, ev_settings = _event_tails(project, options.event_tails, options.event_window)
+    return _Setup(
+        hl,
+        style,
+        ordered,
+        order,
+        color_mode,
+        EdgeSettings(tail, ev_settings, speech),
+        events,
+        cache.load_json(project / "project.json"),
+        language,
+    )
+
+
+@dataclass(frozen=True)
+class _Planned:
+    """The clips :func:`_plan_export` planned: ``plans`` at ``fmt``, the 360 exporter
+    ``pano`` (None: no 360 clip) and ``io_paths`` (``{recorded source: file to read}``)."""
+
+    plans: list[ClipPlan]
+    fmt: OutputFormat
+    pano: PanoExporter | None
+    io_paths: dict[str, Path]
+
+
+def _plan_export(project: Path, setup: _Setup, options: ExportOptions, out_dir: Path) -> _Planned:
+    """Probe the sources of :func:`export_clips`, choose the format and plan the clips."""
+    from cutpoint.pano.render import exporter_for  # noqa: PLC0415
+
+    ordered, vertical = setup.ordered, options.vertical
+    pano = exporter_for(project, out_dir, vertical, options.pano_source, options.pano_cmd_every)
+    if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
+        pano = None
+
+    io_paths, infos = _read_sources(ordered, setup.hl)
+    fmt = _export_format(infos, pano, vertical, options.size)
+    tail = setup.edges.tail
+    logger.info(
+        "Exporting %d clips at %dx%d@%d (%s order); smart tail %s",
+        len(ordered),
+        fmt.width,
+        fmt.height,
+        fmt.fps,
+        setup.order,
+        f"on (min {tail.tail_min:.1f}s, max {tail.tail_max:.1f}s)"
+        if _smart_tail_used(tail, ordered)
+        else "off",
+    )
+    if options.lut is not None:
+        logger.info(
+            "Grading every clip with %s (strength %g)", options.lut.path, options.lut.strength
+        )
+
+    plans = plan_clips(
+        ordered,
+        project,
+        io_paths=io_paths,
+        infos=infos,
+        tail=tail,
+        events=setup.events,
+        event_settings=setup.edges.event_settings,
+        speech=setup.edges.speech,
+        padding=options.extend,
+        crop=options.crop,
+        project_cfg=setup.project_cfg,
+        pano=pano,
+        language=setup.language,
+    )
+    return _Planned(plans, fmt, pano, io_paths)
+
+
+def _level_and_grade(
+    planned: _Planned, setup: _Setup, options: ExportOptions, out_dir: Path, force: bool
+) -> None:
+    """Give each plan its peak filter, makeup and grade (``--lut``, or measured for
+    ``--color``); a WARNING when ``force`` replaces graded clips with ungraded ones."""
+    plans = planned.plans
+    peaks, makeup = peak_filters(plans, options.compress_peaks)
+    grades: list[Grade | None] = [options.lut] * len(plans)
+    if setup.color_mode != "off":
+        grades = _color_grades(
+            plans, setup.color_mode, options.color_strength, planned.fmt, options.vertical
+        )
+    if force and not any(grades):
+        _warn_dropped_grade(out_dir)
+    for plan, peak, gain, grade in zip(plans, peaks, makeup, grades, strict=True):
+        plan.peak, plan.makeup, plan.grade = peak, gain, grade
+
+
+def _render_export(
+    planned: _Planned,
+    setup: _Setup,
+    options: ExportOptions,
+    work: Path,
+    out_dir: Path,
+    *,
+    protected_srts: set[str],
+    temporary: bool,
+) -> list[RenderResult]:
+    """Encode the planned clips of :func:`export_clips` into ``work`` (resuming an interrupted
+    run unless ``temporary``) and warn about 360 sources that fell back."""
+    plans = planned.plans
+    # not for temporary clips, removed right after the join
+    resume = None
+    if not temporary:
+        resume = _clip_resume(out_dir, work, plans, planned.fmt, options)
+    workers = export_workers(plans)
+    if workers > 1:
+        logger.info("Exporting %d clips at a time (export_workers)", workers)
+    results = render_clips(
+        plans,
+        work,
+        fmt=planned.fmt,
+        options=options,
+        pano=planned.pano,
+        subs=srt.ClipSubtitles(protected_srts, setup.language, out_dir),
+        workers=workers,
+        resume=resume,
+    )
+    warn_pano_sources(
+        [(p.name, r.pano) for p, r in zip(plans, results, strict=True)],
+        None if temporary else out_dir,
+    )
+    return results
+
+
 def export_clips(
     project: Path,
     *,
-    top: int | None = None,
-    ids: list[str] | None = None,
-    segments: Path | None = None,
-    order: str | None = None,
-    max_total: float | None = None,
+    selection: Selection | None = None,
+    options: ExportOptions | None = None,
     out_dir: Path | None = None,
-    vertical: bool = False,
     force: bool = False,
-    crop: str | None = None,
-    smart_tail_on: bool | None = None,
-    tail_min: float | None = None,
-    tail_max: float | None = None,
-    event_tails: bool | None = None,
-    event_window: float | None = None,
-    extend: Padding | None = None,
-    speech_aware: bool | None = None,
-    speech_max_extend: float | None = None,
-    speech_max_lead: float | None = None,
-    audio_fade: float = DEFAULT_AUDIO_FADE_S,
-    pano_source: str = "auto",
-    pano_cmd_every: int | None = None,
-    size: tuple[int, int] | None = None,
-    compress_peaks: str = "off",
-    lut: Lut | None = None,
-    color: str | None = None,
-    color_strength: float = 1.0,
     temporary: bool = False,
 ) -> Path:
-    """Export moments as normalised, numbered clips plus manifest.json.
+    """Export the ``selection`` of moments as normalised, numbered clips plus manifest.json,
+    cut and encoded as ``options`` say (:class:`Selection`, :class:`ExportOptions`; None:
+    the defaults).
 
-    Selection: ``segments`` (hand-picked JSON, exported exactly, in its order;
-    ``order="arc"`` reorders a ``cutpoint mix`` file, see :func:`order_moments`),
-    else ``ids``, else the top ``top`` by score, else the best moments that fit the
-    style's ``target_total`` (:func:`cutpoint.default_fit.fit_target`; ``suggested_top`` is
-    their count). ``max_total`` keeps the best-scoring moments whose
-    summed length fits (e.g. 60 s for a Short). Candidates marked
-    ``must_include`` (confident crashes, ``cutpoint crashes``) are always added to
-    an automatic selection and kept under ``max_total``.
-
-    Speech-ended clips get a smart tail (see :mod:`cutpoint.tail`) using the
-    style's settings (segments: the project's analysis style, else gaming),
-    overridden by ``smart_tail_on`` / ``tail_min`` / ``tail_max`` and by
-    per-segment ``tail`` / ``smart_tail``.
-
-    Event tails (see :mod:`cutpoint.events.tails`): when
-    ``<project>/events.json`` exists (or ``event_tails`` is True), a clip whose
-    speech is followed within ``event_window`` s (default 10) by a payoff event
-    (player kill, teamkill, round banner, laughter, strong VLM moment) is
-    extended to cover it plus 1.5 s. ``event_tails=False`` disables this; a
-    per-segment ``"tail"`` or ``"smart_tail": false`` also disables it.
-
-    ``crop``: ``auto``, ``none`` or ``W:H:X:Y`` for every source; None uses
-    ``<project>/project.json``'s per-source ``crop`` map, else no crop.
-
-    ``extend``: padding added to both ends of every clip *after* the tails
-    (see :mod:`cutpoint.extend`), clamped to the source and its readable
-    range; per-segment ``extend`` / ``extend_start`` / ``extend_end`` override
-    it. The pre-pad in/out points are recorded.
-
-    Speech-aware boundaries (see :mod:`cutpoint.boundaries`; default: the
-    style's ``speech_aware``, on for every built-in style) run last: an in or
-    out point inside an utterance moves to its start/end (at most
-    ``speech_max_lead`` / ``speech_max_extend`` s), and clips of the same
-    source are kept from overlapping. Per-segment ``"speech_aware": false``
-    opts out; a fixed ``"tail"`` keeps its end. Without the pass, padded clips
-    may overlap.
-
-    ``audio_fade``: seconds of audio fade-in/out baked into every clip (0 = off).
-
-    ``compress_peaks``: ``off``, ``light`` or ``strong``
-    (:data:`~cutpoint.encode.PEAK_PRESETS`): loud peaks are compressed and the clips leveled
-    toward each other, then a true-peak limiter ends each clip's audio (manifest
-    ``compress_peaks``, so ``assemble`` does not compress them again).
-
-    ``lut`` (:func:`~cutpoint.encode.check_lut`): every clip is graded with it after the
-    BT.709 conversion (:func:`~cutpoint.encode.lut_filter`), recorded per clip as ``lut`` and
-    ``lut_strength`` so ``extend`` grades the same way; ``assemble`` leaves the grade as is.
-
-    ``color`` (``off``, ``auto`` or ``underwater``; None: ``color`` in config.json, never
-    for ``gaming`` footage nor with ``lut``, see :func:`_color_mode`) at ``color_strength``
-    (0-1): each clip gets its own automatic grade (:func:`~cutpoint.color.auto_grade`),
-    recorded per clip as ``color`` (skipped clips too, with the reason) so ``extend`` grades
-    the same way without measuring again. It cannot be combined with ``lut``.
-
-    360 sources (Insta360 X3 clips registered in ``<project>/pano.json`` by
-    ``cutpoint 360 scan``) are rendered to flat video along a director path (see
-    :mod:`cutpoint.pano.render`): ``pano_source`` picks the input
-    (``auto``: SDK stitch > Studio export > raw dual fisheye) and
-    ``pano_cmd_every`` the camera update interval in frames. Everything else
-    (numbering, tails, padding, speech-aware boundaries, fades) is unchanged.
-
-    ``size`` ``(width, height)`` forces the output resolution instead of the
-    largest source's (useful when 16:9 and taller sources such as GoPro 8:7
-    are mixed; give the taller ones a ``crop`` so they fill the frame).
+    ``out_dir``: the clips folder (default ``<project>/clips``, ``clips_vertical`` with
+    ``options.vertical``).
 
     ``temporary``: ``out_dir`` is a :func:`cutpoint.assemble.temporary_clips` folder, joined
     and removed right after: the free space for it and the final video is checked before any
@@ -1576,25 +1760,9 @@ def export_clips(
             too little free space.
         jsonout.ArgumentError: For ``color`` with ``lut``, or ``color_strength`` outside 0-1.
     """
-    _check_options(color_strength, crop)
-    highlights = projectfiles.load_highlights(project)
-    hl = highlights if isinstance(highlights, dict) else {}
-    language = (hl.get("settings") or {}).get("language")
-    known_style = recorded_name(hl) is not None
-    # The recorded style: a deleted user style degrades to the built-in base the file records;
-    # a file (or none) that records no style gets auto's style for unclear footage (#1002)
-    style: Style = analysis_style(hl)
-    ordered, order = _ordered_moments(project, style, segments, order, top, ids, max_total)
-    color_mode = _color_mode(color, lut, style, known_style=known_style)
-    base_tail = TailSettings.from_style(
-        style, enabled=smart_tail_on, tail_min=tail_min, tail_max=tail_max
-    )
-    speech = boundaries.SpeechSettings.from_style(
-        style, enabled=speech_aware, max_extend=speech_max_extend, max_lead=speech_max_lead
-    )
-    project_events, ev_settings = _event_tails(project, event_tails, event_window)
-    project_cfg = cache.load_json(project / "project.json")
-    out_dir = out_dir or project / ("clips_vertical" if vertical else "clips")
+    options = options or ExportOptions()
+    setup = _setup(project, selection or Selection(), options)
+    out_dir = out_dir or project / ("clips_vertical" if options.vertical else "clips")
     # The clips are exported into a hidden staging folder and swapped in only when all
     # succeeded, so a failed or cancelled run (--force included) leaves the folder as it was.
     # A run that fails leaves no empty folders behind. staged_dir refuses a drive root, a
@@ -1606,104 +1774,38 @@ def export_clips(
         folders.output_dir(out_dir.parent),
         folders.staged_dir(out_dir, direct_if_empty=True, resume=not temporary) as work,
     ):
-        from cutpoint.pano.render import exporter_for  # noqa: PLC0415
-
-        pano = exporter_for(project, out_dir, vertical, pano_source, pano_cmd_every)
-        if pano is not None and not any(pano.handles(m["source"]) for m in ordered):
-            pano = None
-
-        io_paths, infos = _read_sources(ordered, hl)
-        fmt = _export_format(infos, pano, vertical, size)
-        logger.info(
-            "Exporting %d clips at %dx%d@%d (%s order); smart tail %s",
-            len(ordered),
-            fmt.width,
-            fmt.height,
-            fmt.fps,
-            order,
-            f"on (min {base_tail.tail_min:.1f}s, max {base_tail.tail_max:.1f}s)"
-            if _smart_tail_used(base_tail, ordered)
-            else "off",
-        )
-        if lut is not None:
-            logger.info("Grading every clip with %s (strength %g)", lut.path, lut.strength)
-
-        plans = plan_clips(
-            ordered,
-            project,
-            io_paths=io_paths,
-            infos=infos,
-            tail=base_tail,
-            events=project_events,
-            event_settings=ev_settings,
-            speech=speech,
-            padding=extend,
-            crop=crop,
-            project_cfg=project_cfg,
-            pano=pano,
-            language=language,
-        )
+        planned = _plan_export(project, setup, options, out_dir)
+        plans, pano = planned.plans, planned.pano
         if temporary:
-            check_free_space(out_dir.parent, plans, fmt)
+            check_free_space(out_dir.parent, plans, planned.fmt)
         # --force replaces only what an earlier run made, never a file this run reads.
         replaced = replace_plan(
             out_dir,
             [p.name for p in plans],
             folders.source_keys(
-                (s, p, pano.inputs(s) if pano else []) for s, p in io_paths.items()
+                (s, p, pano.inputs(s) if pano else []) for s, p in planned.io_paths.items()
             ),
         )
-        peaks, makeup = peak_filters(plans, compress_peaks)
-        grades: list[Grade | None] = [lut] * len(plans)
-        if color_mode != "off":
-            grades = _color_grades(plans, color_mode, color_strength, fmt, vertical)
-        if force and not any(grades):
-            _warn_dropped_grade(out_dir)
-        # not for temporary clips, removed right after the join
-        resume = None
-        if not temporary:
-            resume = _clip_resume(out_dir, work, plans, peaks, grades, fmt, vertical, audio_fade)
-        workers = export_workers(plans)
-        if workers > 1:
-            logger.info("Exporting %d clips at a time (export_workers)", workers)
-        results = render_clips(
-            plans,
+        _level_and_grade(planned, setup, options, out_dir, force)
+        results = _render_export(
+            planned,
+            setup,
+            options,
             work,
-            fmt=fmt,
-            vertical=vertical,
-            audio_fade=audio_fade,
-            pano=pano,
+            out_dir,
             protected_srts=replaced.protected_srts,
-            clips_dir=out_dir,
-            peaks=peaks,
-            language=language,
-            grades=grades,
-            workers=workers,
-            resume=resume,
-        )
-        warn_pano_sources(
-            [(p.name, r.pano) for p, r in zip(plans, results, strict=True)],
-            None if temporary else out_dir,
+            temporary=temporary,
         )
         write_manifest(
             work,
             project,
             plans,
             results,
-            order=order,
-            fmt=fmt,
-            vertical=vertical,
-            style=style,
-            tail=base_tail,
-            event_settings=ev_settings,
-            padding=extend,
-            speech=speech,
-            audio_fade=audio_fade,
-            crop=crop,
-            compress_peaks=compress_peaks,
-            peaks=peaks,
-            makeup=makeup,
-            grades=grades,
+            order=setup.order,
+            style=setup.style,
+            fmt=planned.fmt,
+            options=options,
+            edges=setup.edges,
         )
         if work != out_dir:  # staged, not exported into directly
             folders.swap_in(work, out_dir, [*replaced.replace, "manifest.json"])

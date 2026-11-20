@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import numpy as np
@@ -217,9 +218,11 @@ def test_cli_lut_strength_out_of_range_exits_2(capsys, command):
 def test_cli_passes_the_checked_lut_to_clips_and_edit(tmp_path, monkeypatch, loads):
     got = {}
     monkeypatch.setattr(
-        "cutpoint.clips.export_clips", lambda project, **kw: got.update(clips=kw["lut"])
+        "cutpoint.clips.export_clips", lambda project, **kw: got.update(clips=kw["options"].lut)
     )
-    monkeypatch.setattr("cutpoint.edit.run_edit", lambda *a, **kw: got.update(edit=kw["lut"]))
+    monkeypatch.setattr(
+        "cutpoint.edit.run_edit", lambda *a, **kw: got.update(edit=kw["export"].lut)
+    )
     lut = write(tmp_path / "look.cube")
     assert cli.main(["clips", "p", "--lut", str(lut), "--lut-strength", "0.4"]) == 0
     assert cli.main(["edit", "v.mp4", "--lut", str(lut)]) == 0
@@ -230,12 +233,14 @@ def test_cli_passes_the_checked_lut_to_clips_and_edit(tmp_path, monkeypatch, loa
 
 @pytest.fixture
 def calls(monkeypatch) -> list[str]:
-    """Stub export_clips and run_edit (recording which ran, with their color arguments)."""
+    """Stub export_clips and run_edit (recording which ran, with their export options)."""
     got: list = []
     monkeypatch.setattr(
-        "cutpoint.clips.export_clips", lambda project, **kw: got.append(("clips", kw))
+        "cutpoint.clips.export_clips", lambda project, **kw: got.append(("clips", kw["options"]))
     )
-    monkeypatch.setattr("cutpoint.edit.run_edit", lambda *a, **kw: got.append(("edit", kw)))
+    monkeypatch.setattr(
+        "cutpoint.edit.run_edit", lambda *a, **kw: got.append(("edit", kw["export"]))
+    )
     return got
 
 
@@ -277,7 +282,7 @@ def test_cli_color_strength_without_a_correction_is_bad_args(
 def test_cli_color_strength_with_config_color_passes(home, calls):
     set_config(home, color="auto")
     assert cli.main(["clips", "p", "--color-strength", "0.5"]) == 0
-    assert (calls[0][1]["color"], calls[0][1]["color_strength"]) == (None, 0.5)
+    assert (calls[0][1].color, calls[0][1].color_strength) == (None, 0.5)
 
 
 @pytest.mark.parametrize("command", ["clips", "edit"])
@@ -293,8 +298,8 @@ def test_cli_passes_color_and_strength_to_clips_and_edit(tmp_path, loads, calls)
     def got(argv):
         calls.clear()
         assert cli.main(argv) == 0
-        kw = calls[0][1]
-        return kw["color"], kw["color_strength"]
+        options = calls[0][1]
+        return options.color, options.color_strength
 
     assert got(["clips", "p"]) == (None, 1.0)  # None: config.json's color
     assert got(["clips", "p", "--color", "underwater", "--color-strength", "0.4"]) == (
@@ -314,9 +319,8 @@ def test_manifest_entry_records_the_grade_and_reads_it_back(tmp_path):
     tail = TailResult(5.0, 0.0, "none")
     plan = ClipPlan("001_a.mp4", m, tmp_path / "a.mp4", media_info(), 1.0, 5.0, (1.0, 5.0), tail)
     lut = Lut(tmp_path / "look.cube", 0.5)
-    entry = json.loads(
-        json.dumps(_entry(plan, RenderResult(tmp_path / "001_a.mp4", 5.0), 0.25, grade=lut))
-    )
+    graded = replace(plan, grade=lut)
+    entry = json.loads(json.dumps(_entry(graded, RenderResult(tmp_path / "001_a.mp4", 5.0), 0.25)))
     assert (entry["lut"], entry["lut_strength"]) == (str(tmp_path / "look.cube"), 0.5)
     assert Lut.from_entry(entry) == lut
     plain = _entry(plan, RenderResult(tmp_path / "001_a.mp4", 5.0), 0.25)
