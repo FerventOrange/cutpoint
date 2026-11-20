@@ -267,6 +267,32 @@ class TestCommandLines:
         both()
         assert seen == [30.0, 30.0, 45.0, 45.0]
 
+    def test_the_qa_model_is_the_renderers_rotation_model(self, clip):
+        """A366: command_lines and the QA's model (horizon_roll, render_rotations without
+        commands) share model_rotations: at a time between frames both use the frame the
+        render shows after a seek (ceil), not the nearest one."""
+        orient = _orient(300, np.linspace(0, 40, 300) ** 1.5 / 40**0.5)  # turning
+        path = _path((0.0, -30.0, -5.0), (10.0, 60.0, 10.0))
+        start = 2.01  # 60.3 frames: the render shows frame 61 first, round() would say 60
+        rot, fov = render.model_rotations(path, orient, np.array([61]), FPS)
+        _, init = render.command_lines(
+            clip, path, _src("dfisheye", False), start, 1.0, self.FMT, 1, orient
+        )
+        assert np.allclose(_init_matrix(init), rot[0], atol=1e-4)
+        item = {"path": path, "commands": None}
+        qa_rot, qa_fov = qa.render_rotations(item, orient, np.array([start]))
+        assert np.allclose(qa_rot, rot) and np.array_equal(qa_fov, fov)  # one shown frame
+        nearest, _ = render.model_rotations(path, orient, np.array([60]), FPS)
+        assert not np.allclose(rot, nearest, atol=1e-4)  # the frame matters here
+        up = orient.cam_to_world(np.array([61]))[0].T @ [0.0, -1.0, 0.0]
+        u = rot[0].T @ up
+        want = math.degrees(math.atan2(u[0], -u[1]))
+        assert qa.horizon_roll(orient, path, np.array([start]))[0] == pytest.approx(want)
+        # a levelled source: the plain view with the equirect yaw offset, no IMU
+        lv, _ = render.model_rotations(path, None, np.array([61]), FPS, yaw_offset=15.0)
+        yaw, pitch, _ = render.D.evaluate(path, np.array([61 / FPS]))
+        assert np.allclose(lv[0], G.view_matrix(float(yaw[0]) + 15.0, float(pitch[0])))
+
     def test_levelled_equirect_uses_path_angles_only(self, clip):
         path = _path((0.0, 25.0, -5.0), (10.0, 25.0, -5.0))
         lines, init = render.command_lines(

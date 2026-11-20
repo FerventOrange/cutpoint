@@ -37,6 +37,7 @@ looked for when the profile has ``lift`` captions (:func:`lift_scores`).
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import math
 import time
@@ -173,10 +174,13 @@ def _stale_selfie(src: Path, meta: dict[str, Any]) -> bool:
     return True
 
 
-def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
-    """Cached view-layer outputs of a clip, or None (also when they were computed with
-    another forward axis than the clip's cached orientation track has now, or the meta
-    beside them was written for other arrays)."""
+_ARRAYS = {"t", "emb", "det", "box_emb", "box_idx"}  # the arrays of a view-layer cache
+
+
+def _current_meta(src: Path, params: ViewParams | None) -> tuple[Path, dict[str, Any]] | None:
+    """The view-layer cache file of a clip and its meta, or None when the file is missing or
+    was computed with another forward axis or wearer direction than the clip's cached
+    orientation track has now (logged at INFO once per source)."""
     try:
         path = cache_path(Path(src), params)
     except OSError:
@@ -200,12 +204,28 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
         return None
     if upright and _stale_selfie(Path(src), meta):
         return None
-    z = cache.load_npz(path)
-    if z is None or not {"t", "emb", "det", "box_emb", "box_idx"} <= z.keys():
+    return path, meta
+
+
+def _paired(z: Any, meta: dict[str, Any]) -> bool:
+    """The arrays ``z`` (a mapping) have every view-layer array and the meta was written
+    for them: the same ``pair`` token (files from before the token have it in neither; an
+    interrupted :func:`save_views` leaves two)."""
+    if not set(z.keys()) >= _ARRAYS:
+        return False
+    return not (("pair" in z or "pair" in meta) and str(z.get("pair")) != meta.get("pair"))
+
+
+def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
+    """Cached view-layer outputs of a clip, or None (also when they were computed with
+    another forward axis than the clip's cached orientation track has now, or the meta
+    beside them was written for other arrays)."""
+    got = _current_meta(src, params)
+    if got is None:
         return None
-    # a meta written for other arrays (an interrupted save_views); files from before the
-    # pair token have it in neither
-    if ("pair" in z or "pair" in meta) and str(z.get("pair")) != meta.get("pair"):
+    path, meta = got
+    z = cache.load_npz(path)
+    if z is None or not _paired(z, meta):
         return None
     return PanoViews(
         t=z["t"],
@@ -215,6 +235,25 @@ def load_views(src: Path, params: ViewParams | None = None) -> PanoViews | None:
         box_idx=z["box_idx"],
         meta=meta,
     )
+
+
+def views_current(src: Path, params: ViewParams | None = None) -> bool:
+    """Whether :func:`load_views` would return the clip's view layer, without decompressing
+    its arrays: the same file, meta and pair checks, on the archive's member list and its
+    ``pair`` token only. A member damaged inside an intact archive is only found by
+    :func:`load_views`."""
+    got = _current_meta(src, params)
+    if got is None:
+        return False
+    path, meta = got
+    data = cache.load_bytes(path)
+    if data is None:
+        return False
+    try:
+        with np.load(io.BytesIO(data), allow_pickle=False) as z:  # lazy: members on access
+            return _paired(z, meta)
+    except cache.NPZ_ERRORS:
+        return False
 
 
 # --------------------------------------------------------------------------- compute

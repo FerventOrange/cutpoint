@@ -769,7 +769,7 @@ def _cone_item(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> tu
         "imu_levelled": True,
         "commands": None,
     }
-    rot = qa.render_rotations(item, orient, np.array([2.0]))[0]
+    rot = qa.render_rotations(item, orient, np.array([2.0]))[0][0]
     d = rot.T @ G.WEARER_V
     x = (d[0] / d[2] / math.tan(math.radians(43.0)) + 1) / 2
     return item, float(x)

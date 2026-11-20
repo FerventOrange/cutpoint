@@ -25,7 +25,13 @@ def iou(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 def overlap(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """Intersection of each box in ``a`` ``(N, 4)`` with each in ``b`` ``(M, 4)`` as a
-    share of the smaller one's area, ``(N, M)``."""
+    share of the smaller one's area, ``(N, M)``.
+
+    The smaller, not ``a``'s own: in the 360 QA the wearer's duplicate box is the larger
+    one (a head and shoulders box around the self-tagged lower half, e.g. 0.21 x 0.95
+    around 0.20 x 0.48), which a share of ``a`` misses. The cost: a small self box inside
+    a friend's box at the edge hides that friend's edge cut too.
+    """
     inter, aa, ab = _inter_areas(a, b)
     return inter / np.maximum(np.minimum(aa[:, None], ab[None, :]), 1e-9)
 

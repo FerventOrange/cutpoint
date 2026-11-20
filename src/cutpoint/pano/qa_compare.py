@@ -329,7 +329,7 @@ def other_detail_of(
     if sliver and area >= side_area and side:
         return "unexplained"  # sliver_edge_frames counts it, a self box or not
     own = _boxes(p, tp, own=True)
-    if len(own) and Q._overlap(np.asarray([match], float), own).max() >= tp.edge_self_overlap:
+    if len(own) and B.overlap(np.asarray([match], float), own).max() >= tp.edge_self_overlap:
         return "paths_self"  # edge_candidates: the wearer detected twice
     kept = _boxes(p, tp, own=False)
     kept = kept[(kept[:, 3] - kept[:, 1]) >= tp.subject_min_h]
@@ -421,13 +421,13 @@ def explain(
     match = None
     if len(cut) and len(oth_b) + len(oth_s):
         others = np.concatenate([oth_b, oth_s])
-        ov = Q._overlap(cut, others)
+        ov = B.overlap(cut, others)
         i, j = np.unravel_index(int(ov.argmax()), ov.shape)
         if ov[i, j] > 0:
             match = (others[j], "box" if j < len(oth_b) else "sliver", int(i))
     if len(cut) and len(own_b) + len(own_s):
         own = np.concatenate([own_b, own_s])
-        ov = Q._overlap(cut, own)
+        ov = B.overlap(cut, own)
         if (ov >= th.edge_self_overlap).any():
             i, j = np.unravel_index(int(ov.argmax()), ov.shape)
             kind = "wearer" if j < len(own_b) else "wearer_sliver"
