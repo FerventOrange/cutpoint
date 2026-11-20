@@ -261,7 +261,7 @@ class TestCommandLines:
         """A366: command_lines and the QA's model (horizon_roll, render_rotations without
         commands) share model_rotations: at a time between frames both use the frame the
         render shows after a seek (ceil), not the nearest one."""
-        orient = _orient(300, np.linspace(0, 40, 300) ** 1.5 / 40**0.5)  # turning
+        orient = turning(300, FPS, np.linspace(0, 40, 300) ** 1.5 / 40**0.5)  # turning
         path = _path((0.0, -30.0, -5.0), (10.0, 60.0, 10.0))
         start = 2.01  # 60.3 frames: the render shows frame 61 first, round() would say 60
         rot, fov = render.model_rotations(path, orient, np.array([61]), FPS)
