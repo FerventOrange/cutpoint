@@ -11,13 +11,13 @@ trimmed to the gameplay part, when what is left is long enough for the style
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 from cutpoint import sources
-from cutpoint.events.regions import source_tag
 from cutpoint.intervals import overlap
 from cutpoint.styles import Style, analysis_style
 from cutpoint.utils import slugify
@@ -45,12 +45,13 @@ def merge_menu_frames(times: Iterable[float], fps: float) -> list[list[float]]:
 def ocr_stats_key(path: str | Path, paths: Iterable[str | Path]) -> str:
     """The key of the source ``path`` in the OCR stats of events.json (``stats.ocr``) among
     the sources ``paths``: its file name, or for a file name two of them share the name and
-    a digest of its path, size and mtime (the ``src_key`` of HUD discovery,
-    :func:`cutpoint.events.discover.src_key`)."""
+    a digest of its path alone (``str(Path(path))``, the form events.json ``sources`` holds),
+    so the key stays the same when the file is offline, remapped or touched later."""
     name = Path(path).name
     if sum(Path(p).name == name for p in paths) < 2:
         return name
-    return f"{name}~{source_tag(path)}"
+    digest = hashlib.sha1(str(Path(path)).encode("utf-8")).hexdigest()[:8]
+    return f"{name}~{digest}"
 
 
 def source_menu_spans(ev: dict[str, Any]) -> dict[str, list[list[float]]]:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -292,6 +293,10 @@ def test_same_named_sources_have_menu_spans_of_their_own(tmp_path, caplog) -> No
     ka, kb = ocr_stats_key(a, paths), ocr_stats_key(b, paths)
     assert ka != kb and ka.startswith("rec.mp4~") and kb.startswith("rec.mp4~")
     assert ocr_stats_key(SRC, [SRC, "/other/clip.mp4"]) == "rec.mp4"  # unique: its name
+    os.utime(a, (1_000_000, 1_000_000))  # touched after events: the key stays (F4)
+    assert ocr_stats_key(a, paths) == ka == ocr_stats_key(str(a), [a, b])
+    gone = [str(tmp_path / "off" / "rec.mp4"), str(tmp_path / "line" / "rec.mp4")]
+    assert ocr_stats_key(gone[0], gone) == ocr_stats_key(Path(gone[0]), gone)  # offline too
     ev = {
         "sources": paths,
         "stats": {"ocr": {ka: {"menu_spans": [[0, 5]]}, kb: {"menu_spans": [[10, 20]]}}},
