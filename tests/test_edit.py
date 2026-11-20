@@ -383,12 +383,14 @@ def test_edit_with_an_explicit_style_never_probes(pipeline, monkeypatch):
 @pytest.mark.parametrize(
     ("argv", "expect"),
     [
-        ([], ("auto", "hype")),  # also for the montage and clips kinds
+        ([], ("auto", "hype")),
+        (["--kind", "montage"], ("auto", "hype")),
+        (["--kind", "clips"], ("auto", "hype")),
         (["--kind", "funny-moments"], ("funny", None)),  # funny is the kind's request
         (["--kind", "funny-moments", "--style", "auto"], ("auto", "funny")),
         (["--style", "gaming"], ("gaming", None)),  # an explicit style wins
     ],
-    ids=["flagless", "funny-moments", "funny-auto", "explicit"],
+    ids=["flagless", "montage", "clips", "funny-moments", "funny-auto", "explicit"],
 )
 def test_edit_without_style_detects_it(pipeline, argv, expect):
     """#899: no --style is --style auto, but for funny-moments (funny)."""

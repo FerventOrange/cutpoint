@@ -257,6 +257,7 @@ def test_a_word_of_no_default_list_gives_no_kill_without_a_preset() -> None:
     [
         ("Mari Gold", ("Marigold",), True),  # a space inside the name
         ("M00nrock", ("Moonrock",), True),  # O read as 0
+        ("Emberfa11", ("Emberfall",), True),  # 1 and l look-alikes
         ("[AB] Marigold", ("Marigold",), True),  # a clan tag read with the name
         ("Alder", ("Marigold",), False),
         ("[AB] Ax_7", ("Ax_7",), True),  # short tags with marks, read after a clan tag
