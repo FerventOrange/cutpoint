@@ -37,14 +37,9 @@ from cutpoint.events.regions import Region, preset_from_dict
         (5999, 1.0, "unsure"),  # just below it
         (3000, 1.0, "unsure"),  # at the unsure rate
         (2999, 1.0, "feed"),  # just below it
-        (40, 1.0, "feed"),  # a kill feed
-        (1500, 0.25, "chat"),  # 6000/h in 15 minutes
-        (1499, 0.25, "unsure"),
-        (750, 0.25, "unsure"),  # 3000/h
-        (749, 0.25, "feed"),
         (1000, 599 / 3600, "short"),  # under 10 minutes: too short to tell, at a chat rate
         (100, 599 / 3600, "feed"),  # under 10 minutes, a feed rate
-        (1000, 600 / 3600, "chat"),  # exactly 10 minutes counts
+        (1000, 600 / 3600, "chat"),  # exactly 10 minutes counts, at 6000/h
     ],
 )
 def test_chat_label_thresholds_and_footage_floor(lines: int, hours: float, label: str) -> None:

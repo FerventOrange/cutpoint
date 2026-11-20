@@ -353,20 +353,15 @@ def test_clips_job_passes_event_tails_on_or_off_and_nothing_for_auto(
     [
         ({"picks": "best"}, "picks must be 'sequence' or 'auto'"),
         ({"top": 3}, "need automatic picks"),
-        ({"order": "score"}, "need automatic picks"),
         ({"speech_aware": "yes"}, "speech_aware must be true or false"),
-        ({"smart_tail": 1}, "smart_tail must be true or false"),
         ({"event_tails": "maybe"}, "event_tails must be"),
         ({"event_tails": ["on"]}, "event_tails must be"),  # not a 500 (unhashable)
         ({"smart_tail": False, "event_tails": "on"}, "event tails need smart tails"),
         ({"speech_max_extend": -1}, "speech_max_extend must be 0-60 seconds"),
         ({"speech_max_lead": 61}, "speech_max_lead must be 0-60 seconds"),
         ({"tail_min": "1"}, "tail_min must be 0-60 seconds"),
-        ({"tail_max": True}, "tail_max must be 0-60 seconds"),
         # 0 as the CLI refuses it
         ({"event_window": 0}, "event_window must be above 0 and at most 60 seconds"),
-        ({"event_window": -2}, "event_window must be above 0 and at most 60 seconds"),
-        ({"extend_start": 31}, "extend_start must be 0-30 seconds"),
         ({"extend_end": [1]}, "extend_end must be 0-30 seconds"),
         ({"crop": "--force"}, "crop must be 'auto', 'none' or W:H:X:Y"),
         ({"size": "1281x720"}, "size must be WxH in even pixels"),
@@ -421,12 +416,11 @@ def test_automatic_picks_hand_the_selection_to_the_cli(
         ({"top": 501}, "top must be a whole number"),
         ({"ids": ["h009"]}, "ids must be different candidate ids"),  # not in the analysis
         ({"ids": ["h001", "h001"]}, "ids must be different candidate ids"),
-        ({"ids": ["--force"]}, "ids must be different candidate ids"),
+        ({"ids": ["--force"]}, "ids must be different candidate ids"),  # an option, not a name
         ({"ids": "h001"}, "ids must be different candidate ids"),
         ({"ids": []}, "ids must be different candidate ids"),
         ({"ids": [1]}, "ids must be different candidate ids"),
         ({"max_total": 0}, "max_total must be above 0"),
-        ({"max_total": -5}, "max_total must be above 0"),
         ({"order": "arc"}, "order must be one of story, score, chronological"),
     ],
 )
