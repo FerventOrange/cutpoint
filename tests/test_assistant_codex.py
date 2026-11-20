@@ -174,3 +174,57 @@ def test_other_subscription_failures_are_not_retried(
     with pytest.raises(ProviderError):
         p.chat([{"role": "user", "content": "go"}], schema={"type": "object"})
     assert len(calls) == 1
+
+
+# ----------------------------------------------------------- the Claude Code identity
+def _sent_messages(monkeypatch: pytest.MonkeyPatch, name: str, messages: list[dict[str, Any]]):
+    sent: list[dict[str, Any]] = []
+
+    def fake_chat(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+        sent.append(payload)
+        return _answer({"content": "ok"})
+
+    monkeypatch.setattr(providers.cliproxy, "chat", fake_chat)
+    providers.SubscriptionProvider(name, "", "some-model", 0).chat(messages)
+    return sent[0]["messages"]
+
+
+def test_claude_code_gets_its_identity_as_the_first_system_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # catches: identity not inserted, inserted last, or inserted for the wrong role
+    messages = [{"role": "system", "content": "be brief"}, {"role": "user", "content": "go"}]
+    sent = _sent_messages(monkeypatch, "claude-code", messages)
+    assert sent[0] == {"role": "system", "content": providers.CLAUDE_CODE_IDENTITY}
+    assert sent[1:] == messages
+    assert len(messages) == 2  # the caller's list is not changed
+
+
+def test_claude_code_identity_is_not_doubled(monkeypatch: pytest.MonkeyPatch) -> None:
+    # catches: dropping the "already there" check (a second identity every turn)
+    ident = providers.CLAUDE_CODE_IDENTITY
+    messages = [
+        {"role": "system", "content": f"{ident}\nand more"},
+        {"role": "user", "content": "go"},
+    ]
+    sent = _sent_messages(monkeypatch, "claude-code", messages)
+    assert sent == messages
+
+
+def test_claude_code_identity_in_a_user_message_does_not_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # catches: the check ignoring the role
+    ident = providers.CLAUDE_CODE_IDENTITY
+    messages = [{"role": "user", "content": ident}]
+    sent = _sent_messages(monkeypatch, "claude-code", messages)
+    assert sent[0] == {"role": "system", "content": ident} and sent[1:] == messages
+
+
+@pytest.mark.parametrize("name", ["codex", "antigravity"])
+def test_other_subscription_providers_get_no_identity(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    # catches: the identity inserted for every subscription provider
+    messages = [{"role": "user", "content": "go"}]
+    assert _sent_messages(monkeypatch, name, messages) == messages
