@@ -216,18 +216,6 @@ def _box_rows(det: np.ndarray, i: int) -> np.ndarray:
     return det[det[:, 0].astype(int) == i] if len(det) else np.zeros((0, 7))
 
 
-def _overlap(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Intersection of each box in ``a`` ``(N, 4)`` with each in ``b`` ``(M, 4)`` as a
-    share of the smaller one's area, ``(N, M)`` (:func:`cutpoint.pano.boxes.overlap`).
-
-    The smaller, not ``a``'s own: the wearer's duplicate box is the larger one (a head
-    and shoulders box around the self-tagged lower half, e.g. 0.21 x 0.95 around
-    0.20 x 0.48), which a share of ``a`` misses. The cost: a small self box inside a
-    friend's box at the edge hides that friend's edge cut too.
-    """
-    return B.overlap(a, b)
-
-
 def edge_candidates(
     rows: np.ndarray, sel: np.ndarray, th: QAThresholds, person_label: int = 1
 ) -> np.ndarray:
@@ -255,7 +243,7 @@ def edge_candidates(
         if h[k] >= th.size_min_h:
             cand[k] = True
     if cand.any() and selfb.any():  # the wearer detected twice is not a cut
-        cand &= _overlap(rows[:, 3:7], rows[selfb, 3:7]).max(1) < th.edge_self_overlap
+        cand &= B.overlap(rows[:, 3:7], rows[selfb, 3:7]).max(1) < th.edge_self_overlap
     return cand
 
 
@@ -458,25 +446,20 @@ def targets_at(path: dict[str, Any] | None, times: np.ndarray) -> list[str]:
 def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.ndarray:
     """Roll (deg) of the true horizon in the rendered view at increasing source ``times``.
 
-    The renderer's rotation is ``R = R_VW @ view`` (:func:`render.stabilised_r_vw`
-    with the ``pano`` config's ``level_strength`` / ``tilt_follow_s`` /
-    ``max_follow_deg``); the true up seen through it shows the tilt left in:
-    ``u = R.T @ up`` in output coordinates, roll = atan2(u_x, -u_y).
+    The renderer's rotation is ``R = R_VW @ view`` at the frame shown at each time
+    (:func:`render.model_rotations`, with the ``pano`` config's ``level_strength`` /
+    ``tilt_follow_s`` / ``max_follow_deg``); the true up seen through it shows the tilt
+    left in: ``u = R.T @ up`` in output coordinates, roll = atan2(u_x, -u_y).
     """
-    from cutpoint.pano import geometry as G  # noqa: PLC0415
-    from cutpoint.pano.director import evaluate  # noqa: PLC0415
-    from cutpoint.pano.project import level_settings  # noqa: PLC0415
-    from cutpoint.pano.render import stabilised_r_vw  # noqa: PLC0415
+    from cutpoint.pano.render import model_frames, model_rotations  # noqa: PLC0415
 
     fps = float(orient.meta.get("fps") or 30000 / 1001)
-    yaw, pitch, _ = evaluate(path, times)
-    idx = np.clip(np.round(times * fps).astype(int), 0, len(orient.q) - 1)
-    r_vw = stabilised_r_vw(orient, idx, *level_settings())
+    idx = np.clip(model_frames(times, fps), 0, len(orient.q) - 1)
+    rot, _ = model_rotations(path, orient, idx, fps)
     up = np.einsum("kji,j->ki", orient.cam_to_world(idx), [0.0, -1.0, 0.0])
-    out = np.zeros(len(times))
+    out = np.zeros(len(idx))
     for i in range(len(idx)):
-        r = r_vw[i] @ G.view_matrix(float(yaw[i]), float(pitch[i]))
-        u = r.T @ up[i]
+        u = rot[i].T @ up[i]
         out[i] = math.degrees(math.atan2(u[0], -u[1]))
     return out
 
@@ -484,35 +467,35 @@ def horizon_roll(orient: Any, path: dict[str, Any], times: np.ndarray) -> np.nda
 RENDER_ASPECT = (1920, 1080)  # rendered clip frame (vertical: swapped); only the aspect matters
 
 
-def render_rotations(item: dict[str, Any], orient: Any, src_times: np.ndarray) -> np.ndarray:
-    """Output ray -> camera ray ``(K, 3, 3)`` of an IMU-levelled rendered clip at
-    increasing source ``src_times``.
+def render_rotations(
+    item: dict[str, Any], orient: Any, src_times: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(R, h_fov)`` of an IMU-levelled rendered clip at increasing source ``src_times``:
+    output ray -> camera ray ``(K, 3, 3)`` and the horizontal FOV (deg) per time.
 
     From the clip's emitted ``v360`` commands when it has them (as
     :func:`qa_horizon.emitted_roll` replays them; an SDK equirect input is turned back
-    into camera coordinates), else the renderer's model ``R_VW @ view``
-    (:func:`render.stabilised_r_vw`, as :func:`horizon_roll`).
+    into camera coordinates; the FOV from the path), else the renderer's model
+    ``R_VW @ view`` and FOV at the frame shown (:func:`render.model_rotations`, as
+    :func:`horizon_roll`).
     """
     from cutpoint.pano import geometry as G  # noqa: PLC0415
 
     t = np.asarray(src_times, float)
     cmd = item.get("commands")
     if cmd is not None:
+        from cutpoint.pano.director import evaluate  # noqa: PLC0415
+
         first = round(cmd.start * cmd.fps)
         j = np.clip(np.round(t * cmd.fps).astype(int), first, len(orient.q) - 1)
         r = cmd.rotation(j / cmd.fps - cmd.start + 1e-6)
-        return G.SDK_EQUIRECT_FROM_CAMERA.T @ r if cmd.projection == "equirect" else r
-    from cutpoint.pano.director import evaluate  # noqa: PLC0415
-    from cutpoint.pano.project import level_settings  # noqa: PLC0415
-    from cutpoint.pano.render import stabilised_r_vw  # noqa: PLC0415
+        r = G.SDK_EQUIRECT_FROM_CAMERA.T @ r if cmd.projection == "equirect" else r
+        return r, evaluate(item["path"], t)[2]
+    from cutpoint.pano.render import model_frames, model_rotations  # noqa: PLC0415
 
     fps = float(orient.meta.get("fps") or 30000 / 1001)
-    yaw, pitch, _ = evaluate(item["path"], t)
-    idx = np.clip(np.round(t * fps).astype(int), 0, len(orient.q) - 1)
-    r_vw = stabilised_r_vw(orient, idx, *level_settings())
-    return np.stack(
-        [r_vw[i] @ G.view_matrix(float(yaw[i]), float(pitch[i])) for i in range(len(t))]
-    )
+    idx = np.clip(model_frames(t, fps), 0, len(orient.q) - 1)
+    return model_rotations(item["path"], orient, idx, fps)
 
 
 def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> np.ndarray | None:
@@ -521,8 +504,8 @@ def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> n
     The geometric QA's wearer test (:func:`qa_paths.person_rows`) in the rendered
     picture: each box centre ``(cx, cy)`` (``det`` in :func:`frame_flags` layout,
     frame index into ``src_times``) is the output ray of a rectilinear frame with the
-    path's FOV at that time, turned into camera coordinates with
-    :func:`render_rotations`, and is the wearer within the clip's wearer cone
+    FOV at that time, turned into camera coordinates with :func:`render_rotations`
+    (rotation and FOV of one shown frame), and is the wearer within the clip's wearer cone
     (:func:`views.wearer_cone`, ``WEARER_CONE_DEG`` on a helmet mount) of its wearer
     axis (:func:`views.wearer_axis`).
 
@@ -534,7 +517,6 @@ def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> n
     """
     from cutpoint.config import remap_source  # noqa: PLC0415
     from cutpoint.pano import geometry as G  # noqa: PLC0415
-    from cutpoint.pano.director import evaluate  # noqa: PLC0415
     from cutpoint.pano.views import load_views, wearer_axis, wearer_cone  # noqa: PLC0415
 
     path = item.get("path")
@@ -550,8 +532,7 @@ def cone_self(item: dict[str, Any], det: np.ndarray, src_times: np.ndarray) -> n
     if not len(det):
         return np.zeros(0, bool)
     t = np.asarray(src_times, float)
-    rot = render_rotations(item, orient, t)
-    fov = evaluate(path, t)[2]
+    rot, fov = render_rotations(item, orient, t)
     w, h = (RENDER_ASPECT[1], RENDER_ASPECT[0]) if path.get("vertical") else RENDER_ASPECT
     fi = np.clip(det[:, 0].astype(int), 0, len(t) - 1)
     hf = fov[fi].astype(float)

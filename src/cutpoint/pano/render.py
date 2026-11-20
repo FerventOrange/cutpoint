@@ -63,6 +63,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, folders
+from cutpoint.dsp import gauss_smooth
 from cutpoint.encode import A_FMT, BT709_TAGS, Grade, audio_fade_filter, bt709_filter
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import (
@@ -118,13 +119,6 @@ class Format360:
 DEFAULT_FORMAT = Format360()
 
 
-def _gauss(x: np.ndarray, sigma: float) -> np.ndarray:
-    """Gaussian low-pass along axis 0 (edge-padded)."""
-    if sigma <= 0.5:
-        return x
-    return G.gauss_smooth(x, sigma)
-
-
 def _slerp(a: np.ndarray, b: np.ndarray, f: float) -> np.ndarray:
     """Spherical interpolation from unit vectors ``a`` to ``b`` (rows) by ``f``."""
     om = np.arccos(np.clip((a * b).sum(-1), -1.0, 1.0))[:, None]
@@ -159,11 +153,11 @@ def stabilised_r_vw(
     rw = orient.cam_to_world(np.arange(lo, hi))  # camera -> world
     fw = rw @ orient.fwd
     heading = np.unwrap(np.arctan2(fw[:, 0], fw[:, 2]))
-    hs = _gauss(heading, sigma)[rel]
+    hs = gauss_smooth(heading, sigma, min_sigma=0.5)[rel]
     up_w = np.array([0.0, -1.0, 0.0])
     nominal = np.einsum("kji,j->ki", rw[rel], up_w).mean(0)  # mean up in camera axes
     nominal /= np.linalg.norm(nominal)
-    own = _gauss(rw @ nominal, tilt_follow_s * fps)[rel]
+    own = gauss_smooth(rw @ nominal, tilt_follow_s * fps, min_sigma=0.5)[rel]
     own /= np.linalg.norm(own, axis=1, keepdims=True)
     f = np.stack([np.sin(hs), np.zeros_like(hs), np.cos(hs)], 1)
     c = own @ up_w
@@ -179,6 +173,39 @@ def stabilised_r_vw(
     f /= np.linalg.norm(f, axis=1, keepdims=True)
     disp = np.stack([np.cross(y, f), y, f], 2)  # columns: display axes in world
     return np.einsum("kji,kjl->kil", rw[rel], disp)
+
+
+def model_frames(times: Any, fps: float) -> np.ndarray:
+    """Source frame shown at each source time: ``ceil(t * fps)`` (after a seek the first
+    frame is the one at or after the seek time, :func:`command_lines`)."""
+    return np.ceil(np.asarray(times, float) * fps - 1e-6).astype(int)
+
+
+def model_rotations(
+    path: dict[str, Any],
+    orient: G.Orientation | None,
+    idx: np.ndarray,
+    fps: float,
+    *,
+    yaw_offset: float = 0.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The renderer's rotation model at the increasing source frames ``idx``.
+
+    Returns ``(R, h_fov)``: ``R`` ``(K, 3, 3)`` maps output rays to camera rays,
+    ``R_VW @ view`` (:func:`stabilised_r_vw` with :func:`level_settings`) with ``orient``,
+    else the plain ``view`` (a ``levelled`` source, whose path yaw gets ``yaw_offset``,
+    :func:`equirect_yaw_offset`); the path is evaluated at the frame times ``idx / fps``.
+    An SDK equirect input still needs :data:`~cutpoint.pano.geometry.SDK_EQUIRECT_FROM_CAMERA`
+    on top. :func:`command_lines` and the QA's model (:func:`cutpoint.pano.qa.horizon_roll`,
+    :func:`cutpoint.pano.qa.render_rotations`) share it.
+    """
+    yaw, pitch, fov = D.evaluate(path, idx / fps)
+    r_vw = None if orient is None else stabilised_r_vw(orient, idx, *level_settings())
+    rot = np.empty((len(idx), 3, 3))
+    for i in range(len(idx)):
+        view = G.view_matrix(float(yaw[i]) + yaw_offset, float(pitch[i]))
+        rot[i] = view if r_vw is None else r_vw[i] @ view
+    return rot, fov
 
 
 def clip_orientation(clip: X3Clip) -> G.Orientation:
@@ -316,7 +343,8 @@ def command_lines(
     The ``v360`` rotation maps output rays to input rays: ``view`` for a
     ``levelled`` source, ``R_VW @ view`` for the dual fisheye and
     ``SDK_EQUIRECT_FROM_CAMERA @ R_VW @ view`` for an unlevelled equirect,
-    with ``R_VW`` from :func:`stabilised_r_vw` at the displayed frame. After
+    with ``R_VW`` from :func:`stabilised_r_vw` at the displayed frame
+    (:func:`model_rotations`). After
     the seek the first frame is source frame ``ceil(start * fps)``, so each
     command is timed :data:`CMD_LEAD_S` before its frame's timestamp.
     """
@@ -325,24 +353,17 @@ def command_lines(
     n = math.ceil(dur * fps) + 1  # one spare: the output can end on a frame past start + dur
     idx = j0 + np.arange(0, n, max(1, cmd_every))
     rel = np.maximum(idx / fps - start - CMD_LEAD_S, 0.0)
-    times = idx / fps
-    yaw, pitch, fov = D.evaluate(path, times)
     yaw_off = equirect_yaw_offset()
-    r_vw = None
-    if not src.levelled and orient is not None:
-        r_vw = stabilised_r_vw(orient, idx, *level_settings())
+    imu = None if src.levelled else orient
+    rots, fov = model_rotations(path, imu, idx, fps, yaw_offset=yaw_off if src.levelled else 0.0)
     lines: list[str] = []
     init: dict[str, float] = {}
     cur = np.eye(3)  # rotation v360 currently applies (tracked exactly as sent)
     last_fov = (0.0, 0.0)
     for i, t in enumerate(rel):
-        view = G.view_matrix(float(yaw[i]) + (yaw_off if src.levelled else 0.0), float(pitch[i]))
-        if r_vw is not None:
-            r = r_vw[i] @ view
-            if src.projection == "equirect":  # SDK stitch without FlowState
-                r = G.SDK_EQUIRECT_FROM_CAMERA @ r
-        else:
-            r = view
+        r = rots[i]
+        if imu is not None and src.projection == "equirect":  # SDK stitch without FlowState
+            r = G.SDK_EQUIRECT_FROM_CAMERA @ r
         h = float(fov[i])
         v = G.flat_fov(h, fmt.width, fmt.height)
         if i == 0:

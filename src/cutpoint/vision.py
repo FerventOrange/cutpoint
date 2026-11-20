@@ -1274,6 +1274,30 @@ class VisionRater:
         self.used = False
         logger.debug("Unloaded Ollama model %s", self.model)
 
+    def unload_own(self) -> None:
+        """:meth:`unload`, only if this rater loaded the model: an Ollama model it sent no
+        request (every answer cached) or that was loaded before its first request
+        (:attr:`preloaded`: the AI Chat, another job) stays loaded, with an INFO line either
+        way (#888). A hosted Vision role goes through :meth:`unload` as before."""
+        if self.via:
+            self.unload()
+            return
+        if not self.used:
+            logger.info("Vision model %s left as it was (no request this run)", self.model)
+            return
+        if self.preloaded:
+            self.used = False
+            logger.info("Vision model %s left loaded (not loaded by this run)", self.model)
+            return
+        self.unload()
+        if not self.used:  # cleared once Ollama freed it
+            logger.info("Unloaded vision model %s", self.model)
+        else:
+            logger.info(
+                "Vision model %s could not be unloaded; Ollama frees it after its keep_alive",
+                self.model,
+            )
+
 
 def _frame_times(start: float, end: float, n_frames: int) -> list[float]:
     """``n_frames`` evenly spaced inside [start, end], neither end included."""

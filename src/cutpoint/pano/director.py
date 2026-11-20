@@ -56,6 +56,7 @@ from typing import Any
 
 import numpy as np
 
+from cutpoint.dsp import gauss_smooth
 from cutpoint.pano import geometry as G
 
 logger = logging.getLogger(__name__)
@@ -333,12 +334,6 @@ def _interp_frames(
     return out
 
 
-def _gauss(x: np.ndarray, sigma_steps: float) -> np.ndarray:
-    if len(x) < 3 or sigma_steps <= 0:
-        return x.copy()
-    return G.gauss_smooth(x, sigma_steps)
-
-
 def _limit(y: np.ndarray, dt: float, vmax: float, amax: float) -> np.ndarray:
     """Speed / acceleration limit (forward and backward pass, averaged)."""
 
@@ -373,7 +368,7 @@ def hold_offset(orient: G.Orientation, times: np.ndarray, p: DirectorParams) -> 
     if not p.upright_hold_s or orient.forward_axis != G.axis_name(G.LENS_V):
         return None
     h = np.asarray(orient.heading_smooth, float)
-    slow = G.gauss_smooth(h, max(1.0, p.upright_hold_s * float(orient.meta["fps"])))
+    slow = gauss_smooth(h, max(1.0, p.upright_hold_s * float(orient.meta["fps"])))
     return np.interp(times, orient.t, h - slow)
 
 
@@ -771,13 +766,20 @@ def _refine_shot(
     fit = np.clip(fit_fov(subj[:, 2], subj[:, 3], p, size), lo, hi)
     raw_fov = np.where(friend & has, fit, raw_fov)
     zone = np.where(has, p.dead_zone * raw_fov / 2, 0.0)
-    yaw = _limit(_gauss(_dead_zone(target, zone), sm), p.dt, p.max_speed, p.max_accel)
+    yaw = _limit(
+        gauss_smooth(_dead_zone(target, zone), sm, min_sigma=0.0, min_len=3),
+        p.dt,
+        p.max_speed,
+        p.max_accel,
+    )
     aim = np.clip(subj[:, 1] + p.headroom * subj[:, 3], p.pitch_min, p.pitch_max)
     old = (person_pitch > -900) & (people > PITCH_PEOPLE)
     raw_pitch = np.where(old, np.clip(person_pitch, p.pitch_min, p.pitch_max), p.pitch_default)
     raw_pitch = np.where(has & (people > PITCH_PEOPLE), aim, raw_pitch)
-    pitch = _gauss(raw_pitch, 2 * sm)
-    fov = _limit(_gauss(raw_fov, sm), p.dt, p.fov_rate, 2 * p.fov_rate)
+    pitch = gauss_smooth(raw_pitch, 2 * sm, min_sigma=0.0, min_len=3)
+    fov = _limit(
+        gauss_smooth(raw_fov, sm, min_sigma=0.0, min_len=3), p.dt, p.fov_rate, 2 * p.fov_rate
+    )
     return yaw, pitch, fov
 
 
@@ -829,10 +831,44 @@ def _row_is_self(rows: np.ndarray) -> np.ndarray:
 
 
 @dataclass(eq=False)
+class _SafeCtx:
+    """The path :func:`_safe_area_pass` fixes in place, and what its checks read.
+
+    ``yaw``, ``pitch``, ``fov``, ``target`` and ``subj`` are the track's own arrays (edited
+    in place); ``near`` the people per step (:func:`_near_people`); ``yaw_score``,
+    ``people``, ``centres`` and ``forward_yaw`` the segment grid's; ``persons`` and
+    ``persons_mid`` every confident person per step and halfway to the next one (None:
+    ``near``); ``hold`` the display yaw - held yaw per step (None: not held, #547).
+    """
+
+    times: np.ndarray
+    yaw: np.ndarray
+    pitch: np.ndarray
+    fov: np.ndarray
+    target: list[str]
+    subj: np.ndarray
+    near: list[np.ndarray]
+    yaw_score: np.ndarray
+    people: np.ndarray
+    centres: np.ndarray
+    forward_yaw: float
+    size: tuple[int, int]
+    fov_hi: float
+    fov_lo: float
+    fov_wide: float
+    raw_yaw: np.ndarray
+    hold: np.ndarray | None
+    persons: list[np.ndarray] | None = None
+    persons_mid: list[np.ndarray] | None = None
+    yaw0: np.ndarray | None = None  # the yaw before the pass (the shift cap counts from it)
+    cut_after: set[int] = field(default_factory=set)  # steps a shot or cut-away ends at
+
+
+@dataclass(eq=False)
 class _Framing:
     """The framing checks of :func:`_framing_checks` on the current ``ctx`` path.
 
-    The arrays and lists are ``ctx``'s own (edits to ``ctx["yaw"]`` and the others in
+    The arrays and lists are ``ctx``'s own (edits to ``ctx.yaw`` and the others in
     place, and to the ``cut_after`` set, show here); ``persons`` falls back to ``near``
     and ``persons_mid`` to the earlier step's people."""
 
@@ -1192,16 +1228,16 @@ class _Framing:
         return np.concatenate(sets)
 
 
-def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams) -> _Framing:
+def _framing_checks(ctx: _SafeCtx, fix: tuple[int, int], p: DirectorParams) -> _Framing:
     """``offenders(i, f, y)``, ``bad(i, f, y)``, ``runs(a, b, min_run)``, ``n_bad(a, b)``,
     ``subject(i)`` and ``constraints(i)`` on the current ``ctx`` path (see
     :func:`_safe_area_pass`); ``runs`` and ``n_bad`` count the steps of ``fix``.
 
-    A step is bad by :func:`_include_exclude`'s rule (``ctx["persons"]``, else
+    A step is bad by :func:`_include_exclude`'s rule (``ctx.persons``, else
     ``near``), and also when the view halfway to a neighbouring step is
     (``persons_mid``, the people at that time; else the earlier step's). That view is
     the average of the two (yaw unwrapped); a pair farther apart than the re-limit
-    allows, or one across a shot's end (``ctx["cut_after"]``), is a cut, where the
+    allows, or one across a shot's end (``ctx.cut_after``), is a cut, where the
     earlier view is held. ``bad(i, f, y)`` with a view checks step ``i``'s people and
     those halfway to its neighbours in that one view (``mids=False``: the step's only).
     """
@@ -1209,11 +1245,11 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     from cutpoint.pano.qa import QAThresholds  # noqa: PLC0415
 
     th = QP.paths_thresholds(QAThresholds())  # the --paths QA's edge floor
-    yaw, pitch, fov = ctx["yaw"], ctx["pitch"], ctx["fov"]
-    subj, near, size = ctx["subj"], ctx["near"], ctx["size"]
-    target = ctx["target"]
-    persons = ctx.get("persons", near)
-    persons_mid = ctx.get("persons_mid") or persons[:-1]
+    yaw, pitch, fov = ctx.yaw, ctx.pitch, ctx.fov
+    subj, near, size = ctx.subj, ctx.near, ctx.size
+    target = ctx.target
+    persons = near if ctx.persons is None else ctx.persons
+    persons_mid = ctx.persons_mid or persons[:-1]
     cut_deg = SAFE_SPEED * p.max_speed * p.dt + 1e-6
     return _Framing(
         yaw=yaw,
@@ -1224,8 +1260,8 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
         target=target,
         persons=persons,
         persons_mid=persons_mid,
-        cut_after=ctx.setdefault("cut_after", set()),
-        hold=ctx.get("hold"),
+        cut_after=ctx.cut_after,
+        hold=ctx.hold,
         fix=fix,
         p=p,
         th=th,
@@ -1233,11 +1269,11 @@ def _framing_checks(ctx: dict[str, Any], fix: tuple[int, int], p: DirectorParams
     )
 
 
-def _keep_if_better(ctx: dict[str, Any], chk: Any, a: int, b: int, apply: Any) -> bool:
+def _keep_if_better(ctx: _SafeCtx, chk: Any, a: int, b: int, apply: Any) -> bool:
     """Run ``apply()`` (edits yaw / fov of ``[a, b)``); revert unless the bad steps drop
     (``chk.n_bad`` of the changed steps and their neighbours: a step's checks reach the
     next one, and a cut from step ``b - 1`` may show at ``b``)."""
-    yaw, fov = ctx["yaw"], ctx["fov"]
+    yaw, fov = ctx.yaw, ctx.fov
     keep_y, keep_f = yaw[a:b].copy(), fov[a:b].copy()
     apply()
     ch = np.flatnonzero((yaw[a:b] != keep_y) | (fov[a:b] != keep_f))
@@ -1253,13 +1289,11 @@ def _keep_if_better(ctx: dict[str, Any], chk: Any, a: int, b: int, apply: Any) -
     return False
 
 
-def _subject_ceiling(
-    ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams
-) -> np.ndarray:
+def _subject_ceiling(ctx: _SafeCtx, chk: Any, a: int, b: int, p: DirectorParams) -> np.ndarray:
     """Per step of ``[a, b)``: the widest FOV that keeps the subject at ``min(its height
     now, include_min_subject_h)`` (never below the FOV now; ``fov_hi`` without one)."""
-    fov, size = ctx["fov"], ctx["size"]
-    top = np.maximum(ctx["fov_hi"], fov[a:b])
+    fov, size = ctx.fov, ctx.size
+    top = np.maximum(ctx.fov_hi, fov[a:b])
     for k in range(a, b):
         sj = chk.subject(k)
         if sj is not None:
@@ -1269,14 +1303,14 @@ def _subject_ceiling(
 
 
 def _widen_only(
-    ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams, hard: bool = False
+    ctx: _SafeCtx, chk: Any, a: int, b: int, p: DirectorParams, hard: bool = False
 ) -> bool:
     """Each bad step of ``[a, b)`` gets the least
     FOV (2 deg steps) that frames it well, else one where it is not hard bad
     (``chk.qa_bad``), up to its :func:`_subject_ceiling`; a cone envelope keeps
     ``fov_rate``; each stretch is kept only when the bad steps drop. ``hard``: only the
     hard bad steps, to the least FOV where they are not. Returns whether any was kept."""
-    times, fov = ctx["times"], ctx["fov"]
+    times, fov = ctx.times, ctx.fov
     top = _subject_ceiling(ctx, chk, a, b, p)
     kept = False
     for r0, r1 in chk.runs(a, b, 1):
@@ -1330,7 +1364,7 @@ def _intersect(
 
 
 def _solve_step(
-    ctx: dict[str, Any], chk: Any, i: int, p: DirectorParams, sign: int = 0
+    ctx: _SafeCtx, chk: Any, i: int, p: DirectorParams, sign: int = 0
 ) -> tuple[float, float, float] | None:
     """``(cost, yaw shift, FOV change)`` that frames step ``i`` well, cheapest first (None:
     none found); ``sign`` +1 / -1 allows shifts to that side only.
@@ -1343,22 +1377,22 @@ def _solve_step(
     beyond the edge come from the tangent map ``x = 0.5 + tan(a) / (2 tan(f / 2))``
     (people above or below the view are out at any shift); the smallest one is costed
     ``w_shift * |shift| / (f / 2) + w_widen * (f - f0) / (fov_hi - f0)``. The shift cap
-    counts from ``ctx["yaw0"]`` (the yaw before the pass) when given, so rounds do not add
+    counts from ``ctx.yaw0`` (the yaw before the pass) when given, so rounds do not add
     up. The :data:`INCLUDE_TRIES` cheapest are checked with ``chk.bad``; when all fail,
     the :data:`GRID_TRIES` cheapest points of a grid (FOV every 4 deg, shift every 2.5
     deg), at the step only. When none frames everyone well and the geometric QA counts an
     edge cut at the step, the cheapest of those it does not count one in (costing
     :data:`STICKY_MISS` more).
     """
-    y0, f0, vp = float(ctx["yaw"][i]), float(ctx["fov"][i]), float(ctx["pitch"][i])
-    size = ctx["size"]
-    fhi = max(f0, float(ctx["fov_hi"]))
+    y0, f0, vp = float(ctx.yaw[i]), float(ctx.fov[i]), float(ctx.pitch[i])
+    size = ctx.size
+    fhi = max(f0, float(ctx.fov_hi))
     room = fhi - f0
     sj = chk.subject(i)
     boxes = chk.constraints(i)
     floor = min(_height_share(sj[3], f0, size), p.include_min_subject_h) if sj is not None else 0
     clear = p.exclude_clear_deg
-    base = ctx.get("yaw0")
+    base = ctx.yaw0
     off = 0.0 if base is None else float(G.wrap_deg(base[i] - y0))  # the yaw before the pass
 
     def cost(f: float, dy: float) -> float:
@@ -1420,7 +1454,7 @@ def _solve_step(
     return None
 
 
-def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> bool:
+def _include_exclude(ctx: _SafeCtx, chk: Any, a: int, b: int, p: DirectorParams) -> bool:
     """Frame each near person of shot ``[a, b)`` whole or keep it out, by widening and / or
     shifting the yaw (:func:`_solve_step`, per bad step, one step runs too); True when a
     change was kept.
@@ -1436,7 +1470,7 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
     stretch is tried first and kept when it leaves no more bad steps than the
     interpolated shifts (each step's least shift chases small box changes: a drifting
     view on calm footage)."""
-    yaw, fov, lo = ctx["yaw"], ctx["fov"], ctx["fov_lo"]
+    yaw, fov, lo = ctx.yaw, ctx.fov, ctx.fov_lo
     sm = p.smooth_s / p.dt
     gap = p.include_bridge_s / p.dt - 1e-6
 
@@ -1473,7 +1507,12 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
         top = _subject_ceiling(ctx, chk, a, b, p)  # smoothing must not shrink a subject
 
         def apply(dy: np.ndarray = dy) -> None:
-            f = _limit(base_f + _gauss(df, sm / 2), p.dt, p.fov_rate, 2 * p.fov_rate)
+            f = _limit(
+                base_f + gauss_smooth(df, sm / 2, min_sigma=0.0, min_len=3),
+                p.dt,
+                p.fov_rate,
+                2 * p.fov_rate,
+            )
             fov[a:b] = np.clip(f, lo, top)
             yaw[a:b] = _held(
                 ctx,
@@ -1481,7 +1520,10 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
                 b,
                 base_y,
                 lambda y, dy=dy: _limit(
-                    y + _gauss(dy, sm / 2), p.dt, SAFE_SPEED * p.max_speed, SAFE_SPEED * p.max_accel
+                    y + gauss_smooth(dy, sm / 2, min_sigma=0.0, min_len=3),
+                    p.dt,
+                    SAFE_SPEED * p.max_speed,
+                    SAFE_SPEED * p.max_accel,
                 ),
             )
 
@@ -1513,59 +1555,62 @@ def _include_exclude(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorP
     return kept
 
 
-def _held(ctx: dict[str, Any], a: int, b: int, y: np.ndarray, fn: Any) -> np.ndarray:
+def _held(ctx: _SafeCtx, a: int, b: int, y: np.ndarray, fn: Any) -> np.ndarray:
     """``fn`` (a smoothing / limit) of the display yaws ``y`` of steps ``[a, b)``, applied in
-    the held frame of an upright clip (``ctx["hold"]``, :func:`hold_offset`; #547)."""
-    hold = ctx.get("hold")
+    the held frame of an upright clip (``ctx.hold``, :func:`hold_offset`; #547)."""
+    hold = ctx.hold
     h = 0.0 if hold is None else hold[a:b]
     return fn(y - h) + h
 
 
-def _relimit(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> None:
+def _relimit(ctx: _SafeCtx, chk: Any, a: int, b: int, p: DirectorParams) -> None:
     """Follow the subject without the dead zone, at :data:`SAFE_SPEED` x the limits."""
     sm = p.smooth_s / p.dt
 
     def apply() -> None:
-        ctx["yaw"][a:b] = _held(
+        ctx.yaw[a:b] = _held(
             ctx,
             a,
             b,
-            ctx["raw_yaw"][a:b],
+            ctx.raw_yaw[a:b],
             lambda y: _limit(
-                _gauss(y, sm / 2), p.dt, SAFE_SPEED * p.max_speed, SAFE_SPEED * p.max_accel
+                gauss_smooth(y, sm / 2, min_sigma=0.0, min_len=3),
+                p.dt,
+                SAFE_SPEED * p.max_speed,
+                SAFE_SPEED * p.max_accel,
             ),
         )
 
     _keep_if_better(ctx, chk, a, b, apply)
 
 
-def _apply_away(ctx: dict[str, Any], c0: int, c1: int, ctr: float, p: DirectorParams) -> None:
+def _apply_away(ctx: _SafeCtx, c0: int, c1: int, ctr: float, p: DirectorParams) -> None:
     """Turn steps ``[c0, c1)`` into a wide cut-away at yaw ``ctr`` (in place)."""
-    yaw = ctx["yaw"]
+    yaw = ctx.yaw
     prev_yaw = yaw[c0 - 1] if c0 > 0 else ctr
     yaw[c0:c1] = prev_yaw + G.wrap_deg(ctr - prev_yaw)
     h0 = 0.0
-    if (hold := ctx.get("hold")) is not None:  # upright: held in the held frame (#547)
+    if (hold := ctx.hold) is not None:  # upright: held in the held frame (#547)
         h0 = float(hold[c0])
         yaw[c0:c1] += hold[c0:c1] - h0
-    ctx["pitch"][c0:c1] = p.pitch_default
-    ctx["fov"][c0:c1] = ctx["fov_wide"]
-    ctx["subj"][c0:c1] = np.nan
-    fwd = abs(G.wrap_deg(ctr - h0 - ctx["forward_yaw"])) <= FORWARD_DEG  # forward_yaw: held frame
-    ctx["target"][c0:c1] = ["forward" if fwd else "view"] * (c1 - c0)
+    ctx.pitch[c0:c1] = p.pitch_default
+    ctx.fov[c0:c1] = ctx.fov_wide
+    ctx.subj[c0:c1] = np.nan
+    fwd = abs(G.wrap_deg(ctr - h0 - ctx.forward_yaw)) <= FORWARD_DEG  # forward_yaw: held frame
+    ctx.target[c0:c1] = ["forward" if fwd else "view"] * (c1 - c0)
 
 
 def _best_away(
-    ctx: dict[str, Any], chk: Any, c0: int, c1: int, cands: list[float], p: DirectorParams
+    ctx: _SafeCtx, chk: Any, c0: int, c1: int, cands: list[float], p: DirectorParams
 ) -> tuple[tuple[int, int], float]:
     """``(bad steps, yaw)`` of the candidate cut-away of ``[c0, c1)`` with the fewest bad
     steps (``chk.n_bad`` of ``[c0, c1]``: step ``c1`` may show it held; the first of
     equals; ``cands`` is non-empty); ``ctx`` is left unchanged. ``include_exclude``:
     among equal QA edge cuts, the fewest steps that show the wearer first."""
     keys = ("yaw", "pitch", "fov", "subj")
-    keep = {k: ctx[k][c0:c1].copy() for k in keys}
-    keep_target = ctx["target"][c0:c1]
-    cuts = ctx.setdefault("cut_after", set())
+    keep = {k: getattr(ctx, k)[c0:c1].copy() for k in keys}
+    keep_target = ctx.target[c0:c1]
+    cuts = ctx.cut_after
     new = {c0 - 1, c1 - 1} - cuts  # the cut-away's ends are cuts while it is tried
     cuts |= new
     tried = []
@@ -1574,8 +1619,8 @@ def _best_away(
         n = chk.n_bad(c0, c1 + 1)
         seen = sum(chk.wearer_seen(i) for i in range(c0, c1))
         for k in keys:
-            ctx[k][c0:c1] = keep[k]
-        ctx["target"][c0:c1] = keep_target
+            getattr(ctx, k)[c0:c1] = keep[k]
+        ctx.target[c0:c1] = keep_target
         tried.append(((n[0], seen, n[1]), n, ctr))
         if not any(n) and not seen:
             break
@@ -1585,7 +1630,7 @@ def _best_away(
 
 
 def _cut_away(
-    ctx: dict[str, Any],
+    ctx: _SafeCtx,
     chk: Any,
     a: int,
     b: int,
@@ -1603,7 +1648,7 @@ def _cut_away(
     cuts and the previous cut-away (else it reaches them), and is made only when it
     removes ``cut_min_gain_s`` or more, per cut it adds, of the steps the geometric QA
     counts as cut or where the subject is out of view."""
-    subj, cen = ctx["subj"], ctx["centres"]
+    subj, cen = ctx.subj, ctx.centres
     min_steps = max(1, round(p.min_hold_s / p.dt))
     snap = max(min_steps, round(p.cut_min_gap_s / p.dt))
     gain = max(1, round(p.cut_min_gain_s / p.dt))
@@ -1635,14 +1680,14 @@ def _cut_away(
             merged = done.pop(0)
             c1 = merged[1]
             sy += last_sy
-        score = ctx["yaw_score"][c0:c1].mean(0)
+        score = ctx.yaw_score[c0:c1].mean(0)
         away = np.ones(len(cen), bool)
         for y in sy:
-            away &= np.abs(G.wrap_deg(cen - y)) > ctx["fov_wide"] / 2 + 10.0
-        away &= ctx["people"][c0:c1].max(0) <= FRIEND_PEOPLE
+            away &= np.abs(G.wrap_deg(cen - y)) > ctx.fov_wide / 2 + 10.0
+        away &= ctx.people[c0:c1].max(0) <= FRIEND_PEOPLE
         cands = [float(cen[k]) for k in np.flatnonzero(away)[np.argsort(-score[away])]]
-        h0 = 0.0 if ctx.get("hold") is None else float(ctx["hold"][c0])
-        best = _best_away(ctx, chk, c0, c1, cands or [float(ctx["forward_yaw"]) + h0], p)
+        h0 = 0.0 if ctx.hold is None else float(ctx.hold[c0])
+        best = _best_away(ctx, chk, c0, c1, cands or [float(ctx.forward_yaw) + h0], p)
         now = chk.n_bad(c0, c1 + 1)
         cuts = (c0 > a) + (c1 < pb and merged is None)  # cuts the cut-away adds
         if best[0] >= now or now[0] - best[0][0] < gain * max(1, cuts):
@@ -1651,40 +1696,38 @@ def _cut_away(
             continue
         ctr = best[1]
         _apply_away(ctx, c0, c1, ctr, p)
-        ctx.setdefault("cut_after", set()).update({c0 - 1, c1 - 1})
+        ctx.cut_after.update({c0 - 1, c1 - 1})
         done[:0] = [x for x in ((c0, c1), (c1, pb)) if x[1] > x[0]]
         pb, last_c0, last_sy = c0, c0, sy
-        logger.debug(
-            "safe-area cut %.1f-%.1f s to yaw %.0f", ctx["times"][c0], ctx["times"][c1 - 1], ctr
-        )
+        logger.debug("safe-area cut %.1f-%.1f s to yaw %.0f", ctx.times[c0], ctx.times[c1 - 1], ctr)
     return ([(a, pb)] if pb > a else []) + done
 
 
-def _suspect_steps(ctx: dict[str, Any], span: tuple[int, int]) -> set[int]:
+def _suspect_steps(ctx: _SafeCtx, span: tuple[int, int]) -> set[int]:
     """Steps of ``span`` where a near person other than the framed subject reaches into the
     outer fifth of the view's half width (arms, shoulders and jackets at the edge belong
     to them; a person well inside the frame is no suspect)."""
     out = set()
-    subj = ctx["subj"]
+    subj = ctx.subj
     for i in range(*span):
-        has = ctx["target"][i] == "friend" and not np.isnan(subj[i]).any()
-        for box in ctx["near"][i]:
+        has = ctx.target[i] == "friend" and not np.isnan(subj[i]).any()
+        for box in ctx.near[i]:
             if has and abs(G.wrap_deg(box[0] - subj[i, 0])) < max(5.0, subj[i, 2] / 2):
                 continue  # the subject itself (as in _framing_checks)
-            d, half = abs(G.wrap_deg(box[0] - ctx["yaw"][i])), ctx["fov"][i] / 2
+            d, half = abs(G.wrap_deg(box[0] - ctx.yaw[i])), ctx.fov[i] / 2
             if d - box[2] / 2 < half and d + box[2] / 2 > 0.8 * half:
                 out.add(i)
                 break
     return out
 
 
-def _fix_shot(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) -> None:
+def _fix_shot(ctx: _SafeCtx, chk: Any, a: int, b: int, p: DirectorParams) -> None:
     """``include_exclude`` fixes of shot ``[a, b)``: :func:`_include_exclude` (up to
     :data:`INCLUDE_ROUNDS` rounds while it helps), and :func:`_widen_only` before
     them when the rounds leave hard bad steps; the one with fewer bad steps
     (``chk.n_bad``, hard ones first) is kept, then
     hard bad steps left are widened (``_widen_only(hard=True)``)."""
-    yaw, fov = ctx["yaw"], ctx["fov"]
+    yaw, fov = ctx.yaw, ctx.fov
 
     def rounds() -> tuple[int, int]:
         for _ in range(INCLUDE_ROUNDS):  # the eased edges of a fix may need another
@@ -1704,7 +1747,7 @@ def _fix_shot(ctx: dict[str, Any], chk: Any, a: int, b: int, p: DirectorParams) 
 
 
 def _safe_area_pass(
-    ctx: dict[str, Any],
+    ctx: _SafeCtx,
     shots: list[tuple[int, int]],
     span: tuple[int, int],
     p: DirectorParams,
@@ -1712,13 +1755,8 @@ def _safe_area_pass(
 ) -> list[tuple[int, int]]:
     """Fix framing that fails on the smoothed path (in place); returns the shots.
 
-    ``ctx``: ``times``, ``yaw``, ``pitch``, ``fov``, ``target``, ``subj``, ``near``
-    (:func:`_near_people`), ``yaw_score``, ``people``, ``centres``,
-    ``forward_yaw``, ``size``, ``fov_lo``, ``fov_hi``, ``fov_wide``, ``raw_yaw``; with
-    ``persons`` and ``persons_mid`` (every confident person per step and halfway to the
-    next one; else ``near``). Sets
-    ``yaw0`` (the yaw before the pass) and ``cut_after`` (the steps a shot or cut-away
-    ends at).
+    ``ctx``: the path and its inputs (:class:`_SafeCtx`). Sets ``yaw0`` (the yaw before
+    the pass) and ``cut_after`` (the steps a shot or cut-away ends at).
     ``span``: the segment's steps (the cut-aways' hold rule, :func:`_cut_away`);
     ``fix``: the steps that get fixed (default ``span``).
 
@@ -1744,8 +1782,8 @@ def _safe_area_pass(
     :func:`_cut_away` takes what is left by that rule.
     """
     fix = span if fix is None else fix
-    ctx["yaw0"] = ctx["yaw"].copy()  # the include / exclude shift cap counts from here
-    ctx["cut_after"] = {b - 1 for _, b in shots[:-1]}
+    ctx.yaw0 = ctx.yaw.copy()  # the include / exclude shift cap counts from here
+    ctx.cut_after = {b - 1 for _, b in shots[:-1]}
     chk = _framing_checks(ctx, fix, p)
     first = 1  # runs of any length are fixed, cut-aways stay longer
     out: list[tuple[int, int]] = []
@@ -1853,8 +1891,9 @@ def _selfie_shot(pl: _Plan, a: int, b: int) -> tuple[np.ndarray, np.ndarray]:
         wy.append(float(y_))
         wp.append(float(p_))
     y = np.degrees(np.unwrap(np.radians(wy)))
-    yaw = _limit(_gauss(y, sm), p.dt, p.max_speed, p.max_accel)
-    return yaw, _gauss(np.clip(np.asarray(wp) + p.selfie_pitch_up, -70.0, 0.0), sm)
+    yaw = _limit(gauss_smooth(y, sm, min_sigma=0.0, min_len=3), p.dt, p.max_speed, p.max_accel)
+    wp_ = np.clip(np.asarray(wp) + p.selfie_pitch_up, -70.0, 0.0)
+    return yaw, gauss_smooth(wp_, sm, min_sigma=0.0, min_len=3)
 
 
 def _view_shot(pl: _Plan, subj: np.ndarray, a: int, b: int) -> tuple[Any, ...]:
@@ -1925,32 +1964,32 @@ def _safe_area(
     p, sg, ln = pl.p, pl.sg, pl.lens
     times = sg["times"]
     start, end = pl.segment
-    ctx = {
-        "times": times,
-        "yaw": track["yaw"],
-        "pitch": track["pitch"],
-        "fov": track["fov"],
-        "target": track["target"],
-        "subj": track["subj"],
-        "near": _near_people(pl.pv, times, p.near_min_h_deg),
-        "yaw_score": sg["yaw_score"],
-        "people": sg["people"],
-        "centres": sg["centres"],
-        "forward_yaw": sg["forward_yaw"],
-        "size": ln.size,
-        "fov_hi": ln.hi,
-        "fov_lo": ln.lo,
-        "fov_wide": ln.wide,
-        "raw_yaw": track["raw_yaw"],
-        "hold": track["hold"],
-    }
+    ctx = _SafeCtx(
+        times=times,
+        yaw=track["yaw"],
+        pitch=track["pitch"],
+        fov=track["fov"],
+        target=track["target"],
+        subj=track["subj"],
+        near=_near_people(pl.pv, times, p.near_min_h_deg),
+        yaw_score=sg["yaw_score"],
+        people=sg["people"],
+        centres=sg["centres"],
+        forward_yaw=sg["forward_yaw"],
+        size=ln.size,
+        fov_hi=ln.hi,
+        fov_lo=ln.lo,
+        fov_wide=ln.wide,
+        raw_yaw=track["raw_yaw"],
+        hold=track["hold"],
+    )
     span = (int(np.searchsorted(times, start - 1e-6)), int(np.searchsorted(times, end + 1e-6)))
     # every confident person, at the steps and halfway between them
     from cutpoint.pano.qa import QAThresholds  # noqa: PLC0415
 
     floor = min(p.near_min_score, QAThresholds().person_min_score)
     rows = _near_people(pl.pv, np.r_[times, times[:-1] + p.dt / 2], 0.0, floor)
-    ctx["persons"], ctx["persons_mid"] = rows[: len(times)], rows[len(times) :]
+    ctx.persons, ctx.persons_mid = rows[: len(times)], rows[len(times) :]
     shots = _safe_area_pass(ctx, shots, span, p, (0, len(times)))
     sus = _suspect_steps(ctx, span) if suspects else set()  # on the path as rendered
     sus |= {a for a, _ in shots if span[0] < a < span[1]}  # cut / cut-away destinations

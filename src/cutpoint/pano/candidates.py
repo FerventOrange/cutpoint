@@ -146,6 +146,7 @@ CODE_MODULES = (
     "cutpoint.events.voice",
     "cutpoint.events.visual",
     "cutpoint.events.common",
+    "cutpoint.dsp",
 )
 
 

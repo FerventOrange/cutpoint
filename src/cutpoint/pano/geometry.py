@@ -44,6 +44,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache, state
+from cutpoint.dsp import gauss_smooth
 from cutpoint.utils import file_stamp
 
 logger = logging.getLogger(__name__)
@@ -451,17 +452,6 @@ def quat_track(t: np.ndarray, a_v: np.ndarray, w_v: np.ndarray, gain: float) -> 
                 qw, qx, qy, qz = qw / nq, qx / nq, qy / nq, qz / nq
         out.append((qw, qx, qy, qz))
     return np.array(out)
-
-
-def gauss_smooth(x: np.ndarray, sigma: float) -> np.ndarray:
-    """Gaussian low-pass along axis 0 (``sigma`` in samples, +-3 sigma kernel, edge-padded)."""
-    r = int(3 * sigma)
-    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
-    k /= k.sum()
-    if x.ndim == 1:
-        return np.convolve(np.pad(x, r, mode="edge"), k, mode="valid")
-    xp = np.pad(x, [(r, r)] + [(0, 0)] * (x.ndim - 1), mode="edge")
-    return np.apply_along_axis(lambda c: np.convolve(c, k, mode="valid"), 0, xp)
 
 
 def fuse(

@@ -253,7 +253,7 @@ def sliver_subject_frames(
             continue
         selfb = good & sel
         box = slivers[k : k + 1, 3:7]
-        if selfb.any() and Q._overlap(box, rows[selfb, 3:7]).max() >= th.edge_self_overlap:
+        if selfb.any() and B.overlap(box, rows[selfb, 3:7]).max() >= th.edge_self_overlap:
             continue
         top = y1[k] <= m and h[k] > th.edge_top_h and y2[k] < th.edge_top_max_y2
         if x1[k] <= m or x2[k] >= 1 - m or top:

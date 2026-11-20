@@ -281,8 +281,9 @@ def test_render_rotations_from_the_commands_match_the_renderer_model(rendered) -
     assert item["commands"] is not None
     t = item["offset"] + np.arange(0.2, 3.8, 0.5)
     orient = G.load_orientation(LRV)
-    measured = qa.render_rotations(item, orient, t)
-    model = qa.render_rotations({**item, "commands": None}, orient, t)
+    measured, fov = qa.render_rotations(item, orient, t)
+    model, model_fov = qa.render_rotations({**item, "commands": None}, orient, t)
+    assert np.allclose(fov, model_fov, atol=1.0)
     ang = [
         np.degrees(np.arccos(np.clip((np.trace(a.T @ b) - 1) / 2, -1, 1)))
         for a, b in zip(measured, model, strict=True)
