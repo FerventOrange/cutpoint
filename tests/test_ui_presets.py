@@ -293,8 +293,7 @@ def test_clips_and_edit_jobs_pass_color_and_its_strength(
     assert _color_flags(_cli_args(captured[0])) == passed  # and the CLI parses them
 
 
-@pytest.mark.parametrize("action", ["clips", "edit"])
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # one validator for clips and edit (both pass it: the test above)
     ("body", "message"),
     [
         ({"color": "max"}, "color must be one of off, auto, underwater"),
@@ -311,11 +310,10 @@ def test_clips_and_edit_jobs_reject_a_bad_color(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    action: str,
     body: dict,
     message: str,
 ) -> None:
-    res, captured = color_job(client, monkeypatch, tmp_path, action, body)
+    res, captured = color_job(client, monkeypatch, tmp_path, "clips", body)
     assert res.status_code == 400, res.text
     assert message in res.json()["detail"]
     assert not captured

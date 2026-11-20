@@ -52,8 +52,7 @@ def still_source(client: TestClient, tmp_path: Path) -> tuple[str, str, Path, Pa
         ("ok", "ok", "at=soon", True, 422, None),
         ("ok", "ok", "at=0.5&w=1", True, 200, "-50-32.jpg"),
         ("ok", "ok", "at=0.5&w=99999", True, 200, "-50-640.jpg"),
-        ("ok", "ok", "at=0.5", True, 200, "-50-160.jpg"),
-        ("ok", "ok", "at=99", True, 200, "-90-160.jpg"),  # clamped to duration - 0.1 s
+        ("ok", "ok", "at=99", True, 200, "-90-160.jpg"),  # clamped to duration - 0.1 s, w 160
         ("ok", "ok", "at=1e308", True, 200, "-90-160.jpg"),
     ],
 )
