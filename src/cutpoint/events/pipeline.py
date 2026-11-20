@@ -20,7 +20,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -52,7 +52,7 @@ from cutpoint.events.killfeed import (
 from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS
 from cutpoint.events.menu_spans import ocr_stats_key
 from cutpoint.events.ocr_prefetch import OcrPrefetch
-from cutpoint.events.regions import game_key_for_path, load_preset, stale_mapping
+from cutpoint.events.regions import game_key_for_path, load_preset
 from cutpoint.events.report import kept_dialogue, normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.events.vlm_windows import (
@@ -278,7 +278,6 @@ def run_events(
     if ocr.game != "auto":
         check_game_key(ocr.game)
     boom = explosions.ExplosionParams()
-    stage = stage or _layer_step
     hl = load_highlights(project)
     is_cam = project_kind(hl) == ACTION_CAM
     if layers is None:
@@ -286,6 +285,140 @@ def run_events(
     if cached_ocr is None:
         cached_ocr = not is_cam
     preflight(layers)
+    rater, hosted, online = _vision_client(layers, vlm, ollama_url, ollama_model)
+    sources, bad = _load_sources(project, hl, only, avoid)
+    run = _Run(
+        project=project,
+        hl=hl,
+        sources=sources,
+        layers=layers,
+        force=force,
+        stage=stage or _layer_step,
+        batch_size=batch_size,
+        bad=bad,
+        is_cam=is_cam,
+        crash_run="crash" in layers and not only,  # project-wide ranking: all sources
+        layer1={str(s.path): [] for s in sources},
+    )
+    by_path = {str(s.path): s for s in sources}
+    transcript = load_transcript_lines(project)
+
+    # ---- layer 1a: audio
+    voice_params = None
+    voice_needs = False
+    if "voice" in layers:
+        from cutpoint.events import voice as voice_layer  # noqa: PLC0415
+
+        voice_params = voice_layer.VoiceParams()
+        voice_needs = voice_layer.needs_run(sources, voice_params, force="voice" in force)
+    _audio_layer(run, audio, keep=voice_needs)
+    # ---- layer 1c/1d: wind-robust voice grids, frame embeddings + people
+    _voice_layer(run, voice_params, voice_needs)
+    # The visual layer's caption embeddings use the captions of the project's activity.json
+    # (generic until the crash layer below writes one); the contact sheets are written after the
+    # crash layer when it runs, so a first run's sheets use the profile it resolves.
+    from cutpoint.activity import project_prompts  # noqa: PLC0415
+
+    prompts = project_prompts(project)
+    _visual_layer(run, prompts, ocr.hwaccel, encoder)
+    if sheets and not run.crash_run:
+        _write_sheets(run, prompts)
+
+    # ---- layer 1b: OCR (with region discovery for games without a preset)
+    t0 = time.perf_counter()
+    with run.stage("ocr") if "ocr" in layers else contextlib.nullcontext():
+        base = 0.0  # progress the per-source OCR starts at (after discovery)
+        if "ocr" in layers and discover is not False:
+            base = _ocr_discovery(
+                run,
+                ocr,
+                rater,
+                t0,
+                discover=discover,
+                bursts=discover_bursts,
+                scope=preset_scope,
+                hint=discover_hint,
+                context=context,
+                prefetch=prefetch,
+            )
+        _ocr_layer(run, ocr, base, prefetch, cached_ocr=cached_ocr, debug=ocr_debug)
+    run.timings["ocr_s"] = round(time.perf_counter() - t0, 1)
+    _confirm_explosions(run, boom)
+    if run.make_engine is not None:  # no OCR after this: the engine is not kept through the VLM
+        if prefetch is not None and run.make_engine is prefetch.make_engine:
+            prefetch.close()  # its worker uses the engine: stopped first (idempotent)
+        _release_engine(run.make_engine)
+        run.make_engine = None
+
+    # ---- crashes (after voice + visual, whose caches it reads): crashes.json
+    if run.crash_run:
+        _crash_layer(
+            run,
+            encoder,
+            context=context,
+            llm=llm,
+            ollama_url=ollama_url,
+            ollama_model=ollama_model,
+            sheets=sheets,
+        )
+
+    # ---- layer 2: VLM windows
+    vlm, cam_prompts = _vlm_params(run, vlm, context)
+    results = _vlm_layer(run, vlm, ocr.game, rater, hosted, online, by_path, transcript)
+    run.stats["vram_mib"] = run.vram
+
+    talk: list[dict[str, Any]] = []
+    if dialogue is not None:
+        with run.stage("dialogue"):
+            talk = dialogue(run.layer1)
+    else:  # not read by this run: what an earlier one marked stays
+        talk = kept_dialogue(project, [str(s.path) for s in sources])
+    with run.stage("write"):
+        return _write_events(run, results, talk, transcript, vlm, cam_prompts, audio, boom, ocr)
+
+
+@dataclass
+class _Run:
+    """What the layers of one :func:`run_events` share: its inputs and what they collect."""
+
+    project: Path
+    hl: dict[str, Any]
+    sources: list[Any]
+    layers: tuple[str, ...]
+    force: tuple[str, ...]
+    stage: Callable[[str], AbstractContextManager[Any]]
+    batch_size: int
+    bad: dict[str, list[tuple[float, float]]]  # ranges never decoded, per source path
+    is_cam: bool
+    crash_run: bool  # the crash layer runs (project-wide: all sources)
+    layer1: dict[str, list[dict[str, Any]]]  # the layer-1 events per source path
+    timings: dict[str, Any] = field(default_factory=dict)
+    stats: dict[str, Any] = field(default_factory=dict)
+    vram: dict[str, Any] = field(default_factory=dict)
+    # PANNs, handed from the audio layer to the voice layer instead of loading it again (#372)
+    panns: Any = None
+    panns_failed: bool = False  # the audio layer could not load PANNs: voice does not retry (#629)
+    kept: list[Any] = field(default_factory=list)  # a CLIP handed over to the crash layer
+    # the OCR engine's maker; a stage that suppresses the OCR layer's error keeps the current one
+    make_engine: Callable[[], OcrEngine] | None = None
+
+
+def _raise_if_all_failed(
+    errors: list[Exception], total: int, before: Callable[[], None] | None = None
+) -> None:
+    """Raise the last of a layer's per-source ``errors`` when every one of the ``total``
+    sources failed: not one bad file, the layer failed (``before`` runs first)."""
+    if errors and len(errors) == total:
+        if before is not None:
+            before()
+        raise errors[-1]
+
+
+def _vision_client(
+    layers: tuple[str, ...], vlm: VlmParams, ollama_url: str | None, ollama_model: str | None
+) -> tuple[VisionRater | None, bool, bool | None]:
+    """The shared vision client (None: not usable), whether it is hosted, and whether it is
+    online when that was asked already; sets ``vlm.model``, the key of the descriptions."""
     try:
         rater: VisionRater | None = VisionRater(ollama_url, ollama_model)  # the shared client
     except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url: only the VLM is lost
@@ -311,6 +444,16 @@ def run_events(
         # apart (rater.host: providers.endpoint; an Ollama's host[:port] of its URL, #670)
         host = rater.host if hosted else host_port(rater.url)
         vlm.model = f"{rater.provider_name}@{host}:{rater.model}"
+    return rater, hosted, online
+
+
+def _load_sources(
+    project: Path,
+    hl: dict[str, Any],
+    only: tuple[str, ...],
+    avoid: tuple[tuple[str, float, float], ...],
+) -> tuple[list[Any], dict[str, list[tuple[float, float]]]]:
+    """The reachable sources of ``hl`` that match ``only``, and the ranges never decoded."""
     # joined MPEG-TS/PS recordings are read through their stream copy (#1052)
     tsrepair.prepare_sources(
         [Path(s["path"]) for s in hl["sources"]],
@@ -340,300 +483,329 @@ def run_events(
         ]
     if not sources:
         raise ValueError("No sources selected")
-    by_path = {str(s.path): s for s in sources}
-    transcript = load_transcript_lines(project)
-    timings: dict[str, Any] = {}
-    stats: dict[str, Any] = {}
-    vram: dict[str, Any] = {}
-    layer1: dict[str, list[dict[str, Any]]] = {str(s.path): [] for s in sources}
+    return sources, bad
 
-    # ---- layer 1a: audio
+
+def _audio_layer(run: _Run, audio: AudioParams, *, keep: bool) -> None:
+    """Layer 1a: PANNs sound events of every source (cached ones read when the layer does not
+    run). ``keep``: PANNs is handed to the voice layer (``run.panns``) instead of closed."""
     t0 = time.perf_counter()
-    det = None
-    voice_params = None
-    keep = False  # hand PANNs to the voice layer instead of loading it again (#372)
-    voice_needs = False
-    panns_failed = False  # the audio layer could not load PANNs: voice does not retry (#629)
-    if "voice" in layers:
-        from cutpoint.events import voice as voice_layer  # noqa: PLC0415
-
-        voice_params = voice_layer.VoiceParams()
-        keep = voice_needs = voice_layer.needs_run(sources, voice_params, force="voice" in force)
-    if "audio" in layers:
-        with stage("audio"):
+    sources = run.sources
+    if "audio" in run.layers:
+        with run.stage("audio"):
             # no Ollama unload up front: a run with every source cached loads nothing, and
             # PANNs' memory guard (memguard.device_for) frees Ollama's models when it is short
             with VramMonitor() as vm:
                 guard = SourceGuard("Audio events")
                 try:
                     for i, s in enumerate(sources):
-                        if batch_size and i and not i % batch_size:  # a batch boundary
-                            if det is not None:
-                                det.close()
-                                det = None
+                        if run.batch_size and i and not i % run.batch_size:  # a batch boundary
+                            if run.panns is not None:
+                                run.panns.close()
+                                run.panns = None
                             _boundary("audio", i, len(sources))
                         progress.update(progress.fraction(i, len(sources)))
-                        evs = None if "audio" in force else cached_audio_events(s, audio)
+                        evs = None if "audio" in run.force else cached_audio_events(s, audio)
                         if evs is None and not s.audio_parts:
                             logger.warning(
                                 "%s: no cached 16 kHz audio; run `cutpoint analyze` first", s.name
                             )
                             evs = []  # nothing to detect: no model load
                         if evs is None:
-                            if det is None:
+                            if run.panns is None:
                                 try:
-                                    det = PannsDetector()
+                                    run.panns = PannsDetector()
                                 except Exception:
-                                    panns_failed = True
+                                    run.panns_failed = True
                                     raise
                                 # the device of this run, as voice and visual record theirs:
                                 # a run that only reads cached events loads no PANNs
-                                stats["audio_device"] = det.device
+                                run.stats["audio_device"] = run.panns.device
                             try:  # miss or forced
-                                evs = detect_audio_events(s, det, audio, force=True)
+                                evs = detect_audio_events(s, run.panns, audio, force=True)
                             except Exception as err:  # noqa: BLE001 - one bad source, logged
                                 guard.skip(err, s.name, s.path)
                                 evs = []
-                        layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
+                        run.layer1[str(s.path)] += [{**e, "kind": "audio"} for e in evs]
                     guard.raise_if_all_failed(len(sources))  # not one bad file: it failed
                 except BaseException:
                     keep = False  # the layer failed: free the model now
                     raise
                 finally:
-                    if det is not None and not keep:
-                        det.close()
-                        det = None
-            vram["audio"] = vm.summary()
+                    if run.panns is not None and not keep:
+                        run.panns.close()
+                        run.panns = None
+            run.vram["audio"] = vm.summary()
     else:
         for s in sources:
-            layer1[str(s.path)] += [
+            run.layer1[str(s.path)] += [
                 {**e, "kind": "audio"} for e in detect_audio_events(s, None, audio)
             ]
-    timings["audio_s"] = round(time.perf_counter() - t0, 1)
+    run.timings["audio_s"] = round(time.perf_counter() - t0, 1)
 
-    # ---- layer 1c/1d: wind-robust voice grids, frame embeddings + people
-    if "voice" in layers and panns_failed and voice_needs:
+
+def _voice_layer(run: _Run, voice_params: Any, voice_needs: bool) -> None:
+    """Layer 1c: wind-robust voice grids (PANNs on high-passed audio + Silero VAD), with the
+    audio layer's PANNs when it handed it over; skipped when PANNs did not load."""
+    if "voice" not in run.layers:
+        return
+    if run.panns_failed and voice_needs:
         logger.info("Voice layer skipped: PANNs did not load (see the audio layer's error)")
-    elif "voice" in layers:
-        t0 = time.perf_counter()
-        try:
-            with stage("voice"), VramMonitor() as vm:
-                voice_errors: list[Exception] = []  # of every batch: one bad file skips itself
-                for k, part in enumerate(progress.batches(sources, batch_size)):
-                    if k:  # a batch boundary: the PANNs of the batch before is closed
-                        if det is not None:
-                            det.close()
-                            det = None
-                        _boundary("voice", k * batch_size, len(sources))
-                    st = voice_layer.run_layer(
-                        part, voice_params, force="voice" in force, det=det, errors=voice_errors
-                    )
-                    stats["voice"] = merge_stats(stats["voice"], st) if k else st
-                if voice_errors and len(voice_errors) == len(sources):  # the layer failed
-                    raise voice_errors[-1]
-        finally:
-            if det is not None:  # closed before the next layer loads its model
-                det.close()
-                det = None
-        vram["voice"] = vm.summary()
-        timings["voice_s"] = round(time.perf_counter() - t0, 1)
-    crash_run = "crash" in layers and not only  # project-wide ranking: all sources
-    kept: list[Any] = []  # the visual layer's CLIP, reused by the crash dense confirm
-    # The visual layer's caption embeddings use the captions of the project's activity.json
-    # (generic until the crash layer below writes one); the contact sheets are written after the
-    # crash layer when it runs, so a first run's sheets use the profile it resolves.
-    from cutpoint.activity import project_prompts, use_prompts  # noqa: PLC0415
+        return
+    from cutpoint.events import voice as voice_layer  # noqa: PLC0415
 
-    prompts = project_prompts(project)
-    if "visual" in layers:
+    sources = run.sources
+    t0 = time.perf_counter()
+    try:
+        with run.stage("voice"), VramMonitor() as vm:
+            voice_errors: list[Exception] = []  # of every batch: one bad file skips itself
+            for k, part in enumerate(progress.batches(sources, run.batch_size)):
+                if k:  # a batch boundary: the PANNs of the batch before is closed
+                    if run.panns is not None:
+                        run.panns.close()
+                        run.panns = None
+                    _boundary("voice", k * run.batch_size, len(sources))
+                st = voice_layer.run_layer(
+                    part,
+                    voice_params,
+                    force="voice" in run.force,
+                    det=run.panns,
+                    errors=voice_errors,
+                )
+                run.stats["voice"] = merge_stats(run.stats["voice"], st) if k else st
+            _raise_if_all_failed(voice_errors, len(sources))
+    finally:
+        if run.panns is not None:  # closed before the next layer loads its model
+            run.panns.close()
+            run.panns = None
+    run.vram["voice"] = vm.summary()
+    run.timings["voice_s"] = round(time.perf_counter() - t0, 1)
+
+
+def _visual_layer(run: _Run, prompts: Any, hwaccel: Any, encoder: Any) -> None:
+    """Layer 1d: frame embeddings + people (``visual``), and the AI Chat's light frame index
+    (``visual_light``); a CLIP either loads goes to the crash layer (``run.kept``) when no OCR
+    runs in between."""
+    from cutpoint.activity import use_prompts  # noqa: PLC0415
+
+    sources = run.sources
+    if "visual" in run.layers:
         from cutpoint.crash import ClipEncoder  # noqa: PLC0415
         from cutpoint.events import visual as visual_layer  # noqa: PLC0415
 
         # Hand CLIP over only when no OCR runs in between: one model resident at a time.
-        handoff = crash_run and "ocr" not in layers and encoder is None
+        handoff = run.crash_run and "ocr" not in run.layers and encoder is None
         t0 = time.perf_counter()
-        with stage("visual"), VramMonitor() as vm, use_prompts(prompts):
+        with run.stage("visual"), VramMonitor() as vm, use_prompts(prompts):
             visual_errors: list[Exception] = []  # of every batch: one bad file skips itself
-            parts = progress.batches(sources, batch_size)
+            parts = progress.batches(sources, run.batch_size)
             for k, part in enumerate(parts):
                 if k:  # a batch boundary: run_layer closed the models of the batch before
-                    _boundary("visual", k * batch_size, len(sources))
+                    _boundary("visual", k * run.batch_size, len(sources))
                 last = k == len(parts) - 1  # only the last batch hands CLIP over
                 st = visual_layer.run_layer(
                     part,
-                    visual_layer.VisualParams(hwaccel=ocr.hwaccel),
-                    force="visual" in force,
-                    bad=bad,
+                    visual_layer.VisualParams(hwaccel=hwaccel),
+                    force="visual" in run.force,
+                    bad=run.bad,
                     handoff=(
-                        (lambda m: kept.append(ClipEncoder.from_visual(m)))
+                        (lambda m: run.kept.append(ClipEncoder.from_visual(m)))
                         if handoff and last
                         else None
                     ),
                     errors=visual_errors,
                 )
-                stats["visual"] = merge_stats(stats["visual"], st) if k else st
-            if visual_errors and len(visual_errors) == len(sources):  # the layer failed
-                while kept:  # a CLIP handed over by the last batch: freed with the layer
-                    kept.pop().close()
-                raise visual_errors[-1]
-        vram["visual"] = vm.summary()
-        timings["visual_s"] = round(time.perf_counter() - t0, 1)
-    if "visual_light" in layers:  # chat only: no event, no ranking reads it (#989)
+                run.stats["visual"] = merge_stats(run.stats["visual"], st) if k else st
+
+            def free_kept() -> None:  # a CLIP handed over by the last batch: freed with the layer
+                while run.kept:
+                    run.kept.pop().close()
+
+            _raise_if_all_failed(visual_errors, len(sources), before=free_kept)
+        run.vram["visual"] = vm.summary()
+        run.timings["visual_s"] = round(time.perf_counter() - t0, 1)
+    if "visual_light" in run.layers:  # chat only: no event, no ranking reads it (#989)
         t0 = time.perf_counter()
-        with stage("visual_light"):
+        with run.stage("visual_light"):
             # CLIP goes to the crash layer only when no OCR runs in between (as the visual
             # layer's): one model resident at a time
-            stats["visual_light"] = _light_layer(
-                hl,
+            run.stats["visual_light"] = _light_layer(
+                run.hl,
                 sources,
-                kept,
+                run.kept,
                 encoder,
-                crash_run and "ocr" not in layers,
+                run.crash_run and "ocr" not in run.layers,
             )
-        timings["visual_light_s"] = round(time.perf_counter() - t0, 1)
+        run.timings["visual_light_s"] = round(time.perf_counter() - t0, 1)
 
-    def write_sheets(prompt_set: Any) -> None:
-        from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
 
-        with use_prompts(prompt_set):
-            stats["sheets"] = [str(p) for p in write_visual_sheets(project, sources)]
+def _write_sheets(run: _Run, prompt_set: Any) -> None:
+    """The visual layer's contact sheets, under the captions of ``prompt_set``."""
+    from cutpoint.activity import use_prompts  # noqa: PLC0415
+    from cutpoint.events.sheets import write_visual_sheets  # noqa: PLC0415
 
-    if sheets and not crash_run:
-        write_sheets(prompts)
+    with use_prompts(prompt_set):
+        run.stats["sheets"] = [str(p) for p in write_visual_sheets(run.project, run.sources)]
 
-    # ---- layer 1b: OCR (with region discovery for games without a preset)
-    t0 = time.perf_counter()
-    make_engine = None  # set before discovery: the stage may suppress its error
-    with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
-        base = 0.0  # progress the per-source OCR starts at (after discovery)
-        if "ocr" in layers and discover is not False:
-            from cutpoint.events.feed_labels import VisionCalls, make_labeler  # noqa: PLC0415
-            from cutpoint.events.hud_map import make_mapper  # noqa: PLC0415
 
-            # the HUD map and the feed labels share the model check, load and budget; the map's
-            # prompt carries the user's words about the footage (#1068)
-            calls = VisionCalls(rater) if rater is not None else None
-            words = footage_context(
-                context if context is not None else (hl.get("settings") or {}).get("context")
-            )
-            try:
-                stats["discovery"] = _discover(
-                    project,
-                    sources,
-                    ocr,
-                    discover,
-                    discover_bursts,
-                    preset_scope,
-                    discover_hint,
-                    make_labeler(rater, calls) if rater is not None and calls else None,
-                    make_mapper(rater, words, calls) if rater is not None and calls else None,
-                    # a top-up changes the preset the background OCR reads with: stopped first
-                    before_top_up=prefetch.close if prefetch is not None else None,
+def _ocr_discovery(
+    run: _Run,
+    ocr: OcrParams,
+    rater: VisionRater | None,
+    t0: float,
+    *,
+    discover: bool | None,
+    bursts: int,
+    scope: str,
+    hint: str,
+    context: str | None,
+    prefetch: OcrPrefetch | None,
+) -> float:
+    """HUD region discovery for the OCR layer (:func:`_discover`); returns the progress the
+    per-source OCR starts at."""
+    from cutpoint.events.feed_labels import VisionCalls, make_labeler  # noqa: PLC0415
+    from cutpoint.events.hud_map import make_mapper  # noqa: PLC0415
+
+    # the HUD map and the feed labels share the model check, load and budget; the map's
+    # prompt carries the user's words about the footage (#1068)
+    calls = VisionCalls(rater) if rater is not None else None
+    words = footage_context(
+        context if context is not None else (run.hl.get("settings") or {}).get("context")
+    )
+    try:
+        run.stats["discovery"] = _discover(
+            run.project,
+            run.sources,
+            ocr,
+            discover,
+            bursts,
+            scope,
+            hint,
+            make_labeler(rater, calls) if rater is not None and calls else None,
+            make_mapper(rater, words, calls) if rater is not None and calls else None,
+            # a top-up changes the preset the background OCR reads with: stopped first
+            before_top_up=prefetch.close if prefetch is not None else None,
+        )
+    except LowMemoryError:
+        raise
+    except Exception as err:
+        memguard.raise_if_out_of_memory(err, "HUD region discovery", "every source")
+        if ocr_failure(err) is None:  # before _discover knew its games
+            _mark_ocr_failure(err, run.sources, discovery=True)
+        raise
+    run.timings["discovery_s"] = round(time.perf_counter() - t0, 1)
+    return DISCOVERY_PCT if run.stats["discovery"] else 0.0
+
+
+def _ocr_layer(
+    run: _Run,
+    ocr: OcrParams,
+    base: float,
+    prefetch: OcrPrefetch | None,
+    *,
+    cached_ocr: bool,
+    debug: Path | None,
+) -> None:
+    """Layer 1b: the HUD OCR of every source (cached reads when the layer does not run and
+    ``cached_ocr``), from ``base`` percent of the step on; its engine maker is
+    ``run.make_engine``."""
+    layers, force, sources = run.layers, run.force, run.sources
+    # the OCR model loads only when a source's footage is read (not for a replay)
+    if "ocr" in layers:
+        run.make_engine = prefetch.make_engine if prefetch else functools.cache(OcrEngine)
+    if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
+        logger.warning(
+            "No player_tags set, so kills and deaths in the HUD cannot be "
+            'attributed to you. Add "player_tags": ["YourName"] to %s '
+            "or pass --player NAME.",
+            cutpoint_paths.config_file(),
+        )
+    ocr_stats: dict[str, Any] = {}
+    run.stats["ocr"] = ocr_stats  # the sources read before a failure keep their menu spans
+    with VramMonitor() as vm:
+        ocr_sources = sources if "ocr" in layers or cached_ocr else []  # action-cam: no HUD
+        shown = [base]  # the step's pct never goes back
+
+        def on_source(done: float, n: int = len(ocr_sources)) -> None:
+            pct = base + (100 - base) * progress.fraction(done, n) / 100
+            if pct > shown[0]:
+                shown[0] = pct
+                progress.update(pct)
+
+        for i, s in enumerate(ocr_sources):
+            if run.batch_size and i and not i % run.batch_size and "ocr" in layers:
+                # a batch boundary: the engine is made again for the next batch (the
+                # background reader's is in use until it is stopped)
+                if prefetch is None or run.make_engine is not prefetch.make_engine:
+                    _release_engine(run.make_engine)
+                _boundary("ocr", i, len(ocr_sources))
+            if "ocr" in layers:  # a cached read only is no step of its own
+                shown[0] = max(
+                    shown[0], base + (100 - base) * progress.fraction(i, len(ocr_sources)) / 100
                 )
+                progress.update(
+                    shown[0],
+                    f"reading HUD text: source {i + 1}/{len(ocr_sources)}" if base else None,
+                )
+            on_progress = (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
+            got = None
+            try:
+                if prefetch is not None:  # the background read of these exact inputs
+                    plain = "ocr" not in force and not debug and not run.bad.get(str(s.path))
+                    if "ocr" in layers and plain:
+                        got = prefetch.take(s, ocr, on_progress)
+                    else:
+                        prefetch.close()
+                    if got is None and prefetch.stuck:  # it outlived close(): not its engine
+                        prefetch.wait_for(s.path)  # nor the raw cache of the source it is on
+                        if run.make_engine is prefetch.make_engine:
+                            run.make_engine = functools.cache(OcrEngine)
+                evs, st = got or detect_ocr_events(
+                    s,
+                    ocr,
+                    None,
+                    force="ocr" in force,
+                    debug_dir=debug,
+                    avoid=run.bad.get(str(s.path)),
+                    on_progress=on_progress,
+                    make_engine=run.make_engine,
+                )
+                game = game_key_for_path(str(s.path), ocr.game, run.project)
+                preset = load_preset(game, run.project)
+                teamkills = bool(preset and preset.feed.get("teamkills"))
+                link_teamkills(evs, generic_teamkills=teamkills)
+                derive_streaks(evs)
             except LowMemoryError:
                 raise
             except Exception as err:
-                memguard.raise_if_out_of_memory(err, "HUD region discovery", "every source")
-                if ocr_failure(err) is None:  # before _discover knew its games
-                    _mark_ocr_failure(err, sources, discovery=True)
+                memguard.raise_if_out_of_memory(err, "the HUD OCR", s.name)
+                _mark_ocr_failure(err, ocr_sources[i:], discovery=False)
                 raise
-            timings["discovery_s"] = round(time.perf_counter() - t0, 1)
-            if stats["discovery"]:
-                base = DISCOVERY_PCT
-        # the OCR model loads only when a source's footage is read (not for a replay)
-        if "ocr" in layers:
-            make_engine = prefetch.make_engine if prefetch else functools.cache(OcrEngine)
-        if not ocr.player_tags and sources and ("ocr" in layers or cached_ocr):
-            logger.warning(
-                "No player_tags set, so kills and deaths in the HUD cannot be "
-                'attributed to you. Add "player_tags": ["YourName"] to %s '
-                "or pass --player NAME.",
-                cutpoint_paths.config_file(),
-            )
-        ocr_stats: dict[str, Any] = {}
-        stats["ocr"] = ocr_stats  # the sources read before a failure keep their menu spans
-        with VramMonitor() as vm:
-            ocr_sources = sources if "ocr" in layers or cached_ocr else []  # action-cam: no HUD
-            shown = [base]  # the step's pct never goes back
+            run.layer1[str(s.path)] += evs
+            ocr_stats[ocr_stats_key(s.path, [t.path for t in sources])] = st
+    run.vram["ocr"] = vm.summary()
+    run.stats["ocr"] = ocr_stats
 
-            def on_source(done: float, n: int = len(ocr_sources)) -> None:
-                pct = base + (100 - base) * progress.fraction(done, n) / 100
-                if pct > shown[0]:
-                    shown[0] = pct
-                    progress.update(pct)
 
-            for i, s in enumerate(ocr_sources):
-                if batch_size and i and not i % batch_size and "ocr" in layers:
-                    # a batch boundary: the engine is made again for the next batch (the
-                    # background reader's is in use until it is stopped)
-                    if prefetch is None or make_engine is not prefetch.make_engine:
-                        _release_engine(make_engine)
-                    _boundary("ocr", i, len(ocr_sources))
-                if "ocr" in layers:  # a cached read only is no step of its own
-                    shown[0] = max(
-                        shown[0], base + (100 - base) * progress.fraction(i, len(ocr_sources)) / 100
-                    )
-                    progress.update(
-                        shown[0],
-                        f"reading HUD text: source {i + 1}/{len(ocr_sources)}" if base else None,
-                    )
-                on_progress = (lambda share, i=i: on_source(i + share)) if "ocr" in layers else None
-                got = None
-                try:
-                    if prefetch is not None:  # the background read of these exact inputs
-                        plain = "ocr" not in force and not ocr_debug and not bad.get(str(s.path))
-                        if "ocr" in layers and plain:
-                            got = prefetch.take(s, ocr, on_progress)
-                        else:
-                            prefetch.close()
-                        if got is None and prefetch.stuck:  # it outlived close(): not its engine
-                            prefetch.wait_for(s.path)  # nor the raw cache of the source it is on
-                            if make_engine is prefetch.make_engine:
-                                make_engine = functools.cache(OcrEngine)
-                    evs, st = got or detect_ocr_events(
-                        s,
-                        ocr,
-                        None,
-                        force="ocr" in force,
-                        debug_dir=ocr_debug,
-                        avoid=bad.get(str(s.path)),
-                        on_progress=on_progress,
-                        make_engine=make_engine,
-                    )
-                    game = game_key_for_path(str(s.path), ocr.game, project)
-                    preset = load_preset(game, project)
-                    teamkills = bool(preset and preset.feed.get("teamkills"))
-                    link_teamkills(evs, generic_teamkills=teamkills)
-                    derive_streaks(evs)
-                except LowMemoryError:
-                    raise
-                except Exception as err:
-                    memguard.raise_if_out_of_memory(err, "the HUD OCR", s.name)
-                    _mark_ocr_failure(err, ocr_sources[i:], discovery=False)
-                    raise
-                layer1[str(s.path)] += evs
-                ocr_stats[ocr_stats_key(s.path, [t.path for t in sources])] = st
-        vram["ocr"] = vm.summary()
-        stats["ocr"] = ocr_stats
-    timings["ocr_s"] = round(time.perf_counter() - t0, 1)
-    # ---- explosions (#801): a heard boom counts once the loudness jumps with it and the
-    # picture was not black just before it (a loading screen ending)
+def _confirm_explosions(run: _Run, boom: explosions.ExplosionParams) -> None:
+    """Explosions (#801): a heard boom counts once the loudness jumps with it and the picture
+    was not black just before it (a loading screen ending)."""
     t0 = time.perf_counter()
     booms = sum(
         explosions.confirm(
-            layer1[str(s.path)],
+            run.layer1[str(s.path)],
             [(p.offset, p.cdir) for p in source_parts(s.path)],
             boom,
             luma=explosions.luma_reader(s.path),  # --recover parts share the file and its time
         )
-        for s in sources
-        if explosions.has_booms(layer1[str(s.path)])
+        for s in run.sources
+        if explosions.has_booms(run.layer1[str(s.path)])
     )
-    timings["explosions_s"] = round(time.perf_counter() - t0, 1)
+    run.timings["explosions_s"] = round(time.perf_counter() - t0, 1)
     dark = sum(
         1
-        for s in sources
-        for e in layer1[str(s.path)]
+        for s in run.sources
+        for e in run.layer1[str(s.path)]
         if e.get("kind") == "audio" and e.get("label") == explosions.LABEL and e.get("after_black")
     )
     if booms or dark:
@@ -642,107 +814,100 @@ def run_events(
             booms,
             dark,
         )
-    if make_engine is not None:  # no OCR after this: the engine is not kept through the VLM
-        if prefetch is not None and make_engine is prefetch.make_engine:
-            prefetch.close()  # its worker uses the engine: stopped first (idempotent)
-        _release_engine(make_engine)
-        make_engine = None
 
-    # ---- crashes (after voice + visual, whose caches it reads): crashes.json
-    if crash_run:
-        from cutpoint.activity import default_context  # noqa: PLC0415
-        from cutpoint.crash import detect_project  # noqa: PLC0415
 
-        t0 = time.perf_counter()
-        enc = kept.pop() if kept else encoder
-        try:
-            with stage("crash"), VramMonitor() as vm:
-                detect_project(
-                    project,
-                    force="crash" in force,
-                    context=default_context(project, context=context, hl=hl),
-                    encoder=enc,
-                    warn_unreachable=False,
-                    llm=llm,
-                    batch_size=batch_size,
-                    ollama_url=ollama_url,
-                    ollama_model=ollama_model,
-                )
-        finally:
-            if enc is not None:
-                enc.close()
-        vram["crash"] = vm.summary()
-        timings["crash_s"] = round(time.perf_counter() - t0, 1)
-        if sheets:  # under the activity.json the crash layer just wrote
-            write_sheets(project_prompts(project))
+def _crash_layer(
+    run: _Run,
+    encoder: Any,
+    *,
+    context: str | None,
+    llm: bool | str,
+    ollama_url: str | None,
+    ollama_model: str | None,
+    sheets: bool,
+) -> None:
+    """The crash layer (crashes.json), with the CLIP the visual layer handed over or
+    ``encoder`` (closed after it); then the contact sheets under the activity it wrote."""
+    from cutpoint.activity import default_context, project_prompts  # noqa: PLC0415
+    from cutpoint.crash import detect_project  # noqa: PLC0415
+
+    t0 = time.perf_counter()
+    enc = run.kept.pop() if run.kept else encoder
+    try:
+        with run.stage("crash"), VramMonitor() as vm:
+            detect_project(
+                run.project,
+                force="crash" in run.force,
+                context=default_context(run.project, context=context, hl=run.hl),
+                encoder=enc,
+                warn_unreachable=False,
+                llm=llm,
+                batch_size=run.batch_size,
+                ollama_url=ollama_url,
+                ollama_model=ollama_model,
+            )
+    finally:
+        if enc is not None:
+            enc.close()
+    run.vram["crash"] = vm.summary()
+    run.timings["crash_s"] = round(time.perf_counter() - t0, 1)
+    if sheets:  # under the activity.json the crash layer just wrote
+        _write_sheets(run, project_prompts(run.project))
+
+
+def _vlm_params(run: _Run, vlm: VlmParams, context: str | None) -> tuple[VlmParams, Any]:
+    """The VLM layer's parameters for this project (telemetry seeds of action-cam footage go
+    into ``run.layer1``), and the activity prompts of its action-cam wording (None: not
+    action-cam)."""
+    from cutpoint.activity import project_prompts  # noqa: PLC0415
 
     # ---- telemetry (action-cam): airtime / crash seeds + coverage of the riding
-    if is_cam:
-        for src, evs in _telemetry_layer(project, sources, vlm).items():
-            layer1.setdefault(src, []).extend(evs)
+    if run.is_cam:
+        for src, evs in _telemetry_layer(run.project, run.sources, vlm).items():
+            run.layer1.setdefault(src, []).extend(evs)
     auto = vlm.max_windows is None
-    vlm = resolve_counts(vlm, is_cam, layer1)
-    if auto and "vlm" in layers:
+    vlm = resolve_counts(vlm, run.is_cam, run.layer1)
+    if auto and "vlm" in run.layers:
         logger.info("VLM: up to %d windows", vlm.max_windows)
-
-    # ---- layer 2: VLM windows
     # action-cam: worded for the activity.json the crash layer above may have just written
-    cam_prompts = project_prompts(project) if is_cam else None
+    cam_prompts = project_prompts(run.project) if run.is_cam else None
     vlm.action_cam = action_cam_wording(cam_prompts) if cam_prompts is not None else None
     # the user's words about the footage (#1068): analyze's --context, else the recorded one
     vlm.context = footage_context(
-        context if context is not None else (hl.get("settings") or {}).get("context")
+        context if context is not None else (run.hl.get("settings") or {}).get("context")
     )
+    return vlm, cam_prompts
+
+
+def _vlm_layer(
+    run: _Run,
+    vlm: VlmParams,
+    ocr_game: str,
+    rater: VisionRater | None,
+    hosted: bool,
+    online: bool | None,
+    by_path: dict[str, Any],
+    transcript: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Layer 2: the windows the vision model describes (cached descriptions when the layer
+    does not run or cannot ask); returns the described windows."""
+    layers, force = run.layers, run.force
     if "vlm" in layers:
         progress.start("vlm")  # cutpoint events: the step of progress.json
         free_torch()  # the CUDA memory torch still caches for the layers before
     t0 = time.perf_counter()
-    games = {
-        str(s.path): ACTION_CAM if is_cam else game_key_for_path(str(s.path), ocr.game, project)
-        for s in sources
-    }
-    # Game prompt and event types (custom seeds) from each source's HUD preset; action-cam has none.
-    # The prompt asks about kills only for footage with kills (#596).
-    presets = {} if is_cam else {src: load_preset(g, project) for src, g in games.items()}
-    prompts = {
-        src: game_prompt(games[src], p, has_kills(p, layer1.get(src, [])))
-        for src, p in presets.items()
-    }
-    seed_types = {src: types_for(p) for src, p in presets.items()}
-    windows = select_windows(
-        sources,
-        [c for c in hl.get("candidates", []) if c.get("pool") != "visual"],  # no pool seeds
-        layer1,
-        vlm,
-        seed_types,
-        quiet="vlm" not in layers,
-        style=analysis_names(hl),
-    )
+    windows, prompts = _vlm_windows(run, vlm, ocr_game)
     # a provider the user did not agree to (a hosted one, or an Ollama on another machine): no
     # request, no cached descriptions or windows either, as for analyze's vision ratings
     no_vision = rater is None or rater.consent_needed is not None
-    if is_cam and "vlm" not in force and not no_vision:
-        # reuse described windows; only fill new footage
-        prev = cached_windows(sources, vlm)
-        if prev:
-            n_new = len(windows)
-            # a reused window this run selects again keeps its reasons (#109: a resumed run's
-            # events.json equals an uninterrupted one's)
-            chosen = {(w.source, w.key): w for w in windows}
-            windows = [chosen.get((w.source, w.key), w) for w in add_incremental(prev, windows)]
-            logger.log(
-                logging.INFO if "vlm" in layers else logging.DEBUG,
-                "VLM (action-cam, incremental): %d cached windows reused, %d of %d new "
-                "windows cover footage not described yet",
-                len(prev),
-                len(windows) - len(prev),
-                n_new,
-            )
+    if run.is_cam and "vlm" not in force and not no_vision:
+        windows = _reuse_windows(run, vlm, windows)
     windows = [
         w
         for w in windows
-        if not any(w.start < b + 2 and w.end > a - 2 for a, b in bad.get(w.source, []))
+        if not any(w.start < b + 2 and w.end > a - 2 for a, b in run.bad.get(w.source, []))
     ]
+    layer1 = run.layer1
     results: list[dict[str, Any]] = []
     if no_vision:
         cached, _ = describe_windows(None, by_path, windows, vlm, prompts, transcript, layer1)
@@ -750,111 +915,183 @@ def run_events(
         if rater is not None and (
             "vlm" in layers
             or cached
-            or (is_cam and "vlm" not in force and cached_windows(sources, vlm))
+            or (run.is_cam and "vlm" not in force and cached_windows(run.sources, vlm))
         ):
             rater.warn_consent()
-    elif "vlm" in layers:
-        cached, vstats = describe_windows(
-            None, by_path, windows, vlm, prompts, transcript, layer1, force="vlm" in force
-        )
-        missing = len(windows) - vstats["cached"] if "vlm" not in force else len(windows)
-        if "vlm" not in force:
-            progress.continuing("vlm", vstats["cached"], len(windows))
-        if missing > 0:
-            results = cached
-            if online is None:
-                online = rater.available()
-            if online:
-                try:
-                    with VramMonitor() as vm:
-                        results, vstats = _describe_batches(
-                            rater,
-                            by_path,
-                            windows,
-                            vlm,
-                            prompts,
-                            transcript,
-                            layer1,
-                            force="vlm" in force,
-                            batch_size=batch_size,
-                            unload=not hosted,
-                        )
-                    vram["vlm"] = vm.summary()
-                finally:
-                    rater.unload()
-                if vstats.get("stopped"):
-                    left = len(windows) - vstats.get("ok", 0) - vstats.get("cached", 0)
-                    message = (
-                        f"VLM: stopped because {vstats['stopped']}; {left} window(s) not "
-                        "described, cached descriptions used (run again to describe them)"
+    elif "vlm" in layers and rater is not None:  # (not no_vision: rater is not None)
+        results = _describe(run, vlm, windows, prompts, rater, hosted, online, by_path, transcript)
+    else:
+        results, _ = describe_windows(None, by_path, windows, vlm, prompts, transcript, layer1)
+    run.timings["vlm_s"] = round(time.perf_counter() - t0, 1)
+    return results
+
+
+def _vlm_windows(run: _Run, vlm: VlmParams, ocr_game: str) -> tuple[list[Any], dict[str, Any]]:
+    """The VLM windows of this run and the game prompt per source path."""
+    project = run.project
+    games = {
+        str(s.path): ACTION_CAM if run.is_cam else game_key_for_path(str(s.path), ocr_game, project)
+        for s in run.sources
+    }
+    # Game prompt and event types (custom seeds) from each source's HUD preset; action-cam has none.
+    # The prompt asks about kills only for footage with kills (#596).
+    presets = {} if run.is_cam else {src: load_preset(g, project) for src, g in games.items()}
+    prompts = {
+        src: game_prompt(games[src], p, has_kills(p, run.layer1.get(src, [])))
+        for src, p in presets.items()
+    }
+    seed_types = {src: types_for(p) for src, p in presets.items()}
+    windows = select_windows(
+        run.sources,
+        [c for c in run.hl.get("candidates", []) if c.get("pool") != "visual"],  # no pool seeds
+        run.layer1,
+        vlm,
+        seed_types,
+        quiet="vlm" not in run.layers,
+        style=analysis_names(run.hl),
+    )
+    return windows, prompts
+
+
+def _reuse_windows(run: _Run, vlm: VlmParams, windows: list[Any]) -> list[Any]:
+    """Action-cam: reuse described windows; only fill new footage."""
+    prev = cached_windows(run.sources, vlm)
+    if not prev:
+        return windows
+    n_new = len(windows)
+    # a reused window this run selects again keeps its reasons (#109: a resumed run's
+    # events.json equals an uninterrupted one's)
+    chosen = {(w.source, w.key): w for w in windows}
+    windows = [chosen.get((w.source, w.key), w) for w in add_incremental(prev, windows)]
+    logger.log(
+        logging.INFO if "vlm" in run.layers else logging.DEBUG,
+        "VLM (action-cam, incremental): %d cached windows reused, %d of %d new "
+        "windows cover footage not described yet",
+        len(prev),
+        len(windows) - len(prev),
+        n_new,
+    )
+    return windows
+
+
+def _describe(
+    run: _Run,
+    vlm: VlmParams,
+    windows: list[Any],
+    prompts: dict[str, Any],
+    rater: VisionRater,
+    hosted: bool,
+    online: bool | None,
+    by_path: dict[str, Any],
+    transcript: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The VLM layer running: the windows not cached yet described by ``rater`` (cached
+    descriptions when it is not available or stops); its stats go to ``run.stats["vlm"]``."""
+    force, layer1 = "vlm" in run.force, run.layer1
+    cached, vstats = describe_windows(
+        None, by_path, windows, vlm, prompts, transcript, layer1, force=force
+    )
+    missing = len(windows) - vstats["cached"] if not force else len(windows)
+    if not force:
+        progress.continuing("vlm", vstats["cached"], len(windows))
+    if missing > 0:
+        results = cached
+        if online is None:
+            online = rater.available()
+        if online:
+            try:
+                with VramMonitor() as vm:
+                    results, vstats = _describe_batches(
+                        rater,
+                        by_path,
+                        windows,
+                        vlm,
+                        prompts,
+                        transcript,
+                        layer1,
+                        force=force,
+                        batch_size=run.batch_size,
+                        unload=not hosted,
                     )
-                    logger.warning("%s", message)
-                    jsonout.warn("vlm_unavailable", message)
-            else:
-                if "vlm" in force:  # nothing to describe them with: keep the saved descriptions
-                    results, vstats = describe_windows(
-                        None, by_path, windows, vlm, prompts, transcript, layer1
-                    )
+                run.vram["vlm"] = vm.summary()
+            finally:
+                rater.unload()
+            if vstats.get("stopped"):
+                left = len(windows) - vstats.get("ok", 0) - vstats.get("cached", 0)
                 message = (
-                    f"VLM: vision model {vlm.model} not available (see above); {missing} "
-                    "window(s) not described, cached descriptions used"
+                    f"VLM: stopped because {vstats['stopped']}; {left} window(s) not "
+                    "described, cached descriptions used (run again to describe them)"
                 )
                 logger.warning("%s", message)
                 jsonout.warn("vlm_unavailable", message)
         else:
-            results = cached
-        stats["vlm"] = {
-            k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens", "streak")
-        }
-        secs = vstats.get("seconds") or []
-        if secs:
-            stats["vlm"]["mean_s_per_window"] = round(sum(secs) / len(secs), 1)
-            toks = [t for t in vstats.get("prompt_tokens", []) if t]
-            stats["vlm"]["mean_prompt_tokens"] = round(sum(toks) / max(1, len(toks)))
+            if force:  # nothing to describe them with: keep the saved descriptions
+                results, vstats = describe_windows(
+                    None, by_path, windows, vlm, prompts, transcript, layer1
+                )
+            message = (
+                f"VLM: vision model {vlm.model} not available (see above); {missing} "
+                "window(s) not described, cached descriptions used"
+            )
+            logger.warning("%s", message)
+            jsonout.warn("vlm_unavailable", message)
     else:
-        results, _ = describe_windows(None, by_path, windows, vlm, prompts, transcript, layer1)
-    timings["vlm_s"] = round(time.perf_counter() - t0, 1)
-    stats["vram_mib"] = vram
+        results = cached
+    run.stats["vlm"] = {
+        k: v for k, v in vstats.items() if k not in ("seconds", "prompt_tokens", "streak")
+    }
+    secs = vstats.get("seconds") or []
+    if secs:
+        run.stats["vlm"]["mean_s_per_window"] = round(sum(secs) / len(secs), 1)
+        toks = [t for t in vstats.get("prompt_tokens", []) if t]
+        run.stats["vlm"]["mean_prompt_tokens"] = round(sum(toks) / max(1, len(toks)))
+    return results
 
-    talk: list[dict[str, Any]] = []
-    if dialogue is not None:
-        with stage("dialogue"):
-            talk = dialogue(layer1)
-    else:  # not read by this run: what an earlier one marked stays
-        talk = kept_dialogue(project, [str(s.path) for s in sources])
-    with stage("write"):
-        events = [
-            normalize(src, e)
-            for src, evs in layer1.items()
-            for e in evs
-            if e.get("type") not in ("coverage", "coverage_masked")
-        ]
-        events += [normalize(e["source"], e) for e in windows_to_events(results)]
-        events += talk
-        vlm_settings = asdict(vlm)
-        if vlm_settings.get("context") is None:  # without --context: as before (#1068)
-            vlm_settings.pop("context", None)
-        if cam_prompts is not None and vlm.action_cam is not None:  # the activity, not its text
-            wording = vlm.action_cam.key() or "default"
-            vlm_settings["action_cam"] = {"activity": cam_prompts.name, "wording": wording}
-        settings = {
-            "layers": list(layers),
-            "avoid": dict(bad),
-            "audio": audio.key(),
-            "explosions": boom.key(),
-            "ocr": ocr.key(None) | {"game": ocr.game},
-            "vlm": vlm_settings,
-        }
-        return write_outputs(
-            project,
-            [str(s.path) for s in sources],
-            events,
-            results,
-            transcript,
-            settings,
-            timings,
-            stats,
-        )
+
+def _write_events(
+    run: _Run,
+    results: list[dict[str, Any]],
+    talk: list[dict[str, Any]],
+    transcript: list[dict[str, Any]],
+    vlm: VlmParams,
+    cam_prompts: Any,
+    audio: AudioParams,
+    boom: explosions.ExplosionParams,
+    ocr: OcrParams,
+) -> tuple[Path, Path]:
+    """events.json and events.txt of the run (:func:`write_outputs`)."""
+    events = [
+        normalize(src, e)
+        for src, evs in run.layer1.items()
+        for e in evs
+        if e.get("type") not in ("coverage", "coverage_masked")
+    ]
+    events += [normalize(e["source"], e) for e in windows_to_events(results)]
+    events += talk
+    vlm_settings = asdict(vlm)
+    if vlm_settings.get("context") is None:  # without --context: as before (#1068)
+        vlm_settings.pop("context", None)
+    if cam_prompts is not None and vlm.action_cam is not None:  # the activity, not its text
+        wording = vlm.action_cam.key() or "default"
+        vlm_settings["action_cam"] = {"activity": cam_prompts.name, "wording": wording}
+    settings = {
+        "layers": list(run.layers),
+        "avoid": dict(run.bad),
+        "audio": audio.key(),
+        "explosions": boom.key(),
+        "ocr": ocr.key(None) | {"game": ocr.game},
+        "vlm": vlm_settings,
+    }
+    return write_outputs(
+        run.project,
+        [str(s.path) for s in run.sources],
+        events,
+        results,
+        transcript,
+        settings,
+        run.timings,
+        run.stats,
+    )
 
 
 def _light_layer(
@@ -1212,489 +1449,22 @@ def _discover(
         readout the preset does not have; never written into it) and, after a top-up,
         ``topped_up`` (the region names added, replaced and relabelled).
     """
-    from cutpoint.events import discover, game_fit  # noqa: PLC0415
-    from cutpoint.events import hud_map as vision_map  # noqa: PLC0415
-    from cutpoint.events import regions as hud  # noqa: PLC0415
+    from cutpoint.events.discover_run import DiscoverRun  # noqa: PLC0415 - imports this module
 
-    params = discover.DiscoverParams(bursts=bursts)
-    named = bool(ocr.game and ocr.game != "auto")
-    by_game: dict[str, list[Any]] = {}
-    guesses: dict[str, str] = {}  # path -> first guess, for the sources the fit check decides
-    before: dict[str, str] = {}  # path -> the key recorded before (stale, or checked again)
-    for s in sources:
-        path = str(s.path)
-        key = game_key_for_path(path, ocr.game, project)
-        if not named and hud.preset_for_path(path, None, project) is None:
-            entry = hud.decided_entry(path, project)
-            if entry is None or force:
-                key = guesses[path] = str(entry["guess"]) if entry else key
-                raw = hud.load_game_keys(project).get(hud.source_id(path)) or {}
-                if isinstance(raw.get("key"), str):
-                    before[path] = raw["key"]
-        try:
-            check_game_key(key)
-        except jsonout.ArgumentError:
-            if named:
-                raise
-            # a preset's ``game`` that is no plain name ("Rainbow Six: Siege"): no path is
-            # made from it. A preset that loads is still read with (OCR finds it by that
-            # key) but is not refitted, topped up or discovered again; else the source gets
-            # its first guess
-            preset = next(
-                (
-                    p
-                    for p in hud.preset_files(project)
-                    if str((hud._read_json(p) or {}).get("game")) == key
-                ),
-                None,
-            )
-            loads = load_preset(key, project) is not None
-            guess = hud.first_guess(path, project)
-            logger.warning(
-                "HUD preset %s names its game %r, which is no plain name (no /, \\, :, '..'); %s",
-                preset or "(unknown file)",
-                key,
-                f"{path} is read with it but it is not refitted or discovered again"
-                if loads
-                else f"using {guess!r} for {path}",
-            )
-            if loads:
-                continue
-            key = guess
-        by_game.setdefault(key, []).append(s)
-    planned = sum(force or load_preset(g, project) is None for g in by_game)
-    runs = {"started": 0, "total": max(1, planned)}  # discoveries (a misfit adds one)
-    shown = [0.0]  # the discovery part's pct never goes back
-    out: dict[str, Any] = {}
-
-    def run(
-        game: str,
-        srcs: list[Any],
-        existing: Any,
-        keep: set[str] | None = None,
-        install: bool = True,
-        topping: bool = False,
-    ) -> dict[str, Any]:
-        """Discovery for ``game`` on ``srcs`` and its install, as a record in ``out``;
-        ``keep``: cluster again from these sources' records only (no OCR, no "No HUD
-        preset matches" line);
-        ``install`` False: no preset written yet (:func:`install_preset` does it once the
-        fit check has split off other games); ``topping``: for the HUD map top-up of the
-        existing preset only (no feed labels: the preset's regions stay)."""
-        gi = runs["started"]
-        if keep is None:
-            runs["started"] += 1
-            runs["total"] = max(runs["total"], runs["started"])
-        name = "this game" if game == "game" else game
-        first = "" if existing is not None else f"first run for {name}: "
-        if topping:
-            progress.update(detail="mapping the HUD with the vision model")
-            logger.info(
-                "The HUD preset for %r has no vision HUD map yet; making one from %s "
-                "(once per game)",
-                game,
-                srcs[0].path,
-            )
-        elif existing is None and keep is None:
-            progress.update(detail=f"{first}discovering HUD regions")
-            logger.info(
-                "No HUD preset matches %s; discovering regions as %r (a few minutes). "
-                "Put a preset in %s %s",
-                srcs[0].path,
-                game,
-                cutpoint_paths.presets_dir(),
-                hint,
-            )
-
-        def on_frame(done: int, total: int) -> None:
-            # the first DISCOVERY_PCT of the step, an equal part per discovery
-            share = (gi + progress.fraction(done, total) / 100) / runs["total"]
-            shown[0] = max(shown[0], DISCOVERY_PCT * share)
-            progress.update(shown[0], f"{first}discovering HUD: {done}/{total} frames")
-
-        t0 = time.perf_counter()
-        # an existing preset's regions (and big-text check) are the covered ones: extra
-        # notice regions outside them are only suggested, the preset's regions stay as they are;
-        # the outside regions it already has count against the extra-notice cap
-        covered: dict[str, Any] = {}
-        if existing is not None:
-            data = cache.load_json(existing.path) if existing.path else None
-            regs = data.get("regions") if isinstance(data, dict) else None
-            outside = sum(isinstance(r, dict) and r.get("origin") == "outside" for r in regs or [])
-            covered = {"covered": existing.all_regions(), "outside": outside}
-        try:
-            proposal = discover.discover_regions(
-                srcs,
-                project / "discovery" / game,
-                game,
-                params,
-                on_frame=on_frame if keep is None else None,
-                **covered,
-                **({"labeler": labeler} if labeler and not topping else {}),
-                **({"keep_src_keys": keep} if keep is not None else {}),
-                **({"hud_mapper": hud_mapper} if hud_mapper is not None else {}),
-            )
-        except LowMemoryError:
-            raise
-        except Exception as err:  # the games before it have their presets
-            memguard.raise_if_out_of_memory(err, "HUD region discovery", game)
-            _mark_ocr_failure(err, sources, discovery=True, games=runs["total"])
-            raise
-        rec: dict[str, Any] = {
-            "proposal": str(project / "discovery" / game / "proposal.json"),
-            "overlay": str(project / "discovery" / game / "overlay.jpg"),
-            "regions": proposal["regions"],
-            "elapsed_s": round(time.perf_counter() - t0, 1),
-            "installed": False,
-        }
-        if keep is not None and game in out:
-            rec["elapsed_s"] = round(out[game]["elapsed_s"] + rec["elapsed_s"], 1)
-        out[game] = rec
-        if existing is None:
-            if install:
-                install_preset(game, proposal)
-        else:
-            rec["preset"] = str(existing.path)
-        if existing is not None and not topping:
-            rec["suggested_regions"] = list(proposal.get("suggested_regions") or [])
-            logger.info(
-                "Kept existing HUD preset for %r (%s); discovery proposal: %s",
-                game,
-                rec["preset"],
-                rec["proposal"],
-            )
-            if rec["suggested_regions"]:
-                logger.info(
-                    "Discovery suggests %d extra region(s) for %r the preset does not have "
-                    "(%s: notices where text shows outside its regions, a score readout); to OCR "
-                    'them, copy the "suggested_regions" entries of %s into the "regions" of %s',
-                    len(rec["suggested_regions"]),
-                    game,
-                    ", ".join(r["name"] for r in rec["suggested_regions"]),
-                    rec["proposal"],
-                    rec["preset"],
-                )
-        return proposal
-
-    def top_up(game: str, existing: Any, proposal: dict[str, Any] | None) -> str | None:
-        """Add the vision HUD map of ``proposal`` (a discovery over the existing preset) to the
-        installed discovered preset ``existing`` (:func:`cutpoint.events.hud_map.top_up`),
-        written atomically. Returns why there was no map to add (the model answered for no
-        frame, or the discovery had none); None when it was added, or the preset was topped up
-        meanwhile or cannot be read or written (WARNING)."""
-        disc = (proposal or {}).get("discovery") or {}
-        got = disc.get("hud_map")
-        if not got:
-            return "the vision model gave no HUD map"
-        if existing.path is None:
-            return None
-        data = cache.load_json(existing.path)
-        if not isinstance(data, dict):
-            return None
-        if "hud_map" in (data.get("discovery") or {}):  # another run topped it up meanwhile
-            return None
-        ids = set(disc.get("frames") or [])
-        recs = discover.read_ocr_samples(project / "discovery" / game / "ocr.jsonl")
-        frames = discover.gameplay_frames([f for f in recs if f["id"] in ids], params)
-        new, changes = vision_map.top_up(data, got, frames)
-        try:
-            cache.save_json(existing.path, new)
-        except OSError as err:
-            logger.warning(
-                "Could not add the vision HUD map to the preset '%s' (%s): %s",
-                game,
-                existing.path,
-                err,
-            )
-            return None
-        if game in out:
-            out[game]["topped_up"] = changes
-        done = "; ".join(f"{k} {', '.join(v)}" for k, v in changes.items() if v)
-        logger.info(
-            "Topped up the HUD preset '%s' with the vision HUD map (%s): %s",
-            game,
-            done or "no region changed",
-            existing.path,
-        )
-        return None
-
-    def add_fit_ref(game: str, path: Path | None, ref: Any) -> None:
-        """Give an existing preset the fresh grid ``fit_ref`` of a forced discovery (the HUD
-        fit check); every other key stays as it is. A ref of too little evidence is not
-        written; a preset that cannot be written is left as it is (WARNING)."""
-        if path is None or not game_fit.valid_ref(ref) or not ref["grid"]:
-            return
-        if not (
-            isinstance(ref.get("frames"), int)
-            and isinstance(ref.get("boxes"), int)
-            and ref["frames"] >= game_fit.MIN_FRAMES
-            and ref["boxes"] >= game_fit.MIN_BOXES
-        ):
-            return
-        data = cache.load_json(path)
-        disc = data.get("discovery", {}) if isinstance(data, dict) else None
-        if not isinstance(disc, dict) or disc.get("fit_ref") == ref:
-            return
-        assert isinstance(data, dict)
-        data["discovery"] = disc | {"fit_ref": ref}
-        try:
-            cache.save_json(path, data)
-        except OSError as err:
-            logger.warning(
-                "Could not add the HUD fit check to the preset '%s' (%s): %s", game, path, err
-            )
-            return
-        logger.info(
-            "Added the HUD fit check to the preset '%s' (its regions are unchanged): %s", game, path
-        )
-
-    def install_preset(game: str, proposal: dict[str, Any]) -> None:
-        """Write a discovered preset (its record in ``out`` says where)."""
-        folder = project / "hud_presets" if scope == "project" else cutpoint_paths.presets_dir()
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / f"{check_game_key(game)}.json"
-        old = cache.load_json(target) if target.is_file() else None
-        if isinstance(old, dict) and stale_mapping(old):
-            # a preset made with the wrong y scale (#1085): keep it aside and carry over what
-            # the user set in it; the new regions replace the old ones
-            backup = target.with_suffix(".json.pre-1085")
-            target.replace(backup)
-            proposal = proposal | {k: old[k] for k in USER_PRESET_KEYS if k in old}
-            if isinstance(old.get("feed"), dict):  # the user's feed keys; row_notices is
-                # discovery's, so only the new discovery sets it
-                kept = {k: v for k, v in old["feed"].items() if k != "row_notices"}
-                proposal["feed"] = kept | (proposal.get("feed") or {})
-            logger.warning(
-                "Replaced the HUD preset for %r (made with a wrong y scale, #1085); the old "
-                "file is kept as %s",
-                game,
-                backup,
-            )
-        cache.save_json(target, discover.installable(proposal))
-        out[game].update(installed=True, preset=str(target))
-        logger.info(
-            "Installed discovered HUD preset for %r: %s (edit it to calibrate)", game, target
-        )
-
-    def per_source(recs: list[dict[str, Any]], srcs: list[Any]) -> dict[str, list[dict[str, Any]]]:
-        """The gameplay frames among OCR records, per source path."""
-        paths = {discover.src_key(s): str(s.path) for s in srcs}
-        got: dict[str, list[dict[str, Any]]] = {}
-        for f in discover.gameplay_frames(recs, params):
-            if discover._src(f) in paths:
-                got.setdefault(paths[discover._src(f)], []).append(f)
-        return got
-
-    def fit_frames(
-        game: str, proposal: dict[str, Any] | None, srcs: list[Any], tested: list[Any]
-    ) -> dict[str, list[dict[str, Any]]]:
-        """Gameplay frames per source: this run's discovery records, and a sample of their own
-        for ``tested`` sources with too few."""
-        got: dict[str, list[dict[str, Any]]] = {}
-        ids = set(((proposal or {}).get("discovery") or {}).get("frames") or [])
-        if ids:
-            recs = discover.read_ocr_samples(project / "discovery" / game / "ocr.jsonl")
-            got = per_source([f for f in recs if f["id"] in ids], srcs)
-        need = [s for s in tested if len(got.get(str(s.path), [])) < game_fit.TOP_UP_FRAMES]
-        if need:
-            logger.debug("HUD fit check for %r: sampling %d source(s)", game, len(need))
-            try:
-                recs = game_fit.sample_frames(need, project / "discovery" / "_fit" / game, params)
-            except LowMemoryError:
-                raise
-            except Exception as err:
-                memguard.raise_if_out_of_memory(
-                    err, "the HUD fit check", f"{game}: {', '.join(s.name for s in need)}"
-                )
-                raise
-            for path, frames in per_source(recs, need).items():
-                got.setdefault(path, []).extend(frames)
-        return got
-
-    def fit_ref(preset: Any) -> Any:
-        data = cache.load_json(preset.path) if preset.path else None
-        return (
-            ((data or {}).get("discovery") or {}).get("fit_ref") if isinstance(data, dict) else None
-        )
-
-    decided: dict[str, tuple[str, Any]] = {}  # path -> (key, Fit or None)
-
-    def persist() -> None:
-        """Save the decisions made so far (each as soon as it is made: an interrupted run
-        keeps them), with the date groups of their folders."""
-        entries, groups = hud.load_game_keys(project), hud.load_game_groups(project)
-        for path, (key, fit) in decided.items():
-            entries[hud.source_id(path)] = {
-                "tag": hud.source_tag(path),
-                "guess": guesses[path],
-                "key": key,
-                "fit": fit.record() if fit is not None else None,
-            }
-            folder, stem = hud.date_group(path, project)
-            if stem is not None:
-                groups[folder] = stem
-        hud.save_game_keys(project, entries, groups)
-
-    def made_from(key: str, s: Any) -> bool:
-        """Whether the preset ``key`` was discovered from source ``s``: the OCR records of
-        this project's ``discovery/<key>/proposal.json`` (an installed preset keeps none,
-        A647); False when that file is missing or unreadable."""
-        ids = discover.proposal_frames(project / "discovery" / key / "proposal.json")
-        prefix = f"{discover.src_key(s)}@"
-        return isinstance(ids, list) and any(str(i).startswith(prefix) for i in ids)
-
-    for game, srcs in by_game.items():
-        existing = load_preset(game, project)
-        tested = [s for s in srcs if str(s.path) in guesses]
-        # a discovery whose sources are checked against each other installs its preset only
-        # after the check: an interrupted run leaves no preset of two games mixed
-        split = existing is None and len(srcs) > 1 and bool(tested)
-        proposal = (
-            run(game, srcs, existing, install=not split) if existing is None or force else None
-        )
-        # an installed discovered preset without a vision HUD map gets one, once (#1069)
-        if (
-            existing is not None
-            and hud_mapper is not None
-            and vision_map.wants_top_up(existing, cutpoint_paths.presets_dir())
-            and hud_mapper.usable(top_up=True)
-            and not vision_map.tried(game, hud_mapper.model, existing.path)
-        ):
-            if before_top_up is not None:
-                before_top_up()
-            try:
-                # the model is loaded (on a GPU) before the minutes of discovery it is for
-                why = None if proposal is not None else hud_mapper.ready()
-                if why is None:
-                    why = top_up(
-                        game, existing, proposal or run(game, srcs, existing, topping=True)
-                    )
-            finally:
-                hud_mapper.release()
-            if why is not None:
-                vision_map.mark_tried(game, hud_mapper.model, existing.path, why)
-                logger.info(
-                    "No vision HUD map for the preset '%s' (%s); not tried again until the "
-                    "preset or the vision model changes",
-                    game,
-                    why,
-                )
-        # a forced discovery over an existing preset: the sources are checked against its grid
-        # fit_ref, or, without one, against each other like a new discovery; the preset gets
-        # the fit_ref of the sources that fit (its regions stay)
-        redo = existing is not None and proposal is not None
-        if not tested:
-            if redo:  # every source is the game (--game, a match hint): all of them are the group
-                assert existing is not None and proposal is not None
-                add_fit_ref(game, existing.path, (proposal.get("discovery") or {}).get("fit_ref"))
-            continue
-        if existing is None and len(srcs) == 1:  # nothing to compare with
-            decided[str(tested[0].path)] = (game, None)
-            persist()
-            continue
-        got = fit_frames(game, proposal, srcs, tested)
-        old_ref = fit_ref(existing) if redo else None
-        anchored = game_fit.valid_ref(old_ref) and bool(old_ref["grid"])
-        if redo and anchored:  # the preset's grid decides; those that fit make the new one
-            assert existing is not None
-            profs = {
-                str(s.path): game_fit.profile(got.get(str(s.path), []), params.min_score)
-                for s in srcs
-            }
-            fits = {str(s.path): game_fit.against_ref(profs[str(s.path)], old_ref) for s in tested}
-            if any(f is not None and f.ok for f in fits.values()):  # else the old ref stays
-                group = game_fit.Profile()
-                for k, prof in profs.items():
-                    fit = fits.get(k)
-                    if fit is None or fit.ok:  # decided before, inconclusive, or fits
-                        group += prof
-                add_fit_ref(game, existing.path, group.ref())
-        elif existing is None or redo:  # the sources of this discovery against each other
-            profs = {
-                str(s.path): game_fit.profile(got.get(str(s.path), []), params.min_score)
-                for s in srcs
-            }
-            fits = game_fit.split_group(
-                profs,
-                {str(s.path): float(s.duration) for s in srcs},
-                frozenset(p for p in profs if p not in guesses),
-            )
-            if redo:  # the leader's group: the decided sources and those that fit
-                assert existing is not None
-                group = game_fit.Profile()
-                for k, prof in profs.items():
-                    fit = fits.get(k)
-                    if k not in fits or (fit is not None and fit.ok):
-                        group += prof
-                add_fit_ref(game, existing.path, group.ref())
-        else:  # against the preset found
-            ref = fit_ref(existing)  # none, or an earlier version's: no decision, no split
-            fits = {
-                str(s.path): game_fit.against_ref(
-                    game_fit.profile(got.get(str(s.path), []), params.min_score), ref
-                )
-                for s in tested
-            }
-        misfits = []
-        for s in tested:
-            fit = fits.get(str(s.path))
-            if fit is None:
-                logger.debug("%s: HUD fit check for %r inconclusive; keeping it", s.name, game)
-            if fit is not None and not fit.ok:
-                misfits.append(s)
-            else:
-                decided[str(s.path)] = (game, fit)
-        if split:  # the preset from the sources that fit only, or as discovered
-            if misfits:
-                keep = {discover.src_key(s) for s in srcs if s not in misfits}
-                proposal = run(game, srcs, None, keep=keep, install=False)
-            assert proposal is not None
-            install_preset(game, proposal)
-        persist()
-        # presets made for earlier misfits: (key, that misfit's profile, its name)
-        made: list[tuple[str, Any, str]] = []
-        for s in misfits:
-            path, fit = str(s.path), fits[str(s.path)]
-            prof = game_fit.profile(got.get(path, []), params.min_score)
-            for key, other_prof, other in made:
-                again = game_fit.against_run(prof, other_prof)
-                if again is not None and again.ok:
-                    logger.info("%s fits the HUD preset '%s' discovered for %s", s.name, key, other)
-                    decided[path] = (key, again)
-                    persist()
-                    break
-            else:
-                taken = set(by_game) | {k for k, _ in decided.values()}
-                # the key this source had before (also a stale decision) or whose preset was
-                # discovered from it is its own, not another game's
-                mine = before.get(path)
-                new = hud.misfit_key(
-                    path,
-                    lambda k, taken=taken, mine=mine, s=s: (
-                        k != mine
-                        and (
-                            k in taken
-                            or (load_preset(k, project) is not None and not made_from(k, s))
-                        )
-                    ),
-                )
-                logger.info(
-                    "%s does not fit the HUD preset '%s' (score %.2f); discovering it as '%s'",
-                    s.name,
-                    game,
-                    fit.score,
-                    new,
-                )
-                decided[path] = (new, fit)
-                persist()  # before its discovery: an interrupted one keeps the key
-                own = load_preset(new, project)
-                if own is None or force:
-                    prop = run(new, [s], own)
-                    if own is not None:  # one source: it is the group
-                        ref = (prop.get("discovery") or {}).get("fit_ref")
-                        add_fit_ref(new, own.path, ref)
-                made.append((new, prof, s.name))
-    return out
+    return DiscoverRun(
+        project,
+        sources,
+        ocr,
+        force,
+        bursts,
+        scope,
+        hint,
+        labeler,
+        hud_mapper,
+        before_top_up,
+        load_preset=load_preset,
+        game_key_for_path=game_key_for_path,
+    ).run()
 
 
 def bad_ranges(
