@@ -143,14 +143,25 @@ def test_banner_seed_tiers(text: str, seed: float | None) -> None:
     assert vw._seed_priority({"kind": "ocr", "type": "banner", "text": text}) == seed
 
 
-def test_weak_feeds_do_not_take_the_slots_of_a_banner_and_a_notice() -> None:
-    """PR #1220 F1: the best feed, then the banners, then the other feeds and notices by
-    score fill the MAX_REGIONS slots."""
+def test_weak_feeds_do_not_take_the_slots_of_a_banner_and_notices() -> None:
+    """PR #1220: the best feed, the banners, the notices, then the other feeds fill the
+    MAX_REGIONS slots, so weak feeds (chat among them) take only the slots left over."""
     proposals = [
         _proposal(f"feed{i}", "feed", 1.0 if i == 0 else 0.05, 40 + 50 * i) for i in range(6)
     ]
-    proposals += [_proposal("banner", "banner", 0.03, 900), _proposal("notice", "notice", 0.3, 960)]
+    proposals += [
+        _proposal("banner", "banner", 0.03, 900),
+        _proposal("notice1", "notice", 0.02, 960),  # weaker than every feed, kept all the same
+        _proposal("notice2", "notice", 0.04, 1000),
+    ]
     names = [r.name for r in proposals_to_regions(proposals)]
-    assert len(names) == 6
-    assert names[:3] == ["feed0", "banner", "notice"]
-    assert "banner" in names and "notice" in names
+    assert names == ["feed0", "banner", "notice2", "notice1", "feed1", "feed2"]
+
+
+def test_a_real_second_feed_gets_a_slot_when_there_is_room() -> None:
+    proposals = [
+        _proposal("notice", "notice", 0.5, 960),
+        _proposal("second", "feed", 0.05, 400),
+        _proposal("strong", "feed", 1.0, 40),
+    ]
+    assert [r.name for r in proposals_to_regions(proposals)] == ["strong", "notice", "second"]
