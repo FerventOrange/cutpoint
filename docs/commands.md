@@ -1431,10 +1431,14 @@ After the crash step, crashes in `crashes.json` become moments for every style e
 ### Candidates
 
 Candidates come from the audio and transcript grids: per source, the strongest peaks, at most
-the default count above (or `--max-candidates`), each at least a quarter of the strongest peak.
-`gaming` has an open list: it has no fixed cap, so a long video can have more moments than the
-usual count, but beyond that count a moment must reach 0.5 of the strongest peak. The default
-sequence stays about 90 s. `--max-candidates` sets the cap for every style, as before.
+the default count above (or `--max-candidates`), each at least a quarter of the source's
+reference: its strongest peak, at most twice its second strongest (over all recovered parts), so
+one very loud moment does not drop the source's other moments. A peak must also score above 5
+(5% of the style's weights). `gaming` has an open list: it has no fixed cap, so a long video can
+have more moments than the usual count, but beyond that count a moment must reach 0.5 of the
+source's reference. The default sequence stays about 90 s. `--max-candidates` sets the cap for
+every style, as before. Action-cam candidates come from their own feature grid and use only the
+absolute floor (the same score points in every source), no share of a strongest peak.
 
 The transcript grid (`speech`) counts the style's keywords. Per source, a phrase said often
 counts less each time: up to max(3, 3 per hour of the source) times at its full weight, above

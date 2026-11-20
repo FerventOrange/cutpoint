@@ -262,6 +262,27 @@ def test_the_default_floor_picks_as_before(height: float, picked: bool) -> None:
     assert actioncam.pick(*args, floor=0.02) == got
 
 
+def _strong_and_weak() -> dict[str, np.ndarray]:
+    """A 1.0 crash the VLM and airtime also read (0.65 weighted) and, 40 s later, a small jump
+    (airtime 0.15: 0.0375 weighted, above the floor, under 8% of the crash)."""
+    feats = {k: np.zeros(N) for k in actioncam.FEATURES}
+    for k in ("crash", "vlm", "airtime"):
+        feats[k] = _bump(20.0, 1.0)
+    feats["airtime"] = np.maximum(feats["airtime"], _bump(60.0, 0.15))
+    return feats
+
+
+def test_a_strong_moment_does_not_hide_the_sources_others_with_the_absolute_floor() -> None:
+    # #1085 A188: analyze passes rel_floor=0, so only the absolute floor holds
+    w, zero = CAM.weights, np.zeros(N)
+    got = actioncam.pick(_strong_and_weak(), w, zero, [], N * DT, 10, rel_floor=0.0)
+    assert [round(p.peak_t) for p in got] == [20, 60]
+    # mix and the visual pool keep the share of the strongest
+    assert [
+        round(p.peak_t) for p in actioncam.pick(_strong_and_weak(), w, zero, [], N * DT, 10)
+    ] == [20]
+
+
 def test_a_source_without_telemetry_passes_its_floor_and_its_score_is_capped() -> None:
     own = actioncam.source_available(FULL, None)
     w, zero = CAM.weights, np.zeros(N)

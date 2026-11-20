@@ -102,6 +102,14 @@ LIFT_LEAD_S = 5.0
 # CRASH_FLOOR_MIN confidence and CRASH_FLOOR_REL of the best one in the project's crashes.json.
 CRASH_FLOOR_MIN = 0.2
 CRASH_FLOOR_REL = 0.6
+# The audio sub-score is a yell or laugh against the source's own loudest 1% (its 99th
+# percentile; one reference per source, :attr:`SourceInputs.voice_refs`), but never against
+# less than the level where the voice layer starts to read laughter
+# (:class:`cutpoint.events.voice.VoiceCalibration`: ``laugh_log_thr``, the cheer through its
+# ``cheer_weight``): in a quiet source the loudest 1% is no yell, and it no longer scores 0.5
+# (#1085 A189). Typical footage, with laughter around 1e-3, is above it and unchanged.
+AUDIO_REF_LAUGH = 10**-3.7
+AUDIO_REF_YELL = AUDIO_REF_LAUGH / 0.7
 
 
 # --------------------------------------------------------------------------- params
@@ -614,15 +622,16 @@ class SourceInputs:
 
     @functools.cached_property
     def voice_refs(self) -> tuple[np.ndarray, float, float] | None:
-        """``(yell, yell reference, laugh reference)`` of the voice layer; None without one."""
+        """``(yell, yell reference, laugh reference)`` of the voice layer (at least
+        :data:`AUDIO_REF_YELL` and :data:`AUDIO_REF_LAUGH`); None without one."""
         v = self.voice
         if v is None:
             return None
         yell = np.maximum(v["raw_cheer"], v["hp_cheer"])
         return (
             yell,
-            max(float(np.percentile(yell, 99)), 1e-4),
-            max(float(np.percentile(v["hp_laugh"], 99)), 1e-4),
+            max(float(np.percentile(yell, 99)), AUDIO_REF_YELL),
+            max(float(np.percentile(v["hp_laugh"], 99)), AUDIO_REF_LAUGH),
         )
 
     @property
