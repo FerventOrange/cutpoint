@@ -357,8 +357,8 @@ HYPE_COMBAT = "  hype: 0-1 driving/waiting, menus, hangar, loading, vehicle or r
 HYPE_NEUTRAL = vw.HYPE_NEUTRAL
 
 
-# combat: the fixed text of 5 (#596 kept it byte for byte, and its cache key); neutral: new in 6
-PROMPT_PIN = {True: (5, "6fce463aac38"), False: (6, "6f2bb21f0089")}
+# combat 7, neutral 8: no audio is asked for, the transcript and hints are (#1085 A164)
+PROMPT_PIN = {True: (7, "841f24f1d830"), False: (8, "1e2d1b18a902")}
 
 
 @pytest.mark.parametrize(
@@ -467,12 +467,13 @@ KEY_FIELDS = {
     "regions",
 }
 REGION_FIELDS = {
-    "name", "x", "y", "w", "h", "kind", "min_change", "min_fill",
+    "name", "x", "y", "w", "h", "kind",
     "gate", "every", "min_text_h", "det_scale",
 }  # fmt: skip
 
 
-PLAIN_KEY_SHA1 = "64e32e4aaff59b628bf5686a669a1ab016728c07"  # the preset's key without ``interp`` (its own version)
+# 8c22...: the mask gate and its min_change / min_fill fields are gone (#1085 A142)
+PLAIN_KEY_SHA1 = "8c22255610f9adf35cb41dfc292c5247f4a91127"  # the preset's key without ``interp`` (its own version)
 
 
 def test_ocr_key(home, tmp_path, monkeypatch):

@@ -143,15 +143,20 @@ def test_drop_sightings() -> None:
         ("Ashdestroyed Kip", ("Ash", "Kip", "kill")),  # a long kill word joined to a name
         ("Nym skilled Vel", None),
         ("Qorv2assist Vel", ("Qorv2", "Vel", "assist")),  # after digits
-        ("Nym SHOT  DOWN Vel", ("Nym", "Vel", "kill")),
     ],
 )
 def test_kill_words_match_whole_words(text: str, split: tuple | None) -> None:
     assert FeedParser({}, (), 1.0)._word_split(text) == split  # "assist" among the defaults
 
 
+def test_a_preset_phrase_matches_across_any_space() -> None:
+    own = FeedParser({"kill_words": {"shot down": "kill"}}, (), 1.0)
+    assert own._word_split("Nym SHOT  DOWN Vel") == ("Nym", "Vel", "kill")
+
+
 def test_a_crash_word_joined_to_the_name_is_a_crash() -> None:
-    crash = FeedParser({}, (), 1.0).parse(
+    words = {"kill_words": {"has crashed": "crash", "crashed": "crash"}}
+    crash = FeedParser(words, (), 1.0).parse(
         np.zeros((40, 400, 3), np.uint8),
         [([[0, 0], [300, 0], [300, 24], [0, 24]], "Kiphas crashed", 0.9)],
     )

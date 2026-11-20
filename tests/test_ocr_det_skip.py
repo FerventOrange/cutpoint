@@ -138,8 +138,9 @@ def test_skip_read_equals_the_plain_read_with_fewer_det_calls(tmp_path: Path, mo
     events, stats = _run(skip_dir, monkeypatch, _Engine(), det_skip=True)
     assert events == plain
     assert "det_skipped" not in plain_stats
-    # the still menu at 8-20 s: every frame after its first skips det in both regions
-    assert stats["det_skipped"] == {"notice": 35, "feed": 35}
+    # the still menu at 8-20 s: every frame after its first skips det in every region (the
+    # banner is det-gated too, on every 2nd frame)
+    assert stats["det_skipped"] == {"notice": 35, "feed": 35, "banner": 17}
     for name, calls in plain_stats["det_calls"].items():
         assert stats["det_calls"][name] + stats["det_skipped"][name] == calls
     (folder,) = skip_dir.glob("ocr-raw-*")

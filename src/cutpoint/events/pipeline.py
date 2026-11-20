@@ -63,6 +63,7 @@ from cutpoint.events.vlm_windows import (
     describe_windows,
     game_prompt,
     has_kills,
+    resolve_counts,
     select_windows,
     windows_to_events,
 )
@@ -679,12 +680,10 @@ def run_events(
     if is_cam:
         for src, evs in _telemetry_layer(project, sources, vlm).items():
             layer1.setdefault(src, []).extend(evs)
-    if is_cam and vlm.max_fill_windows == 0:
-        vlm.max_fill_windows = 150
-    if vlm.max_windows is None:
-        vlm.max_windows = _auto_max_windows(layer1) if is_cam else 60
-        if "vlm" in layers:
-            logger.info("VLM: up to %d windows", vlm.max_windows)
+    auto = vlm.max_windows is None
+    vlm = resolve_counts(vlm, is_cam, layer1)
+    if auto and "vlm" in layers:
+        logger.info("VLM: up to %d windows", vlm.max_windows)
 
     # ---- layer 2: VLM windows
     # action-cam: worded for the activity.json the crash layer above may have just written
@@ -1171,18 +1170,6 @@ def _telemetry_layer(
         out[str(s.path)] = evs
     guard.raise_if_all_failed(len(sources))  # not one bad file: the layer failed
     return out
-
-
-def _auto_max_windows(layer1: dict[str, list[dict[str, Any]]]) -> int:
-    """Action-cam default: enough windows for every seed and most of the riding (60-150)."""
-    n = sum(
-        1
-        for evs in layer1.values()
-        for e in evs
-        if (e.get("kind") == "telemetry" and e.get("type") != "coverage_masked")
-        or e.get("label") in ("Laughter", "Scream", "Cheering")
-    )
-    return max(60, min(150, n))
 
 
 def _discover(

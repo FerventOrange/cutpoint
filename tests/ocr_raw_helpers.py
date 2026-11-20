@@ -20,7 +20,7 @@ NOTICE = (300, 200, 1320, 700)  # a centred notice region ("det" gate at half si
 FEED = (1400, 40, 500, 400)  # a feed with coloured names ("det" gate)
 
 
-BANNER = (600, 940, 700, 120)  # a banner region ("mask" gate, every 2nd frame)
+BANNER = (600, 940, 700, 120)  # a banner region (the default "det" gate, every 2nd frame)
 
 
 ORIGIN = (300, 40)  # top left of the decoded HUD area

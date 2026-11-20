@@ -215,10 +215,8 @@ def compute_voice(
         for g in GROUPS:
             grids[f"{pre}_{g}"] = np.zeros(n, np.float32)
     edge_s = params.overlap_s / 2
-    for t, block in iter_audio_blocks(src, params.block_s, params.overlap_s):
+    for t, block, first, last in iter_audio_blocks(src, params.block_s, params.overlap_s):
         hp = _highpass(block, params.highpass_hz)
-        first = t <= 0
-        last = t + len(block) / WAV_SR >= total - 0.05
         lo_s = 0.0 if first else edge_s  # block edges lack context
         hi_s = len(block) / WAV_SR - (0.0 if last else edge_s)
 

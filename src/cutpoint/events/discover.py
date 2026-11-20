@@ -1653,17 +1653,18 @@ def proposals_to_regions(proposals: list[dict[str, Any]]) -> list[Region]:
     """Turn the best proposals into :class:`Region` objects (padded by :data:`REGION_PAD`,
     clipped).
 
-    ``feed`` regions keep the det gate at full rate; banners and notices are
+    Every ``feed``, ``banner`` and ``notice`` proposal of :data:`MIN_REGION_SCORE` or more
+    is kept. ``feed`` regions keep the det gate at full rate; banners and notices are
     sampled at a third of the OCR rate. ``dynamic`` proposals are left out
     unless nothing else was found. ``score`` proposals become ``score`` regions after
     them (:func:`score_region`), not counted in :data:`MAX_REGIONS`.
     """
-    best = max((p["score"] for p in proposals if p["kind"] == "feed"), default=0.0)
+    # every feed of MIN_REGION_SCORE or more: a strong feed (or chat scored as one) does not
+    # drop a second real feed; the label step (apply_labels) sorts chat out (#1085 A145)
     keep = [
         p
         for p in proposals
-        if (p["kind"] == "feed" and p["score"] >= max(0.25 * best, MIN_REGION_SCORE))
-        or (p["kind"] in ("banner", "notice") and p["score"] >= MIN_REGION_SCORE)
+        if p["kind"] in ("feed", "banner", "notice") and p["score"] >= MIN_REGION_SCORE
     ]
     keep = keep or [p for p in proposals if p["kind"] not in ("readout", "popup", "score")]
     out = []

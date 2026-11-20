@@ -103,7 +103,7 @@ def _wording(raw: dict) -> vw.ActionCamWording:
 
 def test_action_cam_windows_cache_under_the_action_cam_key():
     key = vw.VlmParams(action_cam=vw.default_wording()).key()
-    assert key["action_cam"] == vw.ACTION_CAM_PROMPT_VERSION == 1
+    assert key["action_cam"] == vw.ACTION_CAM_PROMPT_VERSION == 2  # 2: #1085 A164
     assert key["aw"] == vw.default_wording().key() and len(key["aw"]) == 8  # always hashed
     assert "action_cam" not in vw.VlmParams().key()
     assert vw.VlmParams(action_cam=_wording(HOP)).key() == key  # the floor's wording too
@@ -194,22 +194,37 @@ def test_has_kills_from_ocr_events_or_preset_kill_words(tmp_path: Path, home):
 V5_KEY = {"frames": 14, "h": 606, "transcript": True, "hints": True, "prompt": 5, "model": ""}
 
 
-def test_only_the_neutral_prompt_is_re_keyed():
+def test_both_game_prompts_are_re_keyed_apart():
+    """#1085 A164: the prompts no longer ask for audio, so both variants are described again,
+    under numbers they never shared (combat 7, neutral 8)."""
     combat = vw.VlmParams().key(vw.game_prompt("some-game", None, combat=True))
     neutral = vw.VlmParams().key(vw.game_prompt("some-game", None))
-    # combat: the text of 5, so the key of 5 byte for byte (shooter caches stay valid)
-    assert json.dumps(combat) == json.dumps(V5_KEY)
-    assert vw.COMBAT_PROMPT_VERSION == 5
-    # neutral: new in 6, so sources without kills are described again
-    assert neutral == {**V5_KEY, "prompt": 6} and neutral != combat
-    assert neutral["prompt"] == vw.PROMPT_VERSION == 6
+    assert json.dumps(combat) == json.dumps({**V5_KEY, "prompt": 7})
+    assert vw.COMBAT_PROMPT_VERSION == 7
+    assert neutral == {**V5_KEY, "prompt": 8} and neutral != combat
+    assert neutral["prompt"] == vw.PROMPT_VERSION == 8
     assert neutral == vw.VlmParams().key()  # no prompt: the neutral one
+
+
+@pytest.mark.parametrize("combat", [True, False])
+def test_game_prompts_ask_for_no_audio(combat):
+    """#1085 A164: no audio is sent, so no prompt asks the model to listen to it."""
+    src = Source(Path("a.mp4"), 60.0, Path(), [])
+    win = vw.Window("a.mp4", 0.0, 15.0, 1.0, [])
+    game = vw.game_prompt("some-game", None, combat=combat)
+    for params in (vw.VlmParams(), vw.VlmParams(action_cam=vw.default_wording())):
+        msgs = vw.build_messages(src, win, [], params, game, [], [])
+        parts = [p for m in msgs for p in m["content"] if p.get("type") == "text"]
+        text = " ".join(p["text"] for p in parts).lower()
+        assert "listen" not in text and "audio says" not in text
+        assert "no audio is sent" in text
+        assert "transcript and detector hints for laughter" in text
 
 
 def test_the_default_key_is_pinned_byte_for_byte():
     """Selection and request settings moved to module constants (#1085 A32); the key of the
     default params must not change, or every cached window is described again."""
-    key = {"frames": 14, "h": 606, "transcript": True, "hints": True, "prompt": 6, "model": ""}
+    key = {"frames": 14, "h": 606, "transcript": True, "hints": True, "prompt": 8, "model": ""}
     assert json.dumps(vw.VlmParams().key()) == json.dumps(key)
 
 
@@ -228,7 +243,7 @@ def test_combat_prompt_from_a_project_preset_keeps_the_custom_hash(tmp_path, hom
     gp = vw.game_prompt("verbfeed", load_preset("verbfeed", proj), combat=True)
     assert gp.custom and gp.combat and gp.view == "side-on"
     key = vw.VlmParams().key(gp)
-    assert "gp" in key and "combat" not in key and key["prompt"] == 5
+    assert "gp" in key and "combat" not in key and key["prompt"] == 7
 
 
 def test_events_txt_names_the_vision_model(tmp_path: Path):

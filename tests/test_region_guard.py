@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -95,7 +96,7 @@ def test_empty_crop_gives_no_text():
         def __call__(self, *_a):
             raise AssertionError("no crop, no reading")
 
-    empty = _region("empty", 10, 10, 20, 20)
+    empty = replace(_region("empty", 10, 10, 20, 20), gate="read")
     rects = {"empty": (10, 10, 20, 20)}
     # the decoded area ends before the rectangle: its crop is clipped to nothing
     reader = OcrReader(

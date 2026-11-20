@@ -19,7 +19,7 @@ from pathlib import Path
 from cutpoint import cache, jsonout
 from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS, LAYERS
 from cutpoint.styles import ACTION_CAM, project_kind
-from cutpoint.utils import non_negative_float, positive_float, unit_float
+from cutpoint.utils import non_negative_float, positive_float, positive_int, unit_float
 
 
 def _group_value(text: str) -> tuple[str, float]:
@@ -148,7 +148,10 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         help="your in-game name(s), repeatable (default: player_tags in config.json)",
     )
     g.add_argument(
-        "--ocr-fps", type=float, default=3.0, help="frames per second read by the OCR (default 3)"
+        "--ocr-fps",
+        type=positive_float,
+        default=3.0,
+        help="frames per second read by the OCR (above 0, default 3)",
     )
     g.add_argument("--no-hwaccel", action="store_true", help="decode on the CPU")
     g.add_argument(
@@ -183,9 +186,9 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     )
     g.add_argument(
         "--discover-bursts",
-        type=int,
+        type=positive_int,
         default=40,
-        help="frame bursts sampled by discovery (4 frames each; default 40)",
+        help="frame bursts sampled by discovery (4 frames each; 1 or more, default 40)",
     )
     g.add_argument(
         "--preset-scope",
@@ -198,9 +201,10 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     g = ap.add_argument_group("VLM (vision model)")
     g.add_argument(
         "--max-windows",
-        type=int,
+        type=positive_int,
         default=None,
-        help="default 60; action-cam: one per seed + riding coverage, 60-150",
+        help="windows to describe, 1 or more (default 60; action-cam: one per seed + riding "
+        "coverage, 60-150)",
     )
     g.add_argument(
         "--window", type=positive_float, default=15.0, help="window length (s, default 15)"

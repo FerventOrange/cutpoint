@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from cutpoint.events.killfeed import (
+    DEFAULT_KILL_WORDS,
     EventTracker,
     FeedParser,
     Interpreter,
@@ -103,7 +104,7 @@ def test_log_entries_read_by_kill_words_only_and_make_no_notices() -> None:
         ),
     )
     assert [(e["type"], e["text"], e["entry"]) for e in evs] == [
-        ("kill", "Kip > Alder (Zeta)", "text")
+        ("kill", "Kip > Alder", "text")  # no vehicle group without the preset's kill words
     ]
     # the same rows without a clock are a notice, as ever
     evs = parser.parse(img, rows("Birch has left the game"))
@@ -182,15 +183,23 @@ def _types(parser: FeedParser, *texts: str) -> list[str]:
         "-Kip-: they killed that corner",
         "Kip 2:20 destroyed Alder",  # documented: a clock after the name is chat outside logs
         "Marlin: assist Alder",
-        "Marlin: has crashed",
-        "Marlin: crashed",
     ],
 )
 def test_a_colon_after_the_name_makes_a_chat_row_with_no_event_at_all(row: str) -> None:
-    """Outside a log too, for kill, assist and crash. A row with a notice feed gives no notice
+    """Outside a log too, for kill and assist. A row with a notice feed gives no notice
     either: the rejected row is used, so no other form reads it."""
     assert _types(FeedParser({"row_notices": True}, (), 1.0), row) == []
     assert _types(FeedParser({}, (), 1.0), row) == []
+
+
+CRASH_WORDS = {"kill_words": {**DEFAULT_KILL_WORDS, "has crashed": "crash", "crashed": "crash"}}
+
+
+@pytest.mark.parametrize("row", ["Marlin: has crashed", "Marlin: crashed"])
+def test_a_colon_before_a_preset_crash_word_makes_a_chat_row(row: str) -> None:
+    """The crash verb comes from a preset's kill_words; its rows follow the same chat rule."""
+    assert _types(FeedParser(CRASH_WORDS | {"row_notices": True}, (), 1.0), row) == []
+    assert _types(FeedParser(CRASH_WORDS, (), 1.0), row) == []
 
 
 def test_a_handle_joined_to_a_clock_shaped_number_is_chat_but_a_lone_log_row_is_not() -> None:
@@ -233,7 +242,7 @@ def test_a_preset_with_its_own_kill_words_has_the_same_chat_rule() -> None:
 
 
 def test_normal_kill_and_crash_rows_still_give_events() -> None:
-    parser = FeedParser({"row_notices": True}, (), 1.0)
+    parser = FeedParser(CRASH_WORDS | {"row_notices": True}, (), 1.0)
     img, rows = _crop()
     evs = parser.parse(img, rows("Kip destroyed Alder", "Marlin has crashed"))
     assert [(e["type"], e["text"]) for e in evs] == [
@@ -246,7 +255,35 @@ def test_a_log_kill_still_reads_with_its_group_on_the_next_row() -> None:
     img, rows = _crop()
     parser = FeedParser({"row_notices": True}, (), 1.0)
     evs = parser.parse(img, rows("2:20 Kip destroyed", "Alder (Zeta)", "2:25 Birch has left"))
+    assert [e["text"] for e in evs if e["type"] == "kill"] == ["Kip > Alder"]
+    own = FeedParser({"kill_words": {"destroyed": "kill"}, "row_notices": True}, (), 1.0)
+    evs = own.parse(img, rows("2:20 Kip destroyed", "Alder (Zeta)", "2:25 Birch has left"))
     assert [e["text"] for e in evs if e["type"] == "kill"] == ["Kip > Alder (Zeta)"]
+
+
+def test_default_kill_words_are_the_generic_four() -> None:
+    """#1085 A143: a game's own verbs (shot down, crashed) come only from a preset."""
+    assert DEFAULT_KILL_WORDS == {
+        "destroyed": "kill",
+        "killed": "kill",
+        "eliminated": "kill",
+        "assist": "assist",
+    }
+    assert _types(FeedParser({}, (), 1.0), "Kip shot down Alder") != ["kill"]
+    assert _types(FeedParser({}, (), 1.0), "Marlin has crashed") != ["crash"]
+    own = FeedParser({"kill_words": {"shot down": "kill"}}, (), 1.0)
+    assert _types(own, "Kip shot down Alder") == ["kill"]
+
+
+def test_vehicle_fields_come_only_with_the_presets_own_kill_words() -> None:
+    img, rows = _crop()
+    (ev,) = FeedParser({}, (), 1.0).parse(img, rows("Kip (Tiger) destroyed Alder (Zeta)"))
+    assert (ev["killer"], ev["victim"], ev["text"]) == ("Kip", "Alder", "Kip > Alder")
+    assert ev["killer_vehicle"] is None and ev["victim_vehicle"] is None
+    own = FeedParser({"kill_words": {"destroyed": "kill"}}, (), 1.0)
+    (ev,) = own.parse(img, rows("Kip (Tiger) destroyed Alder (Zeta)"))
+    assert (ev["killer_vehicle"], ev["victim_vehicle"]) == ("Tiger", "Zeta")
+    assert ev["text"] == "Kip (Tiger) > Alder (Zeta)"
 
 
 def test_a_word_of_no_default_list_gives_no_kill_without_a_preset() -> None:
