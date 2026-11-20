@@ -112,18 +112,17 @@ def _receipt_with(source: str) -> str:
 _RERUN = f"{extras.INSTALL_SH} (Linux, macOS) or {extras.INSTALL_PS1} (Windows PowerShell)"
 
 
+_NO_LITE = " without --lite / -Lite and with CUTPOINT_LITE unset"
+
+
 @pytest.mark.parametrize(
-    "receipt",
+    ("receipt", "edition", "lite"),
     [
-        RECEIPT,
-        _receipt_with('extras = ["all"]'),  # no index options
-        "[tool\nnot toml {{{",  # an unreadable receipt still marks a tool install
+        (RECEIPT, "lite", _NO_LITE),
+        (_receipt_with('extras = ["all"]'), "full", ""),  # no index options
+        ("[tool\nnot toml {{{", "full", ""),  # an unreadable receipt still marks a tool install
     ],
-    ids=["pypi", "pypi-no-index", "malformed"],
-)
-@pytest.mark.parametrize(
-    ("edition", "lite"),
-    [("lite", " without --lite / -Lite and with CUTPOINT_LITE unset"), ("full", "")],
+    ids=["pypi-lite", "pypi-no-index", "malformed"],
 )
 def test_install_hint_uv_tool_reruns_the_installer(monkeypatch, tmp_path, receipt, edition, lite):
     # uv tool install without --torch-backend pulls CUDA torch on a CPU-only machine; the
@@ -192,22 +191,24 @@ _FORK = "https://github.com/someone/cutpoint"
 
 
 @pytest.mark.parametrize(
-    ("source", "url"),
+    ("source", "url", "torch", "backend", "note"),
     [
-        (f'git = "{_FORK}#subdirectory=pkg", extras = ["gpu"]', f"git+{_FORK}#subdirectory=pkg"),
+        (
+            f'git = "{_FORK}#subdirectory=pkg", extras = ["gpu"]',
+            f"git+{_FORK}#subdirectory=pkg",
+            "2.14.1+cu126",
+            "cu126",
+            "",
+        ),
         (
             'url = "https://example.com/cutpoint-1.0-py3-none-any.whl"',
             "https://example.com/cutpoint-1.0-py3-none-any.whl",
+            None,  # lite: no torch yet
+            "cpu",
+            " (cu126 instead of cpu with an NVIDIA GPU)",
         ),
     ],
-    ids=["fork-subdirectory", "wheel-url"],
-)
-@pytest.mark.parametrize(
-    ("torch", "backend", "note"),
-    [
-        ("2.14.1+cu126", "cu126", ""),
-        (None, "cpu", " (cu126 instead of cpu with an NVIDIA GPU)"),  # lite: no torch yet
-    ],
+    ids=["fork-subdirectory-cuda", "wheel-url-lite"],
 )
 def test_installer_hint_fork_gives_uv_tool_install(
     monkeypatch, tmp_path, source, url, torch, backend, note

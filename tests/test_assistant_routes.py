@@ -1292,31 +1292,14 @@ def test_the_key_routes_refuse_an_unknown_role_and_default_to_the_chat(
     assert ring.saved == {}
 
 
-# One row per branch of the edit-request check (``intent.edits``, ``intent.asks_advice``):
-# each leading edit phrase and where it may stand, a request phrased as a question, and the help
-# questions and statements with the same words that ask for no edit (#863, #864, #881 review).
+# The route wiring of the nudge: a statement and a question that ask an edit, and an advice
+# question that does not. Every phrasing: the ``Turn._asks_edit`` table in test_assistant_length.
 @pytest.mark.parametrize(
     ("text", "nudged"),
     [
         ("get rid of the long pause", True),
-        ("take out the menu part", True),
-        ("use the laugh at 12:30", True),
-        ("open with the jump", True),
-        ("end with the win", True),
-        ("let's start with the crash", True),
-        ("ok, use the laugh then", True),
         ("can you drop the intro?", True),
-        ("Can you use the laugh at 12:30?", True),
-        ("how about we drop the intro?", True),
-        ("could we add the laugh?", True),
-        # advice and help questions, and statements, ask none
         ("should I drop the intro?", False),
-        ("Can I use this for YouTube Shorts?", False),
-        ("Can you use my GPU?", False),
-        ("Let's start with the basics: what is a style?", False),
-        ("Tell me how to use the timeline.", False),
-        ("I don't know where to start with this.", False),
-        ("We use OBS to record.", False),
     ],
 )
 def test_more_edit_phrasings_get_the_nudge_and_advice_questions_do_not(

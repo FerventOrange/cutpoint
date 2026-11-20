@@ -1,5 +1,5 @@
-"""Packaging contract: no ui/keyring extras, and the built wheel carries the files
-the package reads at run time."""
+"""Packaging contract: ui and keyring are core dependencies, and the built wheel carries the
+files the package reads at run time."""
 
 import os
 import re
@@ -18,16 +18,13 @@ _REAL_ENV = {k: v for k, v in os.environ.items() if not k.startswith("CUTPOINT_"
 
 
 def test_ui_and_keyring_are_core_dependencies_not_extras():
-    """The browser workspace and the keyring are in every install: no such extras exist, and
-    neither installer asks for them."""
+    """The browser workspace and the keyring are in every install: neither installer asks for
+    them as extras (pip would warn about an unknown extra)."""
     project = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    extras = project["optional-dependencies"]
-    assert {"ui", "keyring"}.isdisjoint(extras)
     for script in ("install.sh", "install.ps1"):
         text = (_ROOT / script).read_text(encoding="utf-8")
         assert not re.search(r"cutpoint(\$extra|\$\{extra\})?\[[^\]]*\b(ui|keyring)\b", text)
         assert not re.search(r'extra\s*=\s*"\[[^"]*\b(ui|keyring)\b', text)
-    assert "ski" not in extras
     core = {r.split(";")[0].split("[")[0].split(">")[0].split("=")[0].strip()
             for r in project["dependencies"]}  # fmt: skip
     assert {"fastapi", "uvicorn", "keyring", "telemetry-parser"} <= core

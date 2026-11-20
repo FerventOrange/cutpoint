@@ -14,6 +14,7 @@ from cutpoint.pano.x3 import X3Clip
 
 INSV = ["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"]
 LRV = "LRV_20260101_100000_11_001.lrv"
+SKY_UP = [0.0, 0.0, -1.0]  # camera up vector with the sky lens up
 
 
 def make_views(
@@ -34,11 +35,17 @@ def make_views(
     )
 
 
-def orientation(n: int = 600, fps: float = 30.0, q: np.ndarray | None = None) -> G.Orientation:
-    """Sky lens up, still; ``q`` (camera -> world quaternions) when the test needs rotation."""
+def orientation(
+    n: int = 600,
+    fps: float = 30.0,
+    q: np.ndarray | None = None,
+    up: list[float] = SKY_UP,
+) -> G.Orientation:
+    """Still, with the camera's ``up`` vector (sky lens up by default); ``q`` (camera -> world
+    quaternions) when the test needs rotation."""
     return G.Orientation(
         t=np.arange(n) / fps,
-        up=np.tile([0.0, 0.0, -1.0], (n, 1)),
+        up=np.tile(np.asarray(up, float), (n, 1)),
         heading=np.zeros(n),
         heading_smooth=np.zeros(n),
         meta={"fps": fps},
@@ -93,6 +100,48 @@ def fuse_rotations(t: np.ndarray, rm: np.ndarray, fps: float, frames: int) -> G.
     w = np.vstack([np.zeros(3), w])
     a_v = np.einsum("kji,j->ki", rm, [0.0, -G.G, 0.0])
     return G.fuse(t, a_v @ G.M_IMU_TO_V, np.degrees(w) @ G.M_IMU_TO_V, fps, frames)
+
+
+def rot(axis: int, deg) -> np.ndarray:
+    """``(K, 3, 3)`` rotations by ``deg`` (a list or an array) about coordinate ``axis``."""
+    a = np.radians(np.asarray(deg, float))
+    c, s = np.cos(a), np.sin(a)
+    i, j = [k for k in range(3) if k != axis]
+    r = np.zeros((len(a), 3, 3))
+    r[:, axis, axis] = 1.0
+    r[:, i, i], r[:, j, j], r[:, i, j], r[:, j, i] = c, c, -s, s
+    return r
+
+
+def swaying(
+    mount: np.ndarray,
+    turn_dps: float = 0.0,
+    sway_deg: float = 0.0,
+    *,
+    fps: float = 30.0,
+    dt: float = 0.001,
+    dur: float = 12.0,
+) -> G.Orientation:
+    """Fused track of a camera on ``mount`` (camera -> world at rest) turning steadily about
+    the vertical and swaying (roll and pitch about world axes, a few Hz), ``dur`` seconds of
+    IMU samples ``dt`` apart."""
+    t = np.arange(0, dur, dt)
+    psi = turn_dps * t
+    roll = sway_deg * np.sin(2 * np.pi * 1.3 * t)
+    pitch = sway_deg * np.sin(2 * np.pi * 0.7 * t + 1.0)
+    rm = rot(1, psi) @ rot(2, roll) @ rot(0, pitch) @ mount
+    return fuse_rotations(t, rm, fps, int(dur * fps) - 1)
+
+
+# camera -> world of the usual mount: sky lens up, FORWARD_V along world +z (Rp(-90)).
+SKY_MOUNT = quat((1, 0, 0), -90)
+
+
+def turning(n: int, fps: float, heading_deg: np.ndarray | None = None) -> G.Orientation:
+    """Camera on the usual mount (sky lens up, FORWARD_V along world +z), turning about the
+    vertical by ``heading_deg`` (still without it)."""
+    hd = np.zeros(n) if heading_deg is None else heading_deg
+    return orientation(n, fps, np.array([qmul(quat((0, 1, 0), h), SKY_MOUNT) for h in hd]))
 
 
 def write_orient(src: Path, up: list[float]) -> None:

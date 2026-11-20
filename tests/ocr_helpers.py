@@ -11,7 +11,9 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint.events import ocr_raw
+from cutpoint import progress
+from cutpoint.events import ocr_raw, pipeline
+from events_fakes import stub_run_events
 
 W, H, FPS, SECONDS = 1280, 720, 4, 60
 GAME = "tilefall"  # invented game key
@@ -126,6 +128,18 @@ def text_frame(source: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict
         "frame": f"b{b:03d}_{k}.jpg",
         "boxes": boxes,
     }
+
+
+def stub_ocr_run(
+    monkeypatch: Any, sources: list[Any], highlights: dict[str, Any] | None = None
+) -> None:
+    """``run_events`` over ``sources`` with every ``PROGRESS`` update printed as a line, the
+    run's inputs faked (:func:`events_fakes.stub_run_events`) and no OCR engine; the test fakes
+    discovery, OCR and where the run stops."""
+    monkeypatch.setenv(progress.ENV, "1")
+    monkeypatch.setattr(progress, "MIN_INTERVAL_S", 0.0)
+    stub_run_events(monkeypatch, sources, highlights)
+    monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
 
 
 def progress_lines(capsys: Any, drop: tuple[str, ...] = ()) -> list[dict]:

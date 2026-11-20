@@ -617,7 +617,7 @@ def test_without_the_ocr_engine_the_check_is_skipped_quietly(text_check, monkeyp
     monkeypatch.setattr(category, "ocr_installed", lambda: False)
     with caplog.at_level(logging.INFO):
         p = category.probe_source(text_check.src)
-    assert p.hud_text is None and text_check.texts == 0 and caplog.text == ""
+    assert p.hud_text is None and text_check.texts == 0 and caplog.records == []
     assert (p.screen_anchors, text_check.cues) == (0, 1)
     assert not (cache.source_dir(text_check.src) / category.TEXT_FILE).exists()
     assert category.decide([p]).ambiguous

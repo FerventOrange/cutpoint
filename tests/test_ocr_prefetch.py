@@ -23,8 +23,7 @@ from cutpoint.events import ocr_prefetch, pipeline, vlm_windows
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
 from cutpoint.styles import get_style
-from events_fakes import stub_run_events
-from ocr_helpers import progress_lines
+from ocr_helpers import progress_lines, stub_ocr_run
 
 
 class _Stop(Exception):
@@ -264,13 +263,10 @@ def test_a_worker_that_outlives_close_is_stuck_until_it_leaves_its_source(
 def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
     """``run_events`` with the OCR layer only on the fake's two sources; it stops at the
     VLM layer."""
-    monkeypatch.setenv(progress.ENV, "1")
-    monkeypatch.setattr(progress, "MIN_INTERVAL_S", 0.0)  # every update is a line
     hl = {"sources": [{"path": str(p), "duration": 60.0} for p in fake.paths]}
-    stub_run_events(monkeypatch, [fake.source(i) for i in range(len(fake.paths))], hl)
+    stub_ocr_run(monkeypatch, [fake.source(i) for i in range(len(fake.paths))], hl)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
     monkeypatch.setattr(pipeline, "_discover", lambda *a, **k: {})
-    monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
     monkeypatch.setattr(pipeline, "detect_ocr_events", ocr_prefetch.detect_ocr_events)
 
     def stop(*a, **k):
@@ -302,15 +298,11 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
     return fake
 
 
-def _lines(capsys) -> list[dict]:
-    return progress_lines(capsys, drop=("elapsed_s",))
-
-
 def test_run_events_gives_the_same_events_and_progress_with_the_prefetch(
     ocr_run, capsys, records
 ) -> None:
     serial = list(ocr_run.run())
-    serial_lines, serial_log = _lines(capsys), list(records.lines)
+    serial_lines, serial_log = progress_lines(capsys, drop=("elapsed_s",)), list(records.lines)
     records.lines.clear()
     ocr_run.reads.clear()
     ocr_run.seen.clear()
@@ -318,7 +310,7 @@ def test_run_events_gives_the_same_events_and_progress_with_the_prefetch(
     for p in ocr_run.paths:
         pre.offer(p, 60.0, True)
     assert ocr_run.run(pre) == serial
-    assert _lines(capsys) == serial_lines
+    assert progress_lines(capsys, drop=("elapsed_s",)) == serial_lines
     assert records.lines == serial_log
     assert ocr_run.reads == ["a.mp4", "b.mp4"]  # each read once, by the worker
 
@@ -331,7 +323,7 @@ def test_a_worker_error_fails_only_the_keyframes_step(ocr_run, capsys) -> None:
     pre = ocr_run.make()
     pre.offer(ocr_run.paths[0], 60.0, True)
     ocr_run.run(pre, stage=analyze._StepHook)
-    got = [(g["step"], g["state"]) for g in _lines(capsys)]
+    got = [(g["step"], g["state"]) for g in progress_lines(capsys, drop=("elapsed_s",))]
     assert ("keyframes", "failed") in got
     assert ocr_run.reads == ["a.mp4"]
 
@@ -1119,7 +1111,7 @@ def test_a_partly_described_vlm_layer_says_how_far_it_got(
     ):
         steps.start("keyframes")
         pipeline.run_events(ocr_run.project, layers=("vlm",), ocr=OcrParams(game="zonewar"))
-    details = [g["detail"] for g in _lines(capsys)]
+    details = [g["detail"] for g in progress_lines(capsys, drop=("elapsed_s",))]
     text = "vlm: 2/3 done, continuing"
     assert (text in caplog.messages) is bool(cached)
     assert (text in details) is bool(cached)
