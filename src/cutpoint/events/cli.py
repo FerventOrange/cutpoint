@@ -13,35 +13,59 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
+import math
 from pathlib import Path
 
 from cutpoint import cache, jsonout
 from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS, LAYERS
 from cutpoint.styles import ACTION_CAM, project_kind
+from cutpoint.utils import non_negative_float, positive_float, unit_float
 
 
-def _group_overrides(thr: list[str], floor: list[str]) -> tuple:
+def _group_value(text: str) -> tuple[str, float]:
+    """argparse type of ``--audio-thr`` and ``--audio-floor``: ``GROUP=P``, a sound group of
+    :data:`~cutpoint.events.audio_events.DEFAULT_GROUPS` (any case) and a probability 0-1."""
+    from cutpoint.events.audio_events import DEFAULT_GROUPS  # noqa: PLC0415 - only when given
+
+    name, _, val = text.partition("=")
+    group = next((g.name for g in DEFAULT_GROUPS if g.name.lower() == name.strip().lower()), None)
+    if group is None:
+        names = ", ".join(g.name for g in DEFAULT_GROUPS)
+        raise argparse.ArgumentTypeError(f"{text!r}: expected GROUP=P, GROUP one of {names}")
+    return group, unit_float(val.strip())
+
+
+def _group_overrides(thr: list[tuple[str, float]], floor: list[tuple[str, float]]) -> tuple:
     from cutpoint.events.audio_events import DEFAULT_GROUPS  # noqa: PLC0415 - torch, requests
 
-    groups = {g.name.lower(): g for g in DEFAULT_GROUPS}
-    for spec, field in [(s, "abs_thr") for s in thr] + [(s, "rel_floor") for s in floor]:
-        name, _, val = spec.partition("=")
-        g = groups.get(name.strip().lower())
-        if g is None or not val:
-            raise SystemExit(
-                f"bad override {spec!r}; groups: {', '.join(x.name for x in DEFAULT_GROUPS)}"
-            )
-        groups[g.name.lower()] = dataclasses.replace(g, **{field: float(val)})
+    groups = {g.name: g for g in DEFAULT_GROUPS}
+    for (name, val), field in [(s, "abs_thr") for s in thr] + [(s, "rel_floor") for s in floor]:
+        groups[name] = dataclasses.replace(groups[name], **{field: val})
     return tuple(groups.values())
 
 
 def _forced(spec: str) -> tuple[str, float, float]:
+    """argparse type of ``--window-at`` and ``--avoid``: ``GLOB@START-END`` in seconds, the
+    end after the start (no glob: every source)."""
     glob, _, rng = spec.rpartition("@")
     try:
         a, b = (float(x) for x in rng.split("-"))
     except ValueError:
-        raise SystemExit(f"bad --window-at {spec!r}; use GLOB@START-END (seconds)") from None
+        raise argparse.ArgumentTypeError(f"{spec!r}: expected GLOB@START-END (seconds)") from None
+    if not (math.isfinite(a) and math.isfinite(b)) or b <= a:
+        raise argparse.ArgumentTypeError(f"{spec!r}: the end must come after the start")
     return glob or "*", a, b
+
+
+def _frames(text: str) -> int:
+    """argparse type of ``--frames``: a whole number from 12 to 16."""
+    try:
+        n = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r}: expected a whole number") from exc
+    if not 12 <= n <= 16:
+        raise argparse.ArgumentTypeError(f"{text!r}: must be from 12 to 16")
+    return n
 
 
 def add_arguments(ap: argparse.ArgumentParser) -> None:
@@ -85,6 +109,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     ap.add_argument(
         "--avoid",
         action="append",
+        type=_forced,
         default=[],
         metavar="GLOB@START-END",
         help='Never decode this range (bad sectors), e.g. "Round4*@340-350"; '
@@ -94,6 +119,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     g.add_argument(
         "--audio-thr",
         action="append",
+        type=_group_value,
         default=[],
         metavar="GROUP=P",
         help=argparse.SUPPRESS,  # developer tuning: absolute threshold per group, Laughter=0.1
@@ -101,6 +127,7 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
     g.add_argument(
         "--audio-floor",
         action="append",
+        type=_group_value,
         default=[],
         metavar="GROUP=P",
         help="floor of the relative (local baseline) rule, e.g. Laughter=0.03",
@@ -175,17 +202,29 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         default=None,
         help="default 60; action-cam: one per seed + riding coverage, 60-150",
     )
-    g.add_argument("--window", type=float, default=15.0, help="window length (s, default 15)")
-    g.add_argument("--pre", type=float, default=3.0, help="seconds before an event (default 3)")
-    g.add_argument("--post", type=float, default=12.0, help="seconds after an event (default 12)")
+    g.add_argument(
+        "--window", type=positive_float, default=15.0, help="window length (s, default 15)"
+    )
+    g.add_argument(
+        "--pre", type=non_negative_float, default=3.0, help="seconds before an event (default 3)"
+    )
+    g.add_argument(
+        "--post",
+        type=non_negative_float,
+        default=12.0,
+        help="seconds after an event (default 12)",
+    )
     g.add_argument(
         "--window-at",
         action="append",
+        type=_forced,
         default=[],
         metavar="GLOB@START-END",
         help='Always describe this window, e.g. "*22.13.09*@364-400"',
     )
-    g.add_argument("--frames", type=int, default=14, help="frames per window (12-16, default 14)")
+    g.add_argument(
+        "--frames", type=_frames, default=14, help="frames per window (12-16, default 14)"
+    )
     g.add_argument(
         "--no-transcript", action="store_true", help="do not send the transcript excerpt"
     )
@@ -235,7 +274,7 @@ def run_args(
         max_windows=args.max_windows,
         frames=args.frames,
         transcript=not args.no_transcript,
-        forced=tuple(_forced(s) for s in args.window_at),
+        forced=tuple(args.window_at),
     )
     layers = None
     if args.layers is not None or args.no_vlm:
@@ -254,7 +293,7 @@ def run_args(
         vlm=vlm,
         force=tuple(args.force),
         ocr_debug=args.ocr_debug,
-        avoid=tuple(_forced(s) for s in args.avoid),
+        avoid=tuple(args.avoid),
         discover=args.discover,
         discover_bursts=args.discover_bursts,
         preset_scope=args.preset_scope,

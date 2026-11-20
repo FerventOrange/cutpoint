@@ -2,7 +2,8 @@
 
 The OCR layer flags menu and scoreboard frames (:func:`cutpoint.events.killfeed.menu_rules`)
 and records them per source as ``menu_spans`` in its stats (``events.json``:
-``stats.ocr.<source name>.menu_spans``, ``[start, end]`` in source seconds). A candidate
+``stats.ocr.<source key>.menu_spans``, ``[start, end]`` in source seconds; the key is the
+file name, see :func:`ocr_stats_key`). A candidate
 that lies mostly in menu time is dropped; one that starts or ends in a menu span is
 trimmed to the gameplay part, when what is left is long enough for the style
 (:func:`drop_menu_time`).
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import sources
+from cutpoint.events.regions import source_tag
 from cutpoint.intervals import overlap
 from cutpoint.styles import Style, analysis_style
 from cutpoint.utils import slugify
@@ -40,17 +42,40 @@ def merge_menu_frames(times: Iterable[float], fps: float) -> list[list[float]]:
     return [[round(a, 2), round(b, 2)] for a, b in spans]
 
 
+def ocr_stats_key(path: str | Path, paths: Iterable[str | Path]) -> str:
+    """The key of the source ``path`` in the OCR stats of events.json (``stats.ocr``) among
+    the sources ``paths``: its file name, or for a file name two of them share the name and
+    a digest of its path, size and mtime (the ``src_key`` of HUD discovery,
+    :func:`cutpoint.events.discover.src_key`)."""
+    name = Path(path).name
+    if sum(Path(p).name == name for p in paths) < 2:
+        return name
+    return f"{name}~{source_tag(path)}"
+
+
 def source_menu_spans(ev: dict[str, Any]) -> dict[str, list[list[float]]]:
-    """The menu spans of each source path of the events.json object ``ev`` that has some.
-    The OCR stats are keyed by file name, so two sources with one name get none."""
-    names: dict[str, list[str]] = {}
-    for p in ev.get("sources") or []:
-        names.setdefault(Path(p).name, []).append(p)
+    """The menu spans of each source path of the events.json object ``ev`` that has some
+    (its OCR stats under :func:`ocr_stats_key`). A source whose stats are not found while
+    one of its file name has menu spans (an events.json written before same-named sources
+    got keys of their own) gets none: one INFO line names them."""
+    paths = [str(p) for p in ev.get("sources") or []]
+    stats = ((ev.get("stats") or {}).get("ocr")) or {}
     out: dict[str, list[list[float]]] = {}
-    for name, st in (((ev.get("stats") or {}).get("ocr")) or {}).items():
-        paths = names.get(name, [])
-        if len(paths) == 1 and isinstance(st, dict) and st.get("menu_spans"):
-            out[paths[0]] = st["menu_spans"]
+    skipped: set[str] = set()
+    for p in paths:
+        st = stats.get(ocr_stats_key(p, paths))
+        if isinstance(st, dict) and st.get("menu_spans"):
+            out[p] = st["menu_spans"]
+            continue
+        old = stats.get(Path(p).name)
+        if isinstance(old, dict) and old.get("menu_spans"):
+            skipped.add(Path(p).name)
+    if skipped:
+        logger.info(
+            "Menu time not trimmed in %s: sources of one file name share their HUD stats "
+            "(run events again to read them apart)",
+            ", ".join(sorted(skipped)),
+        )
     return out
 
 

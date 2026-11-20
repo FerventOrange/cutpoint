@@ -5,6 +5,7 @@ order, progress forwarded, errors re-raised, the off switches, and ``decode_raw(
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import logging
 import os
 import subprocess
@@ -1256,3 +1257,15 @@ def test_take_drops_a_result_read_with_a_preset_that_changed_since(
     swapped.set()
     assert pre.take(fake.source(1), fake.params(), None) is None
     assert "b.mp4: read" not in records.lines
+
+
+def test_the_prefetch_keeps_a_copy_of_the_callers_params(tmp_path: Path) -> None:
+    # A149: the caller's OcrParams is not changed; take() compares with the copy
+    params = OcrParams(game="zonewar")
+    pre = ocr_prefetch.OcrPrefetch(tmp_path, [], params)
+    try:
+        assert params.project is None
+        assert pre.params.project == tmp_path and pre.params is not params
+        assert dataclasses.replace(params, project=tmp_path) == pre.params
+    finally:
+        pre.close()

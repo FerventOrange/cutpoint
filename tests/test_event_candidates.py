@@ -1251,8 +1251,8 @@ def test_announce_words_key_the_line_and_other_types_are_not_damped():
     ev = [announce(10.0 * i, f"YOUR TEAM n{i}", announce_words=["YOUR TEAM"]) for i in range(1, 7)]
     kills = [feed(200.0 + 20.0 * i) for i in range(1, 12)]
     w = scoring.repeat_weights(ev + kills, DEFAULT_EVENT_TYPES, 600.0)
-    assert all(w[id(e)] == pytest.approx((3 / 6) ** 0.5) for e in ev)
-    assert all(id(k) not in w for k in kills)  # kills and banners keep their weight
+    assert all(w[i] == pytest.approx((3 / 6) ** 0.5) for i in range(len(ev)))
+    assert all(i not in w for i in range(len(ev), len(ev) + len(kills)))  # kills keep weight 1
     cand = own("h001", 100.0, end=108.0)
     full = scoring.event_boost(cand, [feed(101.0), feed(102.0)], DEFAULT_EVENT_TYPES)[0]
     many = scoring.event_boost(cand, [*kills, feed(101.0), feed(102.0)], DEFAULT_EVENT_TYPES)[0]
@@ -1352,3 +1352,36 @@ def test_a_banner_nominee_is_named_after_its_words_and_a_vlm_window_after_that(t
     )
     got = next(c for c in nominees(hl) if c["start"] == nom["start"])
     assert got["label"] == "clutch-win" and got["label_before_vlm"] == "won-round"
+
+
+def test_a_weak_laugh_follows_the_detectors_relative_flag():
+    # A171: details.relative says which rule found a laugh; without it the default threshold
+    def laugh(conf, **details):
+        return {**sound(100.0, confidence=conf), **({"details": details} if details else {})}
+
+    assert scoring.LAUGH_STRONG == 0.12  # the laughter group's abs_thr of DEFAULT_GROUPS
+    assert scoring.laugh_backed(laugh(0.13), [])
+    assert not scoring.laugh_backed(laugh(0.11), [])
+    assert not scoring.laugh_backed(laugh(0.13, relative=True), [])  # a raised --audio-thr
+    assert scoring.laugh_backed(laugh(0.08, relative=False), [])  # a lowered one
+
+
+def test_the_reaction_sound_sets():
+    # A172: the dialogue reader counts the sounds that score; a reaction after an event is no cheer
+    from cutpoint.events import dialogue  # noqa: PLC0415
+
+    assert dialogue.REACTION_SOUNDS is scoring.REACTION_SOUNDS
+    assert scoring.REACTION_SOUNDS == ("Laughter", "Scream", "Cheering")
+    assert scoring.AFTER_EVENT_SOUNDS == ("Laughter", "Scream")
+
+
+def test_repeat_weights_hold_for_a_copy_of_the_events():
+    # A173: the weights are keyed by position, so a copied list keeps them
+    ev = [announce(10.0 * i, f"YOUR TEAM n{i}", announce_words=["YOUR TEAM"]) for i in range(1, 7)]
+    w = scoring.repeat_weights(ev, DEFAULT_EVENT_TYPES, 600.0)
+    cand = own("h001", 10.0, end=40.0)
+    same = scoring.event_boost(cand, ev, DEFAULT_EVENT_TYPES, style="gaming", repeat=w)
+    copied = scoring.event_boost(
+        cand, copy.deepcopy(ev), DEFAULT_EVENT_TYPES, style="gaming", repeat=w
+    )
+    assert same == copied == scoring.event_boost(cand, ev, DEFAULT_EVENT_TYPES, style="gaming")

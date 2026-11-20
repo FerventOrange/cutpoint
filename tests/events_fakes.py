@@ -20,7 +20,7 @@ def stub_run_events(
     """Fake what ``run_events`` reads before and around its layers, over ``sources`` (objects
     with a ``path``): the analysis lists them (``highlights`` adds or replaces its keys),
     ``load_source`` returns each by its path, the preflight passes, no bad ranges, no
-    transcript, no audio events, no Ollama unload and no GPU memory reading.
+    transcript, no audio events and no GPU memory reading.
 
     ``read_highlights``: the project's own ``highlights.json`` is read instead (the test wrote
     it). Patch a fake again after this call to change it for one test."""
@@ -33,5 +33,4 @@ def stub_run_events(
     monkeypatch.setattr(pipeline, "bad_ranges", lambda *a: {})
     monkeypatch.setattr(pipeline, "load_transcript_lines", lambda project: [])
     monkeypatch.setattr(pipeline, "detect_audio_events", lambda *a, **k: [])
-    monkeypatch.setattr(pipeline, "unload_ollama", list)
     monkeypatch.setattr(common, "gpu_memory_used_mib", lambda: None)

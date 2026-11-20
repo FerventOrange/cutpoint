@@ -145,8 +145,8 @@ overrides it per run. Default: none.
 ### ollama_url
 
 Ollama base URL for `analyze --vision`, the VLM layer of `events`, `360 director --vl-check`,
-the AI Chat and new activity profiles. `events` also uses it to unload Ollama models before its
-other model layers and to build crash profiles. `OLLAMA_HOST`
+the AI Chat and new activity profiles. `events` also uses it to build crash profiles, and the
+[memory guard](#memory_guard) to unload Ollama's models when a model does not fit. `OLLAMA_HOST`
 overrides it. Default `http://127.0.0.1:11434` (not `localhost`, which can hang on some Windows machines;
 see [troubleshooting](troubleshooting/models.md)).
 

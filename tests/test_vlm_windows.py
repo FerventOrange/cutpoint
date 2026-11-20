@@ -41,7 +41,7 @@ def test_build_messages_uses_media_content(tmp_path: Path):
     assert [m["role"] for m in msgs] == ["user"]  # no system prompt
     content = msgs[0]["content"]
     text = "\n".join(c.get("text", "") for c in content)
-    assert {c["type"] for c in content} == {"text", "image_url"}  # no audio part
+    assert {c["type"] for c in content} == {"text", "image"}  # no audio part
     assert "nice shot" in text and "Laughter" in text
 
 

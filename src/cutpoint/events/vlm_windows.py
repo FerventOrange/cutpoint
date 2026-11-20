@@ -19,7 +19,6 @@ windows are merged up to :data:`MAX_LEN_S`, and the best ``max_windows`` are kep
 
 from __future__ import annotations
 
-import base64
 import fnmatch
 import hashlib
 import json
@@ -652,7 +651,8 @@ def build_messages(
     *,
     name: str | None = None,
 ) -> list[dict[str, Any]]:
-    """OpenAI-style messages for one window.
+    """Chat-style messages for one window: text parts and ``image`` parts with the JPEG
+    bytes (``jpeg``), turned into a request by :func:`vision_request`.
 
     ``game`` is the window's :class:`GamePrompt`; None uses the generic (neutral)
     "video game" prompt. ``name``: what the prompt calls the source (:func:`source_name`;
@@ -715,12 +715,7 @@ def _media_content(
     step = dur / max(1, len(frames))
     for i, jpg in enumerate(frames):
         content.append({"type": "text", "text": f"Frame {i + 1} @ {i * step:.1f}s:"})
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpg).decode()},
-            }
-        )
+        content.append({"type": "image", "jpeg": jpg})
     if params.transcript:
         ex = transcript_excerpt(transcript_lines, src.name, win.start, win.end)
         content.append(
@@ -787,9 +782,9 @@ def build_messages_action_cam(
     return [{"role": "user", "content": content}]
 
 
-def parse_reply(text: str) -> dict[str, Any] | None:
-    """Parse and sanitise the model's JSON reply (None if unusable)."""
-    data = json_object(text or "", scan=False)
+def parse_reply(reply: str | dict[str, Any]) -> dict[str, Any] | None:
+    """Sanitise the model's reply, its JSON object or the text of one (None if unusable)."""
+    data = reply if isinstance(reply, dict) else json_object(reply or "", scan=False)
     if data is None:
         return None
 
@@ -845,8 +840,8 @@ def vision_request(messages: list[dict[str, Any]]) -> tuple[str, list[bytes]]:
         for part in msg["content"]:
             if part["type"] == "text":
                 lines.append(part["text"])
-            elif part["type"] == "image_url":
-                images.append(base64.b64decode(part["image_url"]["url"].split(",", 1)[1]))
+            elif part["type"] == "image":
+                images.append(part["jpeg"])
                 marker = f"[image {len(images)}]"
                 lines[-1:] = [f"{lines[-1]} {marker}"] if lines else [marker]
     return "\n".join(lines), images
@@ -854,8 +849,8 @@ def vision_request(messages: list[dict[str, Any]]) -> tuple[str, list[bytes]]:
 
 def _ask(
     rater: VisionRater, msgs: list[dict[str, Any]], params: VlmParams, attempt: int
-) -> tuple[str, dict[str, Any]]:
-    """One request for a window: (reply text, usage). Raises :class:`VlmRequestError` when
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """One request for a window: (reply object, usage). Raises :class:`VlmRequestError` when
     it fails."""
     schema = RESPONSE_SCHEMA_ACTION_CAM if params.action_cam is not None else RESPONSE_SCHEMA
     prompt, images = vision_request(msgs)
@@ -870,7 +865,7 @@ def _ask(
     )
     if data is None:
         raise VlmRequestError("no usable reply from the vision model")
-    return json.dumps(data), {"prompt_tokens": rater.last_prompt_tokens}
+    return data, {"prompt_tokens": rater.last_prompt_tokens}
 
 
 def source_name(server: VisionRater, src: Source, number: int) -> str:
@@ -964,8 +959,8 @@ def describe_windows(
         timed_out = False
         for attempt in range(2):
             try:
-                text, usage = _ask(server, msgs, params, attempt)
-                parsed = parse_reply(text)
+                reply, usage = _ask(server, msgs, params, attempt)
+                parsed = parse_reply(reply)
                 if parsed:
                     break
             except (VlmRequestError, KeyError, ValueError) as e:  # retry once

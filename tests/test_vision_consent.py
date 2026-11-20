@@ -603,6 +603,19 @@ def test_action_cam_reused_windows_warn_without_consent_and_no_vlm_layer(
 # -- the description and frame caches of hosted providers (#621) ------------------------------
 
 
+def _run_copies(monkeypatch) -> list[Any]:
+    """The parameter copies ``run_events`` makes (A162: it sets the model on its own copy)."""
+    made: list[Any] = []
+    real = pipeline.replace
+
+    def copy(obj: Any, **kw: Any) -> Any:
+        made.append(real(obj, **kw))
+        return made[-1]
+
+    monkeypatch.setattr(pipeline, "replace", copy)
+    return made
+
+
 def test_the_events_descriptions_of_a_hosted_provider_are_keyed_on_its_host(
     home, tmp_path, monkeypatch
 ) -> None:
@@ -620,10 +633,10 @@ def test_the_events_descriptions_of_a_hosted_provider_are_keyed_on_its_host(
     for host in ("a.example:8080", "b.example:8080"):
         rater = SimpleNamespace(provider_name="openai", host=host, model="m")
         monkeypatch.setattr(pipeline, "VisionRater", lambda *_a, r=rater, **_k: r)
-        vlm = pipeline.VlmParams()
+        made = _run_copies(monkeypatch)
         with pytest.raises(Stop):
-            pipeline.run_events(tmp_path, vlm=vlm, layers=("audio",))
-        vlms.append(vlm)
+            pipeline.run_events(tmp_path, vlm=pipeline.VlmParams(), layers=("audio",))
+        vlms.append(next(m for m in made if isinstance(m, pipeline.VlmParams)))
     assert [v.model for v in vlms] == ["openai@a.example:8080:m", "openai@b.example:8080:m"]
     assert vlms[0].key() != vlms[1].key()
 
@@ -646,10 +659,12 @@ def test_the_events_descriptions_of_an_ollama_are_keyed_on_its_host(
     monkeypatch.setattr(pipeline, "load_source", stop)
 
     def model(url: str | None = None) -> str:
-        vlm = pipeline.VlmParams()
+        made = _run_copies(monkeypatch)
         with pytest.raises(Stop):
-            pipeline.run_events(tmp_path, vlm=vlm, layers=("audio",), ollama_url=url)
-        return vlm.model
+            pipeline.run_events(
+                tmp_path, vlm=pipeline.VlmParams(), layers=("audio",), ollama_url=url
+            )
+        return next(m for m in made if isinstance(m, pipeline.VlmParams)).model
 
     local, remote = model(), model(REMOTE)
     assert local == "ollama@127.0.0.1:11434:qwen3.5:9b"  # the default URL
