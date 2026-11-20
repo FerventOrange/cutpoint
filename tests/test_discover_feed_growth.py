@@ -204,3 +204,13 @@ def test_an_oldest_row_is_added_when_ocr_missed_one_inner_row() -> None:
             f["boxes"] = [b for b in f["boxes"] if b["y0"] != 40 + 4 * PITCH]
     _two_frame_row(frames, ("Ash downed Kip", "Nova downed Wren"), (5, 21))
     assert _feed(frames)["evidence"]["grown_rows"] == 1
+
+
+def test_the_region_kind_cuts_are_named_once():
+    # A146: the readout cut of cluster_regions and of feed growth is one constant
+    from cutpoint.events import discover  # noqa: PLC0415
+
+    assert discover.FEED_GROW_VARIETY == discover.READOUT_VARIETY == 0.15
+    assert discover.SMALL_TEXT_H == 0.034 * discover.REF_H
+    assert (discover.READOUT_ALPHA, discover.FEED_MIN_ROWS, discover.SIDE_EDGE) == (0.45, 1.3, 0.3)
+    assert (discover.BANNER_CENTRE, discover.NOTICE_CENTRE, discover.ROW_BIN) == (0.25, 0.2, 14)

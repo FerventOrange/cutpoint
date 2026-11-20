@@ -233,3 +233,51 @@ def test_profile_and_crashes_pass_the_ollama_flags(home, monkeypatch, cmd):
     with pytest.raises(RuntimeError):
         args.func(args)
     assert (seen["ollama_url"], seen["ollama_model"]) == ("myhost:11434", "m:1")
+
+
+@pytest.mark.parametrize(
+    ("argv", "says"),
+    [
+        (["--audio-floor", "Laughter=abc"], "expected a number"),
+        (["--audio-thr", "Laughter=2"], "must be from 0 to 1"),
+        (["--audio-floor", "Giggles=0.1"], "GROUP one of"),
+        (["--window-at", "x@10-5"], "the end must come after the start"),
+        (["--window-at", "x@ten-20"], "GLOB@START-END"),
+        (["--avoid", "x@10-10"], "the end must come after the start"),
+        (["--frames", "100"], "must be from 12 to 16"),
+        (["--window", "-1"], "must be greater than 0"),
+        (["--pre", "-1"], "must be 0 or more"),
+        (["--post", "nan"], "expected a finite number"),
+    ],
+)
+def test_bad_events_option_values_are_bad_args(home, capsys, argv, says):
+    """A175: the events options are checked at the command line (exit 2, bad_args)."""
+    with pytest.raises(SystemExit) as exc:
+        run_json(capsys, ["events", "proj", *argv])
+    assert exc.value.code == 2
+    doc = envelope(capsys.readouterr().out)
+    assert doc["ok"] is False and doc["error"]["code"] == "bad_args"
+    assert says in doc["error"]["message"]
+
+
+def test_good_events_option_values_parse():
+    args = cli._parse(
+        cli.build_parser(),
+        [
+            "events",
+            "proj",
+            "--audio-floor",
+            "laughter=0.03",
+            "--window-at",
+            "*r1*@364-400",
+            "--avoid",
+            "@1-2",
+            "--frames",
+            "16",
+            "--pre",
+            "0",
+        ],
+    )
+    assert args.audio_floor == [("Laughter", 0.03)]
+    assert args.window_at == [("*r1*", 364.0, 400.0)] and args.avoid == [("*", 1.0, 2.0)]
+    assert (args.frames, args.pre, args.window, args.post) == (16, 0.0, 15.0, 12.0)

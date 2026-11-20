@@ -318,6 +318,7 @@ def from_dict(data: dict[str, Any]) -> EventType:
 
 
 _warned_types: set[tuple[str, str]] = set()  # (path, game) of presets already warned about
+_warned_resolve: set[tuple[str, str]] = set()  # (game, error) resolve already warned about
 
 
 def types_for(preset: HudPreset | None) -> tuple[EventType, ...]:
@@ -349,7 +350,8 @@ def resolve(project: Path, ev_json: dict[str, Any]) -> dict[str, tuple[EventType
 
     The preset is looked up like the OCR layer did (``settings.ocr.game``, the
     project and the source path). Never raises: sources whose preset cannot be
-    loaded get :data:`DEFAULT_EVENT_TYPES`.
+    loaded get :data:`DEFAULT_EVENT_TYPES`, with one WARNING (and ``--json`` warning
+    ``preset_unreadable``) per game and error.
     """
     game = (((ev_json.get("settings") or {}).get("ocr")) or {}).get("game")
     by_game: dict[str, tuple[EventType, ...]] = {}
@@ -358,12 +360,29 @@ def resolve(project: Path, ev_json: dict[str, Any]) -> dict[str, tuple[EventType
         src = e.get("source")
         if src in out:
             continue
+        key = game
         try:
             key = game_key_for_path(str(src), game, project)
             if key not in by_game:
                 by_game[key] = types_for(load_preset(key, project))
             out[src] = by_game[key]
         except Exception as err:  # noqa: BLE001 - a broken preset must not break scoring/clips
-            logger.debug("Event types for %s: using the defaults (%s)", src, err)
+            warn_key = (str(key), str(err))
+            if warn_key not in _warned_resolve:
+                _warned_resolve.add(warn_key)
+                logger.warning(
+                    "Event types of %s: the HUD preset of %s could not be read (%s); "
+                    "the default event types are used",
+                    Path(str(src)).name,
+                    key,
+                    err,
+                )
+                from cutpoint import jsonout  # noqa: PLC0415
+
+                jsonout.warn(
+                    "preset_unreadable",
+                    f"HUD preset {key} could not be read ({err}); default event types used",
+                    [str(src)],
+                )
             out[src] = DEFAULT_EVENT_TYPES
     return out

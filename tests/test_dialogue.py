@@ -401,9 +401,10 @@ def test_a_reading_cached_before_titles_is_read_again(tmp_path, monkeypatch):
 def test_a_failed_piece_is_skipped_and_the_reading_is_not_cached(tmp_path, caplog):
     src = write(tmp_path / "a.mp4")
     lines = talk_lines(100)
+    fail = [True]
 
     def answer(prompt: str):
-        if "\n80: " in prompt and "\n40: " not in prompt:  # the last piece: no usable reply
+        if "\n80: " in prompt and "\n40: " not in prompt and fail[0]:  # the last piece
             return None
         return {"moments": [moment(2, 4)]}
 
@@ -414,8 +415,19 @@ def test_a_failed_piece_is_skipped_and_the_reading_is_not_cached(tmp_path, caplo
     assert [(s["first_line"], s["last_line"]) for s in read.stretches] == [(2, 4)]
     (warned,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     assert "1 of 3" in warned  # the user is told how many pieces were lost
-    assert not dialogue.read_source(src, lines, backend).cached  # asked again
-    assert len(prompts) == 6
+    again = dialogue.read_source(src, lines, backend)
+    assert not again.cached and again.failed == 1  # a failure is no result: asked again
+    assert len(prompts) == 4  # but only the failed piece; the good ones are cached (A174)
+    fail[0] = False
+    whole = dialogue.read_source(src, lines, backend)
+    assert len(prompts) == 5 and whole.failed == 0 and not whole.cached
+    fresh_backend, _ = fake_backend(answer)
+    (tmp_path / "b").mkdir()
+    fresh = dialogue.read_source(write(tmp_path / "b" / "a.mp4"), lines, fresh_backend)
+    assert (whole.stretches, whole.dropped) == (fresh.stretches, fresh.dropped)  # as one read
+    final = dialogue.read_source(src, lines, backend)
+    assert final.cached and len(prompts) == 5  # the whole reading is cached now
+    assert not list(cache.source_dir(src).glob("*.pieces.json"))  # its pieces file is gone
 
 
 def test_invalid_entries_are_counted_and_do_not_stop_the_reading(tmp_path):
@@ -1997,4 +2009,4 @@ def test_the_dialogue_floor_count_rounds_half_up(hours, k):
         for i in range(20)
     ]
     raised = scoring._raised_talk(recs, hours * 3600.0)
-    assert raised == {id(r) for r in recs[-k:]}  # the k best by score
+    assert raised == set(range(20 - k, 20))  # the k best by score

@@ -20,7 +20,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -40,7 +40,6 @@ from cutpoint.events.common import (
     load_highlights,
     load_source,
     load_transcript_lines,
-    unload_ollama,
 )
 from cutpoint.events.eventtypes import types_for
 from cutpoint.events.killfeed import (
@@ -51,6 +50,7 @@ from cutpoint.events.killfeed import (
     link_teamkills,
 )
 from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS
+from cutpoint.events.menu_spans import ocr_stats_key
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.events.regions import game_key_for_path, load_preset, stale_mapping
 from cutpoint.events.report import kept_dialogue, normalize, write_outputs
@@ -144,7 +144,7 @@ USER_PRESET_KEYS = (
 
 
 def _require_events_extra(layers: tuple[str, ...]) -> None:
-    """Fail before any side effect (unloading Ollama) when the events extra is missing.
+    """Fail before any side effect (loading a model) when the events extra is missing.
 
     Every layer but VLM (the shared vision model) loads a model from the extra.
     """
@@ -173,7 +173,7 @@ def _require_model_files(layers: tuple[str, ...]) -> None:
 
 def preflight(layers: tuple[str, ...]) -> None:
     """Cheap checks for ``layers`` (events extra, model files) that :func:`run_events`
-    makes before it unloads Ollama or imports torch; callers that run a long step
+    makes before it loads a model or imports torch; callers that run a long step
     first (``cutpoint 360 analyze``) call it up front. The VLM layer has no model files: its
     vision model is checked when it runs."""
     _require_events_extra(layers)
@@ -270,7 +270,10 @@ def run_events(
     Returns:
         Paths of events.json and events.txt.
     """
-    audio, ocr, vlm = audio or AudioParams(), ocr or OcrParams(), vlm or VlmParams()
+    # copies: the model, context and wording set below are this project's, not the caller's
+    audio = audio or AudioParams()
+    ocr = replace(ocr, project=project) if ocr else OcrParams(project=project)
+    vlm = replace(vlm) if vlm else VlmParams()
     if ocr.game != "auto":
         check_game_key(ocr.game)
     boom = explosions.ExplosionParams()
@@ -357,7 +360,8 @@ def run_events(
         keep = voice_needs = voice_layer.needs_run(sources, voice_params, force="voice" in force)
     if "audio" in layers:
         with stage("audio"):
-            unload_ollama()
+            # no Ollama unload up front: a run with every source cached loads nothing, and
+            # PANNs' memory guard (memguard.device_for) frees Ollama's models when it is short
             with VramMonitor() as vm:
                 guard = SourceGuard("Audio events")
                 try:
@@ -498,7 +502,6 @@ def run_events(
 
     # ---- layer 1b: OCR (with region discovery for games without a preset)
     t0 = time.perf_counter()
-    ocr.project = project
     make_engine = None  # set before discovery: the stage may suppress its error
     with stage("ocr") if "ocr" in layers else contextlib.nullcontext():
         base = 0.0  # progress the per-source OCR starts at (after discovery)
@@ -608,7 +611,7 @@ def run_events(
                     _mark_ocr_failure(err, ocr_sources[i:], discovery=False)
                     raise
                 layer1[str(s.path)] += evs
-                ocr_stats[s.name] = st
+                ocr_stats[ocr_stats_key(s.path, [t.path for t in sources])] = st
         vram["ocr"] = vm.summary()
         stats["ocr"] = ocr_stats
     timings["ocr_s"] = round(time.perf_counter() - t0, 1)

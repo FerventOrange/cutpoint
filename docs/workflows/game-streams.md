@@ -202,7 +202,8 @@ does not count as an end of such a gap. These tests run only when the preset's r
 (`static_area`), since a few small corner regions see too little of the screen.
 `stats.ocr.<source>.menu_frames` in `events.json` reports how many frames were left out,
 `static_frames` how many of them held still and `text_frames` how many were text screens;
-`menu_spans` lists those frames as `[start, end]` spans in seconds.
+`menu_spans` lists those frames as `[start, end]` spans in seconds. `<source>` is the file
+name, or for a name two sources share the name and a short digest of its path (`rec.mp4~1a2b3c4d`).
 Highlight candidates in menu time are left out too, by `analyze` and when `events` re-ranks
 `highlights.json`: a candidate with half or more of its time in menu spans is dropped, and one
 that starts or ends in a menu span is trimmed to its gameplay part when what is left is at least

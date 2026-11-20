@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, jsonout, state
-from cutpoint.events.scoring import DIALOGUE_TYPE, LAUGH_SOUNDS, SCREAM_SOUNDS
+from cutpoint.events.scoring import DIALOGUE_TYPE, REACTION_SOUNDS
 from cutpoint.intervals import overlap
 from cutpoint.utils import context_block, context_hash, json_object
 
@@ -55,7 +55,6 @@ MERGE_OVERLAP = 0.5  # stretches overlapping by more than this share of the shor
 BASELINE_STRENGTH = 0.2  # of a stretch with no reaction sound (local backend), 0-1
 DENSITY_FULL = 3.0  # reaction sounds per minute that give the full strength
 MIN_DENSITY_SPAN_S = 30.0  # a shorter stretch counts as this long, so one laugh is not a burst
-REACTION_SOUNDS = (*LAUGH_SOUNDS, *SCREAM_SOUNDS)  # the audio events scoring.seeds counts
 MAX_DESCRIPTION = 300  # characters of ``what_happens`` kept
 MAX_TITLE_WORDS = 6  # words of a ``title`` kept
 MAX_TITLE = 48  # characters of a ``title`` kept
@@ -622,7 +621,7 @@ class SourceRead:
 
     stretches: list[Stretch] = field(default_factory=list)
     pieces: int = 0
-    failed: int = 0  # pieces whose request failed (not cached)
+    failed: int = 0  # pieces whose request failed (asked again by the next reading)
     dropped: int = 0  # entries of replies that were not valid (:func:`parse_reply`)
     cached: bool = False
 
@@ -639,16 +638,44 @@ def _cache_path(
         return None
 
 
+def _pieces_path(path: Path | None) -> Path | None:
+    """Where the pieces of an unfinished reading cached at ``path`` are kept."""
+    return None if path is None else path.with_name(f"{path.stem}.pieces.json")
+
+
+def _piece_key(text: str) -> str:
+    """The key of one piece's request text (prompt and transcript lines)."""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _cached_pieces(path: Path | None) -> dict[str, dict[str, Any]]:
+    """The read pieces of an unfinished reading (``{piece key: {stretches, dropped}}``) in the
+    file ``path``; empty when it is missing, unreadable or malformed."""
+    data = cache.load_json(path) if path is not None else None
+    found = data.get("pieces") if isinstance(data, dict) else None
+    if not isinstance(found, dict):
+        return {}
+    return {
+        k: v
+        for k, v in found.items()
+        if isinstance(v, dict)
+        and isinstance(v.get("dropped"), int)
+        and _cached_stretches_ok(v.get("stretches"))
+    }
+
+
+def _cached_stretches_ok(found: Any) -> bool:
+    keys_ = ("what_happens", "first_line", "last_line", "kind", "rating", "start", "end")
+    return isinstance(found, list) and all(
+        isinstance(s, dict) and all(k in s for k in keys_) for s in found
+    )
+
+
 def _cached_stretches(path: Path | None) -> list[Stretch] | None:
     """The stretches in the cache file ``path``, or None (missing, unreadable or malformed)."""
     data = cache.load_json(path) if path is not None else None
     found = data.get("stretches") if isinstance(data, dict) else None
-    if not isinstance(found, list):
-        return None
-    keys_ = ("what_happens", "first_line", "last_line", "kind", "rating", "start", "end")
-    if not all(isinstance(s, dict) and all(k in s for k in keys_) for s in found):
-        return None
-    return found
+    return found if _cached_stretches_ok(found) else None
 
 
 def ask_many[T, R](
@@ -703,7 +730,9 @@ def read_source(
 ) -> SourceRead:
     """Read the transcript ``lines`` of ``src`` with ``backend``, or take the reading from the
     cache when the transcript, model and prompt are the same. A piece whose request fails or
-    whose reply is not JSON is logged and skipped; a reading with one is not cached.
+    whose reply is not JSON is logged and skipped; a reading with one is not cached, but its
+    good pieces are (:func:`_pieces_path`, by the hash of their request), so the next reading
+    asks only the failed ones again.
     ``on_piece(done, total)`` is called after each piece. ``context``: the user's
     ``--context`` words, in the prompt (:func:`prompt`) and the cache key."""
     path = _cache_path(src, lines, backend, context)
@@ -714,30 +743,38 @@ def read_source(
         return SourceRead(hit, cached=True)
     pieces = split_pieces(lines)
     result = SourceRead(pieces=len(pieces))
-    found: list[Stretch] = []
+    keys = [_piece_key(head + piece_text(lines, idx)) for idx in pieces]
+    ppath = _pieces_path(path)
+    read = _cached_pieces(ppath)  # the good pieces of an earlier, unfinished reading
+    read = {k: read[k] for k in keys if k in read}
+    if read:
+        logger.info("%s: %d of %d dialogue pieces from the cache", src.name, len(read), len(pieces))
+    todo = [(k, idx) for k, idx in zip(keys, pieces, strict=True) if k not in read]
 
-    def ask(idx: list[int]) -> dict[str, Any] | None:
-        return backend.ask(head + piece_text(lines, idx))
+    def ask(item: tuple[str, list[int]]) -> dict[str, Any] | None:
+        return backend.ask(head + piece_text(lines, item[1]))
 
-    def take(idx: list[int], reply: dict[str, Any] | None) -> None:
+    def take(item: tuple[str, list[int]], reply: dict[str, Any] | None) -> None:
         if reply is None:
             result.failed += 1
             return
-        got, dropped = parse_reply(reply, lines, idx)
-        found.extend(got)
-        result.dropped += dropped
+        got, dropped = parse_reply(reply, lines, item[1])
+        read[item[0]] = {"stretches": got, "dropped": dropped}
 
-    if backend.workers > 1 and len(pieces) > 1:
-        replies = ask_many(pieces, ask, backend.workers)
-        for done, (idx, reply) in enumerate(zip(pieces, replies, strict=True), 1):
-            take(idx, reply)
+    done0 = len(pieces) - len(todo)
+    if backend.workers > 1 and len(todo) > 1:
+        replies = ask_many(todo, ask, backend.workers)
+        for done, (item, reply) in enumerate(zip(todo, replies, strict=True), done0 + 1):
+            take(item, reply)
             if on_piece:
                 on_piece(done, len(pieces))
     else:
-        for done, idx in enumerate(pieces, 1):
-            take(idx, ask(idx))
+        for done, item in enumerate(todo, done0 + 1):
+            take(item, ask(item))
             if on_piece:
                 on_piece(done, len(pieces))
+    found = [s for k in keys if k in read for s in read[k]["stretches"]]  # in piece order
+    result.dropped = sum(read[k]["dropped"] for k in keys if k in read)
     result.stretches = merge_stretches(found)
     if result.dropped:
         logger.info("%s: %d invalid dialogue entries dropped", src.name, result.dropped)
@@ -748,6 +785,13 @@ def read_source(
             result.failed,
             len(pieces),
         )
+        if ppath is not None and read:
+            try:
+                cache.save_json(
+                    ppath, {"version": PROMPT_VERSION, "model": backend.key, "pieces": read}
+                )
+            except OSError as err:  # a cache must not fail the run
+                logger.warning("Could not save the dialogue cache %s: %s", ppath, err)
     elif path is not None:
         try:
             cache.save_json(
