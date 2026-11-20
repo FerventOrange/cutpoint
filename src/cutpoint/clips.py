@@ -187,7 +187,9 @@ def _arc(chrono: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Arc order of chronological, categorised moments.
 
     Opener: the best lift / scenery clip of the first third of the day (else the
-    earliest one), trimmed to :data:`ARC_OPENER_S`. Body: chronological by
+    earliest one), trimmed to :data:`ARC_OPENER_S`; when any moment is marked
+    ``"opener": true`` (the activity profile's opener categories), the best marked one
+    instead. Body: chronological by
     stretch of the day (``chapter``, else source), each stretch grouped
     lift -> scenery -> run / jump -> crash -> social, with local swaps so no more
     than :data:`ARC_MAX_REPEAT` clips of a category play in a row. A crash is
@@ -223,12 +225,14 @@ def _arc(chrono: list[dict[str, Any]]) -> list[dict[str, Any]]:
     def third(u: Unit) -> int:
         return int(3 * at[id(u[0])] / n)
 
-    views = [u for u in units if _cat(u) in ("lift", "scenery")]
+    marked = [u for u in units if u[0].get("opener")]
+    views = marked or [u for u in units if _cat(u) in ("lift", "scenery")]
     opener = best([u for u in views if third(u) == 0]) or (views[0] if views else None)
-    finale = best([u for u in units if _cat(u) == "crash"]) or best(
-        [u for u in units if _cat(u) in ("run", "jump")]
+    rest = [u for u in units if u is not opener]  # a profile's opener may be any category
+    finale = best([u for u in rest if _cat(u) == "crash"]) or best(
+        [u for u in rest if _cat(u) in ("run", "jump")]
     )
-    outro = best([u for u in views if _cat(u) == "scenery" and third(u) == 2 and u is not opener])
+    outro = best([u for u in units if _cat(u) == "scenery" and third(u) == 2 and u is not opener])
     fixed = [u for u in (opener, finale, outro) if u is not None]
     body = [u for u in units if all(u is not f for f in fixed)]
 
@@ -387,8 +391,8 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
 
     Relative ``source`` paths are resolved against the JSON file's folder.
     Optional per-segment keys: ``"kind"`` (the moment's dominant feature: 360
-    director tweaks), ``"category"`` / ``"chapter"`` (``cutpoint mix``: ``arc``
-    order), ``"tail"`` (seconds: extend the end by exactly this much, no
+    director tweaks), ``"category"`` / ``"chapter"`` / ``"opener": true`` (``cutpoint mix``:
+    ``arc`` order), ``"tail"`` (seconds: extend the end by exactly this much, no
     detection), ``"smart_tail": false``
     (no smart/event tail), ``"speech_aware": false`` (keep both boundaries out
     of the speech-aware pass), ``"crop"`` (``auto``, ``none`` or ``W:H:X:Y``), ``"extend"`` /
@@ -438,6 +442,8 @@ def load_segments(path: Path) -> list[dict[str, Any]]:
                 moment[key] = str(item[key])
         if isinstance(item.get("chapter"), int):
             moment["chapter"] = item["chapter"]
+        if item.get("opener") is True:
+            moment["opener"] = True
         moment.update(seconds_keys(item, ("tail",), f"Segment {i}"))
         for key in ("smart_tail", "speech_aware"):
             if key in item:

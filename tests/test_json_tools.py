@@ -60,7 +60,7 @@ def mix_project(home, tmp_path, monkeypatch) -> Path:
             Cand("run", src, 500, 506, 503, 1.0, "carve", "run"),
         ]
 
-    def sheet(segs, out: Path) -> Path:
+    def sheet(segs, out: Path, names=None) -> Path:
         out.write_bytes(b"jpg")
         return out
 
@@ -96,7 +96,7 @@ def test_mix_json(mix_project, capsys):
 
 def test_mix_json_sheet_is_none_when_this_run_wrote_none(mix_project, monkeypatch, capsys):
     write(mix_project / "mix_sheet.jpg", "an earlier run's sheet")
-    monkeypatch.setattr(mix, "_write_sheet", lambda segs, out: None)  # e.g. no frame decoded
+    monkeypatch.setattr(mix, "_write_sheet", lambda segs, out, names=None: None)  # e.g. no frame
     code, doc = run_json(capsys, ["mix", "ski", "--target", "25"])
     assert code == 0 and doc["outputs"]["sheet"] is None
     assert "sheet" not in cache.load_json(mix_project / "mix_report.json")

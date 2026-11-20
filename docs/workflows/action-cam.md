@@ -175,6 +175,40 @@ Categories with no candidates in the footage are not required: with fewer than f
 count; the run-cover check is skipped without `run` candidates and the opener rule without lift
 or scenery candidates (footage without lifts, such as surf or FPV). Views and lift shots are 5-7 s long. `--exclude-file` lists source spans to leave out.
 
+The categories are found the same way for every activity: `run` from the turn rhythm (and
+speed with GPS), `jump` from telemetry airtime, `crash` from `crashes.json`, `lift` from a
+sustained telemetry climb (or the profile's `lift` captions on 360 footage), `scenery` from
+striking views and `social` from laughter, voices and people. The activity profile in use
+(`activity.json`) can shape the mix with an optional `mix` section; `base`, `generic` and
+profiles without one get the mix described above.
+
+```json
+"mix": {
+  "categories": {
+    "run": {"name": "wave", "share": 0.45},
+    "lift": {"share": 0},
+    "scenery": {"name": "line up"}
+  },
+  "opener": ["scenery"]
+}
+```
+
+- `name` (lowercase, at most 24 characters) replaces the first word of the category's clip
+  labels, so the clip file names (`003_wave.mp4`) and the `mix_sheet.jpg` captions use it. The
+  `category` field in `mix_segments.json`, the `--quotas` keys and the categories of
+  `mix_exclude.json` keep the ids `run`, `jump`, `crash`, `lift`, `scenery` and `social`.
+- `share` (0-1) replaces the category's default quota. `0` leaves the category out; a
+  `--quotas` share overrides the profile's, also for a category it left out.
+- `opener` lists the categories the edit may open with, in place of lift and scenery: their
+  segments get `"opener": true` in `mix_segments.json`, the `arc` order opens with the best of
+  them, and the content check's opener rule follows them.
+
+`mix_report.json` then also has `names`, `off` (the categories left out) and `opener`. A
+profile only renames, weighs or leaves out these categories: it cannot add a category. Only a
+profile you or your agent make (`cutpoint profile create`) has a `mix` section; discovery does
+not write one. A project keeps the profile recorded in its `activity.json`: run
+`cutpoint profile <project> --activity NAME` to use a profile made later.
+
 ## Learning from your own edit
 
 If you already cut a video from the same footage, the development script
