@@ -2746,7 +2746,6 @@ def _action_cam_candidates(
         offset,
         friends_strong=style.mask_friends,
         floor=actioncam.source_floor(style.weights, avail, src_avail),
-        rel_floor=0.0,  # the absolute floor only: the same cut in every source (#1085 A188)
     )
     forced = actioncam.must_include_picks(src, cam_ctx, style.must_include_crash, span, offset)
     if forced:

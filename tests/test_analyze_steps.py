@@ -1682,21 +1682,6 @@ def _digest(cands) -> list[tuple]:
     return [(c.start, c.end, c.peak_t, c.peak, c.kind, c.score, c.signals) for c in cands]
 
 
-def test_action_cam_candidates_are_cut_at_the_absolute_floor_only(tmp_path, monkeypatch):
-    """#1085 A188: no share of the part's strongest peak, so one strong moment hides nothing
-    and the cut is the same score points in every source and recovered part."""
-    seen = []
-    real_pick = actioncam.pick
-
-    def spy(*args, **kwargs):
-        seen.append(kwargs.get("rel_floor", actioncam.PICK_REL_FLOOR))
-        return real_pick(*args, **kwargs)
-
-    monkeypatch.setattr(actioncam, "pick", spy)
-    _mixed_part(tmp_path, monkeypatch, tmp_path / "a.mp4", telemetry=True)
-    assert seen == [0.0]
-
-
 def test_a_telemetry_source_of_a_mixed_project_scores_as_before(tmp_path, monkeypatch):
     """#950: the source with telemetry gets exactly the picks and scores it got before,
     with or without a sibling without telemetry, and the unscaled pick floor."""

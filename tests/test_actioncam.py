@@ -254,7 +254,7 @@ def test_a_source_without_telemetry_leaves_out_the_telemetry_features(avail) -> 
 
 @pytest.mark.parametrize("height, picked", [(0.02, False), (0.0201, True)])
 def test_the_default_floor_picks_as_before(height: float, picked: bool) -> None:
-    """visual_pool, mix and refmatch call pick without a floor: 0.02, as it always was."""
+    """visual_pool and mix call pick without a floor: 0.02, as it always was."""
     zero = np.zeros(N)
     args = ({"social": _bump(40.0, height)}, {"social": 1.0}, zero, [], N * DT, 10)
     got = actioncam.pick(*args)
@@ -273,14 +273,10 @@ def _strong_and_weak() -> dict[str, np.ndarray]:
 
 
 def test_a_strong_moment_does_not_hide_the_sources_others_with_the_absolute_floor() -> None:
-    # #1085 A188: analyze passes rel_floor=0, so only the absolute floor holds
+    # #1085 A188: only the absolute floor holds, no share of the strongest peak
     w, zero = CAM.weights, np.zeros(N)
-    got = actioncam.pick(_strong_and_weak(), w, zero, [], N * DT, 10, rel_floor=0.0)
+    got = actioncam.pick(_strong_and_weak(), w, zero, [], N * DT, 10)
     assert [round(p.peak_t) for p in got] == [20, 60]
-    # mix and the visual pool keep the share of the strongest
-    assert [
-        round(p.peak_t) for p in actioncam.pick(_strong_and_weak(), w, zero, [], N * DT, 10)
-    ] == [20]
 
 
 def test_a_source_without_telemetry_passes_its_floor_and_its_score_is_capped() -> None:
