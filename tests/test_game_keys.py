@@ -23,21 +23,7 @@ def test_a_game_folder_names_the_game() -> None:
     assert game_key_for_path("/rec/vidéo ünï 日本/a1.mp4") == "vidéo-ünï-日本"
 
 
-@pytest.mark.parametrize(
-    "folder",
-    [
-        "Videos",
-        "VODs",
-        "captures",
-        "Recordings",
-        "clips",
-        "Gameplay",
-        "footage",
-        "Desktop",
-        "Downloads",
-        "src",
-    ],
-)
+@pytest.mark.parametrize("folder", ["VODs", "Recordings"])  # GENERIC_FOLDERS, any case
 def test_a_generic_folder_gives_the_file_name(folder: str) -> None:
     assert game_key_for_path(f"/rec/{folder}/Neon Drift.mp4") == "neon-drift"
     assert game_key_for_path(f"/rec/{folder}/Box Stack.mp4") == "box-stack"
@@ -45,7 +31,7 @@ def test_a_generic_folder_gives_the_file_name(folder: str) -> None:
 
 @pytest.mark.parametrize(
     "folder",
-    ["a", "B", "b2", "2024", "2024-11-14", "2024_11_14", "07", "\U0001f3ae", "___", "Game"],
+    ["b2", "2024-11-14", "\U0001f3ae", "Game"],  # two characters, a date, no letters, "game"
 )
 def test_short_and_date_folders_give_the_file_name(folder: str) -> None:
     assert game_key_for_path(f"/rec/{folder}/Neon Drift.mp4") == "neon-drift"

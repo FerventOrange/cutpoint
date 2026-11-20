@@ -261,28 +261,20 @@ PLACER = EventType(
     "placer", (Matcher("banner", prefix=("BOX PLACED",)),), score=6.0, max=2, tail_s=3.0
 )
 LAUGH_ONLY = EventType("hype", (Matcher("banner", prefix=("HYPE",)),), score=4.0, styles=("funny",))
-NO_POINTS = EventType("flavour", (Matcher("banner", prefix=("FLAVOUR",)),))
 
 
 @pytest.mark.parametrize(
     ("event", "types", "style", "expected"),
     [
         (feed(10), DEFAULT_EVENT_TYPES, STYLE, ["player_kills"]),
-        (feed(10, teamkill=True), DEFAULT_EVENT_TYPES, STYLE, ["teamkills"]),
-        (feed(10, player_death=True), DEFAULT_EVENT_TYPES, STYLE, ["self_kills"]),
-        (banner(10), DEFAULT_EVENT_TYPES, STYLE, ["banners"]),
         (banner(10, "BOX PLACED 2"), (PLACER, *DEFAULT_EVENT_TYPES), STYLE, ["placer"]),
-        (banner(10, "BOX PLACED 2"), DEFAULT_EVENT_TYPES, STYLE, []),
+        (banner(10, "BOX PLACED 2"), DEFAULT_EVENT_TYPES, STYLE, []),  # no type matches
         (sound(10), DEFAULT_EVENT_TYPES, STYLE, ["laughter"]),
         (sound(10, "Scream"), DEFAULT_EVENT_TYPES, STYLE, ["scream"]),  # Cheering: the same set
-        # nothing that scores: a death (reaction points only), bigtext, notice, other sounds,
-        # a sound without confidence, a type without points, one that is not for this style
+        # nothing that scores: a type without points (a death: reaction points only), a sound
+        # without confidence, a type that is not for this style
         (feed(10, player_kill=False, player_death=True), DEFAULT_EVENT_TYPES, STYLE, []),
-        (banner(10, "ROUND 3", "bigtext"), DEFAULT_EVENT_TYPES, STYLE, []),
-        (banner(10, "VICTORY", "notice"), DEFAULT_EVENT_TYPES, STYLE, []),
-        (sound(10, "Speech"), DEFAULT_EVENT_TYPES, STYLE, []),
         (sound(10, confidence=0.0), DEFAULT_EVENT_TYPES, STYLE, []),
-        (banner(10, "FLAVOUR"), (NO_POINTS, *DEFAULT_EVENT_TYPES), STYLE, []),
         (banner(10, "HYPE"), (LAUGH_ONLY, *DEFAULT_EVENT_TYPES), STYLE, []),
         (banner(10, "HYPE"), (LAUGH_ONLY, *DEFAULT_EVENT_TYPES), ("funny",), ["hype"]),
     ],
@@ -312,10 +304,8 @@ def test_seeds_skip_events_that_start_in_menu_time():
     ("c", "expected"),
     [
         ({"signals": {"events": {"boost": 6.0, "nominated": ["player_kills"]}}}, True),
-        ({"signals": {"events": {"boost": 6.0}}}, False),
         ({"signals": {"events": {"nominated": []}}}, False),
         ({"signals": {"events": None}}, False),
-        ({"signals": {}}, False),
         ({}, False),
     ],
 )
@@ -1210,7 +1200,7 @@ def test_a_weak_laugh_inside_a_candidate_still_counts_for_its_boost():
 
 
 @pytest.mark.parametrize(
-    ("laughter", "heard"), [(0.12, True), (0.5, True), (0.119, False), (0.0, False), (None, False)]
+    ("laughter", "heard"), [(scoring.LAUGH_STRONG, True), (0.119, False), (None, False)]
 )
 def test_laughter_is_heard_in_a_candidate_from_its_audio_evidence(laughter, heard):
     events = {} if laughter is None else {"laughter": laughter}

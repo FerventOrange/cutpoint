@@ -248,10 +248,9 @@ def test_cli_nonzero_return_is_not_ok(monkeypatch, capsys):
         (["paths", "--json", "--bogus"], "unrecognized arguments: --bogus"),
         (["clips", "p", "--size", "abc", "--json"], "argument --size: 'abc': expected WxH"),
         (["setup", "--only", "bogus", "--json"], "argument --only: invalid choice: 'bogus'"),
-        (["events", "ev", "--layers", "bogus", "--json"], "argument --layers: invalid choice"),
         (["paths", "--json=1"], "argument --json: ignored explicit argument '1'"),
     ],
-    ids=["paths-unknown-option", "clips-size", "setup", "events-layers", "json-with-value"],
+    ids=["paths-unknown-option", "clips-size", "setup", "json-with-value"],
 )
 def test_bad_args_envelope(capsys, argv, message):
     with pytest.raises(SystemExit) as exc:

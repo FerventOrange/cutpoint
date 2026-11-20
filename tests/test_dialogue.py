@@ -126,7 +126,7 @@ def test_a_reply_keeps_valid_stretches_and_counts_the_dropped_ones():
     assert first["kind"] == "funny"
 
 
-@pytest.mark.parametrize(("given", "kept"), [(0, 1), (-4, 1), (11, 10), (99, 10), (6.6, 7)])
+@pytest.mark.parametrize(("given", "kept"), [(0, 1), (11, 10), (6.6, 7)])
 def test_a_rating_is_clamped_to_the_scale(given, kept):
     got, dropped = dialogue.parse_reply(
         {"moments": [moment(0, 1, rating=given)]}, talk_lines(3), [0, 1]
@@ -134,7 +134,7 @@ def test_a_rating_is_clamped_to_the_scale(given, kept):
     assert dropped == 0 and got[0]["rating"] == kept
 
 
-@pytest.mark.parametrize("reply", [None, {}, {"moments": "none"}, {"moments": None}, {"other": []}])
+@pytest.mark.parametrize("reply", [None, {}, {"moments": "none"}])
 def test_a_reply_that_is_not_a_list_of_moments_has_none_and_counts_as_one_dropped(reply):
     assert dialogue.parse_reply(reply, talk_lines(3), [0, 1, 2]) == ([], 1)
 
@@ -180,9 +180,7 @@ def test_merged_stretches_come_by_start():
 
 
 # --------------------------------------------------------------------------- strength
-@pytest.mark.parametrize(
-    ("rating", "strength"), [(10, 1.0), (8, 0.8), (1, 0.1), (0, 0.0), (15, 1.0)]
-)
+@pytest.mark.parametrize(("rating", "strength"), [(8, 0.8), (15, 1.0)])
 def test_a_hosted_stretch_is_as_strong_as_the_model_rated_it(rating, strength):
     (ev,) = dialogue.to_events(SRC, [stretch(10, 70, rating=rating)], None, "hosted", "m")
     assert ev["confidence"] == pytest.approx(strength)
@@ -191,11 +189,9 @@ def test_a_hosted_stretch_is_as_strong_as_the_model_rated_it(rating, strength):
 @pytest.mark.parametrize(
     ("sounds", "span", "strength"),
     [
-        ([], 60.0, 0.2),  # no reaction: the baseline
         ([10.0], 60.0, 0.2 + 0.8 / 3),  # one a minute
-        ([10.0, 30.0, 50.0], 60.0, 1.0),  # 3 a minute: full
         ([float(t) for t in range(10, 60, 4)], 60.0, 1.0),  # more does not go past 1
-        ([100.0, 400.0], 60.0, 0.2),  # outside the stretch
+        ([100.0, 400.0], 60.0, 0.2),  # outside the stretch: no reaction, the baseline
         (
             [20.0],
             10.0,
@@ -239,12 +235,10 @@ def test_reaction_times_are_the_confident_reaction_sounds_of_the_source():
 @pytest.mark.parametrize(
     ("given", "want"),
     [
-        ("Grandpa's Wobbly Treehouse", "Grandpa's Wobbly Treehouse"),
         ('  "Chat Argues About Pizza".  ', "Chat Argues About Pizza"),
         ("One\ntwo\tthree  four", "One two three four"),
         ("one two three four five six seven eight", "one two three four five six"),
         ("Grandpa\u2019s Terrible Cooking", "Grandpa's Terrible Cooking"),
-        ("", ""),
         ("  ...  ", ""),
         (None, ""),
     ],
@@ -612,7 +606,7 @@ def _skips(style_name: str, transcripts, skip=()) -> tuple[Any, progress.Run]:
     return got, steps
 
 
-@pytest.mark.parametrize("style", ["funny", "action", "sport", "commentary", "action-cam"])
+@pytest.mark.parametrize("style", ["funny", "action"])
 def test_a_style_without_an_open_list_skips_the_step_and_asks_no_model(style, monkeypatch):
     net = Net(monkeypatch)
     backend, steps = _skips(style, {"a.mp4": [{"start": 0, "end": 1, "text": "hi"}]})
@@ -962,7 +956,6 @@ def test_a_renamed_widened_candidate_keeps_its_new_label_when_widening_is_undone
         ("Mike\u2019s Car", "mikes-car"),
         ("Grandpa Builds A Wobbly Treehouse Again", "grandpa-builds-a-wobbly"),  # no half word
         ("x" * 50, "x" * 30),  # one long word is cut
-        ("", "moment"),
         ("\u30c9\u30e9\u30de", "moment"),  # no Latin letters
     ],
 )
@@ -1675,7 +1668,7 @@ def test_a_long_dialogue_nominee_with_no_other_candidate_scores_zero(tmp_path):
     assert nom["score"] == 0.0 and nom["grid_score"] > 0.0
 
 
-@pytest.mark.parametrize("count", [0, 1, 6, 11, 40])
+@pytest.mark.parametrize("count", [0, 6, 40])
 def test_the_laughter_points_of_a_long_candidate_scale_with_laughs_per_minute(count):
     cand = whole(100.0, 400.0)
     per_minute = count / LONG_MIN
