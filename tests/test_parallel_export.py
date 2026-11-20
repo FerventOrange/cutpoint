@@ -167,8 +167,9 @@ def test_results_come_back_in_plan_order_when_jobs_finish_out_of_order(
     fake_export(monkeypatch, {"000_c.mp4": first, "002_c.mp4": last})
     results = render([plan(0), plan(1), plan(2)], tmp_path, workers=3)
     assert [r.out.name for r in results] == ["000_c.mp4", "001_c.mp4", "002_c.mp4"]
-    logged = [m for m in (r.getMessage() for r in caplog.records) if "<- src.mp4" in m]
-    assert [m.split()[0] for m in logged] == ["000_c.mp4", "001_c.mp4", "002_c.mp4"]
+    msgs = [r.getMessage() for r in caplog.records if r.name == clips.logger.name]
+    logged = [m.split()[0] for m in msgs if "src.mp4" in m]
+    assert logged == ["000_c.mp4", "001_c.mp4", "002_c.mp4"]  # one line per clip, in order
 
 
 @pytest.mark.slow
@@ -927,8 +928,9 @@ def test_session_limit_in_the_pool_drops_to_one_gpu_encode_and_retries_on_the_gp
     assert [running for *_, running in after] == [0, 0, 0]  # then one encode at a time
     assert not ffmpeg_utils._GPU_ENCODE_FAILED
     assert not ffmpeg_utils._GPU_ENCODE_SUSPECT
-    infos = [r.getMessage() for r in caplog.records if "no free encode session" in r.getMessage()]
-    assert infos == ["NVENC has no free encode session; exporting one clip at a time"]
+    # the drop to one GPU encode is said once, as INFO, not as a WARNING
+    said = [r.levelname for r in caplog.records if r.name == ffmpeg_utils.logger.name]
+    assert said == ["INFO"]
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 

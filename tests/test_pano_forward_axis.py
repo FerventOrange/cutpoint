@@ -22,38 +22,16 @@ from cutpoint.pano import render
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
 from pano_fakes import FAKE_TORCH, Models, Sampler, frames
-from pano_helpers import fuse_rotations, write_orient, write_views
+from pano_helpers import rot, swaying, write_orient, write_views
 
-FPS, DT, DUR = 30.0, 0.001, 12.0
-
-
-def _rot(axis: int, deg: np.ndarray) -> np.ndarray:
-    """``(K, 3, 3)`` rotations by ``deg`` about coordinate ``axis``."""
-    a = np.radians(np.asarray(deg, float))
-    c, s = np.cos(a), np.sin(a)
-    i, j = [k for k in range(3) if k != axis]
-    r = np.zeros((len(a), 3, 3))
-    r[:, axis, axis] = 1.0
-    r[:, i, i], r[:, j, j], r[:, i, j], r[:, j, i] = c, c, -s, s
-    return r
+FPS, DUR = 30.0, 12.0  # the defaults of swaying()
 
 
 # camera -> world at rest. Helmet: sky lens (-z) up, FORWARD_V along world +z.
-HELMET = _rot(0, [-90.0])[0]
+HELMET = rot(0, [-90.0])[0]
 # Upright, lenses horizontal: camera -y up, tipped 6 deg forward (|horizontal| of FORWARD_V
 # ~0.1, as on the cruise footage).
-UPRIGHT = _rot(0, [6.0])[0]
-
-
-def _fuse(mount: np.ndarray, turn_dps: float = 0.0, sway_deg: float = 0.0) -> G.Orientation:
-    """Fused track of a camera on ``mount`` turning steadily about the vertical and swaying
-    (roll and pitch about world axes, a few Hz)."""
-    t = np.arange(0, DUR, DT)
-    psi = turn_dps * t
-    roll = sway_deg * np.sin(2 * np.pi * 1.3 * t)
-    pitch = sway_deg * np.sin(2 * np.pi * 0.7 * t + 1.0)
-    rm = _rot(1, psi) @ _rot(2, roll) @ _rot(0, pitch) @ mount
-    return fuse_rotations(t, rm, FPS, int(DUR * FPS) - 1)
+UPRIGHT = rot(0, [6.0])[0]
 
 
 def _display_yaw(o: G.Orientation, r_vw: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -87,7 +65,7 @@ def test_axis_choice() -> None:
 @pytest.mark.parametrize(("mount", "axis"), [(HELMET, "-y"), (UPRIGHT, "+z")])
 def test_axis_choice_is_stable_under_sway(mount, axis) -> None:
     """One axis per clip from the median: a 25 deg sway does not flip it."""
-    o = _fuse(mount, turn_dps=20.0, sway_deg=25.0)
+    o = swaying(mount, turn_dps=20.0, sway_deg=25.0)
     assert o.forward_axis == axis
     for part in (slice(0, 120), slice(100, 220), slice(200, None)):
         assert G.axis_name(G.forward_axis(o.up[part])) == axis
@@ -97,7 +75,7 @@ def test_axis_choice_is_stable_under_sway(mount, axis) -> None:
 def test_upright_turn_has_a_smooth_display_heading_in_both_frames() -> None:
     """Turning 30 deg/s while swaying: the display yaw follows the turn without jumps in the
     view layer's ``r_vw`` and the renderer's frame, and the two frames agree."""
-    o = _fuse(UPRIGHT, turn_dps=30.0, sway_deg=5.0)
+    o = swaying(UPRIGHT, turn_dps=30.0, sway_deg=5.0)
     assert o.forward_axis == "+z" and o.meta["forward_axis"] == "+z"
     view = np.stack([o.r_vw(i / FPS) for i in IDX])
     rend = render.stabilised_r_vw(o, IDX, 1.0, 0.5)
@@ -112,7 +90,7 @@ def test_upright_turn_has_a_smooth_display_heading_in_both_frames() -> None:
 def test_upright_still_camera_holds_its_view() -> None:
     """A swaying, not turning, upright camera: a fixed-yaw view stays put in the world
     (the forward axis near vertical spun it before)."""
-    o = _fuse(UPRIGHT, sway_deg=8.0)
+    o = swaying(UPRIGHT, sway_deg=8.0)
     view = np.stack([o.r_vw(i / FPS) for i in IDX])
     # the view layer's gyro heading wobbles a few degrees with sway (3 deg on the helmet mount)
     assert np.ptp(_display_yaw(o, view, IDX)) < 6.0
@@ -121,7 +99,7 @@ def test_upright_still_camera_holds_its_view() -> None:
 
 # --------------------------------------------------------------------------- helmet unchanged
 def test_helmet_mount_matrices_are_unchanged() -> None:
-    o = _fuse(HELMET, turn_dps=30.0, sway_deg=15.0)
+    o = swaying(HELMET, turn_dps=30.0, sway_deg=15.0)
     assert o.fwd is G.FORWARD_V and "forward_axis" not in o.meta
     for i in IDX[::17]:
         before = G.level_matrix(o.up[i]) @ G.rot_y(o.heading[i] - o.heading_smooth[i])
@@ -131,7 +109,7 @@ def test_helmet_mount_matrices_are_unchanged() -> None:
 def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
     src = tmp_path / "up.lrv"
     src.write_bytes(b"x")
-    o = _fuse(UPRIGHT)
+    o = swaying(UPRIGHT)
     monkeypatch.setattr(G, "fuse", lambda *a, **k: o)
     monkeypatch.setattr(G, "load_imu", lambda _p: (None, None, None))
     with caplog.at_level(logging.INFO, logger="cutpoint.pano.geometry"):
@@ -273,7 +251,7 @@ def test_layer_inputs_of_an_unreachable_source_is_none(tmp_path) -> None:
 def test_upright_yaw_0_follows_the_10_lens() -> None:
     """Upright, still or turning: display yaw 0 is the ``_10_`` lens (camera +z), the
     ``_00_`` lens (-z) is behind."""
-    for o in (_fuse(UPRIGHT, sway_deg=8.0), _fuse(UPRIGHT, turn_dps=30.0, sway_deg=5.0)):
+    for o in (swaying(UPRIGHT, sway_deg=8.0), swaying(UPRIGHT, turn_dps=30.0, sway_deg=5.0)):
         for t in IDX[::40] / FPS:
             r = o.r_vw(float(t))
             front, _ = G.ray_yaw_pitch(r.T @ np.array([0.0, 0.0, 1.0]))

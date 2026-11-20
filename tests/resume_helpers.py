@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from cutpoint import cli, progress, runstate
+from cutpoint import cache, cli, progress, runstate
 
 
 class _Resp:
@@ -21,6 +21,14 @@ class _Resp:
 
     def json(self) -> Any:
         return self.body
+
+
+def make_project(home: Path, source: str) -> Path:
+    """The project ``p`` under ``home`` with one source, ``source``, in its highlights.json."""
+    p = home / "projects" / "p"
+    p.mkdir(parents=True)
+    cache.save_json(p / "highlights.json", {"sources": [{"path": source}]})
+    return p
 
 
 def read_progress(project: Path) -> dict:

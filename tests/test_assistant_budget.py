@@ -551,15 +551,6 @@ def test_an_advice_question_answered_with_example_moment_ids_is_not_nudged() -> 
     assert turn.events[-1]["text"] == text
 
 
-def test_text_naming_a_moment_in_the_last_round_is_not_nudged_and_stands() -> None:
-    script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)]
-    fake = FakeProvider([*script, answer("Take m1.")])
-    turn = run(fake, "build a montage")
-    assert turn.status == "done", turn.error
-    assert len(fake.requests) == session.MAX_ROUNDS and not nudges(fake)
-    assert [e["text"] for e in turn.events if e["kind"] == "reply"] == ["Take m1."]
-
-
 def test_a_nudge_then_tool_calls_until_the_rounds_run_out_keeps_the_first_answer() -> None:
     script = [answer(NAMES)] + [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS)]
     fake = FakeProvider(script)

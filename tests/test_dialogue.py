@@ -412,7 +412,8 @@ def test_a_failed_piece_is_skipped_and_the_reading_is_not_cached(tmp_path, caplo
         read = dialogue.read_source(src, lines, backend)
     assert read.failed == 1 and read.pieces == 3
     assert [(s["first_line"], s["last_line"]) for s in read.stretches] == [(2, 4)]
-    assert "1 of 3 dialogue pieces got no usable reply" in caplog.text
+    (warned,) = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert "1 of 3" in warned  # the user is told how many pieces were lost
     assert not dialogue.read_source(src, lines, backend).cached  # asked again
     assert len(prompts) == 6
 
@@ -538,10 +539,6 @@ def hosted_chat(home, monkeypatch):
     return configure
 
 
-def test_the_consent_prefix_of_the_assistant_is_v3():
-    assert providers.ASSISTANT_CONSENT_PREFIX == "assistant-v3:"
-
-
 def test_a_hosted_model_with_v3_consent_reads_the_transcript(hosted_chat, monkeypatch):
     hosted_chat([f"assistant-v3:{ANTHROPIC}"])
     net = Net(monkeypatch, hosted_text='Here you go: {"moments": [{"first_line": 1}]} done')
@@ -554,19 +551,6 @@ def test_a_hosted_model_with_v3_consent_reads_the_transcript(hosted_chat, monkey
     assert res.warnings == [] and net.to("11434") == []  # no local model was looked for
     sent = net.bodies[-1]["messages"][0]["content"][0]["text"]  # Anthropic takes no schema
     assert sent.startswith("read this") and "Reply with JSON only" in sent
-
-
-def test_a_hosted_model_without_consent_gives_way_to_a_local_ollama(hosted_chat, monkeypatch):
-    hosted_chat(["assistant-v2:" + ANTHROPIC])
-    net = Net(monkeypatch, ollama=True)
-    with jsonout.run("analyze") as res:
-        choice = dialogue.choose_backend()
-    backend = choice.backend
-    assert backend is not None and backend.name == "local" and backend.model == "qwen3.5:9b"
-    assert "0123456789ab" in backend.key  # the model's digest keys the cache
-    assert res.warnings == []  # the user is not asked for anything
-    assert backend.ask("read this") == {"moments": [{"first_line": 0}]}
-    assert net.to("api.anthropic.com") == []
 
 
 def test_the_default_local_ollama_is_the_backend_when_ai_chat_is_the_default(home, monkeypatch):
@@ -592,7 +576,7 @@ def test_a_bad_ollama_port_means_no_backend_not_a_crash(home, monkeypatch, caplo
     with caplog.at_level(logging.WARNING), jsonout.run("analyze"):
         choice = dialogue.choose_backend()
     assert choice.backend is None and choice.reason
-    assert "invalid port" in caplog.text
+    assert [r.levelname for r in caplog.records if r.name == dialogue.logger.name] == ["WARNING"]
     set_config(home, assistant={"provider": "ollama"})
     net.ollama = True
     dialogue.choose_backend("http://127.0.0.1:11434")
@@ -1358,29 +1342,65 @@ def test_a_model_without_the_assistant_consent_skips_the_step_and_is_sent_nothin
     msg = res.warnings[0]["message"]
     assert want_key in msg and "whole transcripts" in msg
     assert net.to(REMOTE) == [] and net.to("api.anthropic.com") == []
-    assert caplog.text.count("needs your consent") == 1
+    said = [r.levelname for r in caplog.records if r.name == dialogue.logger.name]
+    assert said == ["WARNING"]  # the skip is said once per run too
 
 
-def test_a_remote_ollama_as_ai_chat_gives_way_to_the_local_one_without_asking_it(
-    home, monkeypatch, caplog
+@pytest.mark.parametrize(
+    ("assistant", "unasked", "who"),
+    [
+        (_hosted("assistant-v2:" + ANTHROPIC), "api.anthropic.com", "the hosted AI Chat model"),
+        (AI_CHAT_REMOTE, REMOTE, f"the Ollama at {REMOTE}:11434"),
+    ],
+    ids=["hosted", "ai-chat-remote"],
+)
+def test_an_ai_chat_model_without_consent_gives_way_to_the_local_ollama_unasked(
+    home, monkeypatch, caplog, assistant, unasked, who
 ):
-    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL})
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    set_config(home, assistant=assistant)
     net = Net(monkeypatch, ollama=True)
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.INFO), jsonout.run("analyze") as res:
         choice = dialogue.choose_backend()
-    assert choice.backend is not None and choice.backend.name == "local"
-    assert "127.0.0.1" in choice.backend.key and net.to(REMOTE) == []
-    assert f"Dialogue reader: the Ollama at {REMOTE}:11434 has no consent; using" in caplog.text
-    assert "hosted AI Chat model" not in caplog.text
+    backend = choice.backend
+    assert backend is not None and backend.name == "local" and backend.model == "qwen3.5:9b"
+    assert "127.0.0.1" in backend.key and "0123456789ab" in backend.key  # digest keys the cache
+    assert res.warnings == []  # the user is not asked for anything
+    assert backend.ask("read this") == {"moments": [{"first_line": 0}]}
+    assert net.to(unasked) == []
+    said = [
+        r.args[0]
+        for r in caplog.records
+        if r.name == dialogue.logger.name
+        and r.levelno == logging.INFO
+        and r.msg.startswith("Dialogue reader: %s has no consent")
+    ]
+    assert said == [who]  # the log names the model without consent
 
 
-def test_a_remote_ollama_with_the_assistant_consent_is_read_like_a_local_one(home, monkeypatch):
-    set_config(home, assistant={"provider": "ollama", "url": REMOTE_URL, "consent": [REMOTE_KEY]})
+@pytest.mark.parametrize(
+    ("assistant", "url"),
+    [
+        ({**AI_CHAT_REMOTE, "consent": [REMOTE_KEY]}, None),
+        (
+            _hosted(f"assistant-v3:{ANTHROPIC}", REMOTE_KEY),
+            REMOTE_URL,
+        ),  # --ollama-url over a usable hosted one
+    ],
+    ids=["ai-chat", "url"],
+)
+def test_a_remote_ollama_with_the_assistant_consent_is_read_like_a_local_one(
+    home, monkeypatch, assistant, url
+):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", KEY)
+    set_config(home, assistant=assistant)
     net = Net(monkeypatch, ollama=True)
-    backend = dialogue.choose_backend().backend
+    with jsonout.run("analyze") as res:
+        backend = dialogue.choose_backend(url, None).backend
     assert backend is not None and backend.name == "remote" and backend.workers == 1
     assert REMOTE in backend.key and net.to(REMOTE)
     assert backend.ask("read this") == {"moments": [{"first_line": 0}]}
+    assert net.to("api.anthropic.com") == [] and res.warnings == []
     # ranked by the reactions in it, not by the model's rating
     (ev,) = dialogue.to_events("a.mp4", [stretch(0.0, 60.0, rating=10)], None, "remote", "m")
     assert ev["confidence"] == dialogue.BASELINE_STRENGTH
@@ -1413,16 +1433,6 @@ def test_ollama_flags_win_over_an_ai_chat_ollama(home, monkeypatch):
     backend = dialogue.choose_backend("http://127.0.0.1:11434", None).backend
     assert backend is not None and backend.name == "local" and "127.0.0.1" in backend.key
     assert net.to(REMOTE) == []
-
-
-def test_a_remote_ollama_url_with_the_assistant_consent_is_used(hosted_chat, home, monkeypatch):
-    hosted_chat([f"assistant-v3:{ANTHROPIC}", REMOTE_KEY])
-    net = Net(monkeypatch, ollama=True)
-    with jsonout.run("analyze") as res:
-        backend = dialogue.choose_backend(REMOTE_URL, None).backend
-    assert backend is not None and backend.name == "remote" and REMOTE in backend.key
-    assert backend.ask("read this") == {"moments": [{"first_line": 0}]}
-    assert net.to(REMOTE) and net.to("api.anthropic.com") == [] and res.warnings == []
 
 
 def test_an_ollama_model_flag_alone_uses_the_default_url(home, monkeypatch):

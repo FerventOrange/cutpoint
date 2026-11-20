@@ -247,16 +247,6 @@ def test_no_other_entry_unlocks_a_remote_ollama(home, wire, consent) -> None:
     assert vision.VisionRater(url=REMOTE, model="m").consent_needed == KEY
 
 
-def test_with_consent_a_remote_ollama_is_used(home, monkeypatch) -> None:
-    set_config(home, vision_assistant={"provider": "ollama", "consent": [KEY]})
-    fake = Ollama()
-    monkeypatch.setattr(vision.requests, "get", fake.get)
-    monkeypatch.setattr(vision.requests, "post", fake.post)
-    rater = vision.VisionRater(url=REMOTE, model="qwen3.5:9b")
-    assert rater.consent_needed is None
-    assert rater.available()
-
-
 def test_the_rating_cache_of_ollama_keys_on_the_host(home, monkeypatch) -> None:
     monkeypatch.delenv("OLLAMA_HOST", raising=False)
     here = vision.VisionRater(url="http://127.0.0.1:11434", model="m")
@@ -501,9 +491,19 @@ def test_two_raters_in_one_run_warn_once(home, hosted, remote, caplog) -> None:
     assert [w["code"] for w in res.warnings] == ["vision_consent_needed"]
 
 
-def test_with_consent_a_hosted_provider_needs_none(home) -> None:
-    set_config(home, vision_assistant={"provider": "openai", "consent": [HOSTED_KEY]})
-    assert vision.VisionRater().consent_needed is None
+@pytest.mark.parametrize("remote", [False, True], ids=["hosted", "remote-ollama"])
+def test_with_consent_a_vision_backend_is_used(home, monkeypatch, remote) -> None:
+    if remote:
+        set_config(home, vision_assistant={"provider": "ollama", "consent": [KEY]})
+        fake = Ollama()
+        monkeypatch.setattr(vision.requests, "get", fake.get)
+        monkeypatch.setattr(vision.requests, "post", fake.post)
+        rater = vision.VisionRater(url=REMOTE, model="qwen3.5:9b")
+    else:
+        set_config(home, vision_assistant={"provider": "openai", "consent": [HOSTED_KEY]})
+        rater = vision.VisionRater()
+    assert rater.consent_needed is None
+    assert not remote or rater.available()  # the remote Ollama is asked
 
 
 @pytest.mark.parametrize("agreed", [False, True], ids=["no-consent", "consent"])

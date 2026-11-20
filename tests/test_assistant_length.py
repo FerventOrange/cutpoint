@@ -963,6 +963,38 @@ def test_a_text_only_edit_turn_without_a_target_gets_one_nudge_toward_a_proposal
     assert kinds(run(fake, "what is the best moment?")) == ["reply"] and len(fake.requests) == 1
 
 
+# One row per branch of the edit-request check (``intent.edits``, ``intent.asks_advice``):
+# each leading edit phrase and where it may stand, a request phrased as a question, and the help
+# questions and statements with the same words that ask for no edit (#863, #864, #881 review).
+# The route test of test_assistant_routes shows the nudge follows it.
+@pytest.mark.parametrize(
+    ("text", "nudged"),
+    [
+        ("get rid of the long pause", True),
+        ("take out the menu part", True),
+        ("use the laugh at 12:30", True),
+        ("open with the jump", True),
+        ("end with the win", True),
+        ("let's start with the crash", True),
+        ("ok, use the laugh then", True),
+        ("can you drop the intro?", True),
+        ("Can you use the laugh at 12:30?", True),
+        ("how about we drop the intro?", True),
+        ("could we add the laugh?", True),
+        # advice and help questions, and statements, ask none
+        ("should I drop the intro?", False),
+        ("Can I use this for YouTube Shorts?", False),
+        ("Can you use my GPU?", False),
+        ("Let's start with the basics: what is a style?", False),
+        ("Tell me how to use the timeline.", False),
+        ("I don't know where to start with this.", False),
+        ("We use OBS to record.", False),
+    ],
+)
+def test_which_phrasings_ask_for_an_edit(text: str, nudged: bool) -> None:
+    assert session.Turn._asks_edit(SimpleNamespace(text=text, target=None)) is nudged
+
+
 @pytest.mark.parametrize(
     ("msg", "nudged"),
     [

@@ -13,8 +13,7 @@ import pytest
 from cutpoint import progress
 from cutpoint.events import discover, pipeline
 from cutpoint.events.killfeed import OcrParams
-from events_fakes import stub_run_events
-from ocr_helpers import progress_lines as _lines
+from ocr_helpers import progress_lines, stub_ocr_run
 
 
 class _Stop(Exception):
@@ -25,16 +24,13 @@ class _Stop(Exception):
 def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """``run_events`` with the OCR layer only, two sources and fake discovery and OCR;
     it stops after the OCR stage. ``found`` is the preset ``load_preset`` returns."""
-    monkeypatch.setenv(progress.ENV, "1")
-    monkeypatch.setattr(progress, "MIN_INTERVAL_S", 0.0)  # every update is a line
     srcs = [
         SimpleNamespace(path=tmp_path / f"{n}.mp4", name=f"{n}.mp4", duration=600.0)
         for n in ("a", "b")
     ]
     state = SimpleNamespace(found=None)
-    stub_run_events(monkeypatch, srcs)
+    stub_ocr_run(monkeypatch, srcs)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: state.found)
-    monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
     monkeypatch.setattr(pipeline, "detect_ocr_events", lambda *a, **k: ([], {}))
 
     def fake_discover(srcs, out, game, params, on_frame=None, **_):
@@ -62,7 +58,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_discovery_takes_the_first_part_then_each_source(ocr_run, capsys):
     ocr_run.run()
-    got = [(g["pct"], g["detail"]) for g in _lines(capsys) if g["state"] == "running"]
+    got = [(g["pct"], g["detail"]) for g in progress_lines(capsys) if g["state"] == "running"]
     pcts = [p for p, _ in got if p is not None]
     assert pcts == sorted(pcts)  # never backwards
     assert (
@@ -79,7 +75,7 @@ def test_discovery_takes_the_first_part_then_each_source(ocr_run, capsys):
 def test_without_discovery_the_sources_take_the_whole_step(ocr_run, capsys):
     ocr_run.found = SimpleNamespace(feed={}, path=None)  # a preset matches: no discovery
     ocr_run.run()
-    got = [(g["pct"], g["detail"]) for g in _lines(capsys) if g["state"] == "running"]
+    got = [(g["pct"], g["detail"]) for g in progress_lines(capsys) if g["state"] == "running"]
     assert got == [(None, None), (0, None), (50, None)]
 
 
@@ -87,7 +83,7 @@ def test_two_games_split_the_discovery_part(ocr_run, monkeypatch, capsys):
     games = {"a.mp4": "alphawar", "b.mp4": "betawar"}  # invented games
     monkeypatch.setattr(pipeline, "game_key_for_path", lambda path, *a: games[Path(path).name])
     ocr_run.run()
-    got = [(g["pct"], g["detail"]) for g in _lines(capsys) if g["state"] == "running"]
+    got = [(g["pct"], g["detail"]) for g in progress_lines(capsys) if g["state"] == "running"]
     pcts = [p for p, _ in got if p is not None]
     assert pcts == sorted(pcts)  # never backwards
     second = [p for p, d in got if d and "betawar: discovering HUD:" in d]
@@ -151,7 +147,7 @@ def test_pct_rises_within_each_source(ocr_run, monkeypatch, capsys):
 
     monkeypatch.setattr(pipeline, "detect_ocr_events", fake_ocr)
     ocr_run.run()
-    got = [(g["pct"], g["detail"]) for g in _lines(capsys) if g["state"] == "running"]
+    got = [(g["pct"], g["detail"]) for g in progress_lines(capsys) if g["state"] == "running"]
     pcts = [p for p, _ in got if p is not None]
     assert pcts == sorted(pcts)  # never backwards
     first = got.index((pipeline.DISCOVERY_PCT, "reading HUD text: source 1/2"))
