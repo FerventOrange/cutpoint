@@ -1455,7 +1455,7 @@ def test_action_cam_without_any_telemetry_runs_as_action(run, monkeypatch, caplo
     [warning] = _no_telemetry_warnings(res)
     assert warning["files"] == [str(v) for v in videos]
     assert "so the action style was used" in warning["message"]
-    assert warning["message"] in caplog.text
+    assert warning["message"] in [r.getMessage() for r in caplog.records]  # also a WARNING line
     assert not (run.proj / "telemetry.json").exists()
 
 
@@ -1482,7 +1482,7 @@ def test_action_cam_whose_telemetry_cannot_be_read_runs_as_action(run, monkeypat
     [warning] = _no_telemetry_warnings(res)
     assert warning["files"] == [str(v) for v in videos]
     assert "could be read from any source (a.mp4, b.mp4)" in warning["message"]
-    assert warning["message"] in caplog.text
+    assert warning["message"] in [r.getMessage() for r in caplog.records]  # also a WARNING line
     assert not (run.proj / "telemetry.json").exists()
 
 
@@ -1759,7 +1759,7 @@ def test_the_rerank_of_one_json_run_warns_once(run, monkeypatch, caplog):
         run.go("action-cam")
         analyze.reanalyze(run.proj)
     [warning] = _no_telemetry_warnings(res)
-    assert caplog.text.count(warning["message"]) == 1
+    assert [r.getMessage() for r in caplog.records].count(warning["message"]) == 1
 
 
 def test_full_telemetry_gives_no_warning(run, monkeypatch):

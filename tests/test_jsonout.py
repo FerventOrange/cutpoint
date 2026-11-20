@@ -385,4 +385,4 @@ def test_assemble_audio_transition_reaches_assemble(monkeypatch, tmp_path, extra
     )
     args = cli.build_parser().parse_args(["assemble", str(tmp_path), *extra])
     cli._cmd_assemble(args)
-    assert calls[0]["audio_transition"] == audio
+    assert calls[0]["join"].audio_transition == audio

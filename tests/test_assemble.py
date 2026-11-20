@@ -112,7 +112,8 @@ def test_fade_join_without_room_falls_back_to_cuts(tmp_path, monkeypatch):
     monkeypatch.setattr(assemble, "crossfade", lambda *a, **_: joined.append("fade"))
     files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
     infos = [_info(2.0, 2.0), _info(0.08, 0.08)]
-    used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.25)
+    join = assemble.JoinOptions(transition="fade", fade_dur=0.25, audio_fade=0.25)
+    used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", join)
     assert (used, joined) == (0.0, ["cut"])
 
 
@@ -125,7 +126,9 @@ def test_assemble_short_crossfade_keeps_the_whole_video(tmp_path, monkeypatch):
     for name in ("001_a.mp4", "002_b.mp4"):
         _clip(clips_dir / name, 2.0, 2.0)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.02)
+    final = assemble.assemble(
+        clips_dir, join=assemble.JoinOptions(transition="fade", fade_dur=0.02)
+    )
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.96, abs=0.04)
     assert durations["audio"] == pytest.approx(3.96, abs=0.04)
@@ -142,7 +145,9 @@ def test_assemble_crossfade_length_matches_the_srt_offsets(tmp_path, monkeypatch
     for name in ("001_a.mp4", "002_b.mp4", "003_c.mp4"):
         _clip(clips_dir / name, 2.0, 2.0, rate)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
+    final = assemble.assemble(
+        clips_dir, join=assemble.JoinOptions(transition="fade", fade_dur=0.25)
+    )
     infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
     fade = assemble.crossfade_duration(infos, 0.25)
     predicted = timeline.clip_offsets(infos, fade)[-1] + infos[-1].vduration
@@ -175,7 +180,9 @@ def test_assemble_crossfade_audio_stays_on_video_when_clip_audio_runs_on(tmp_pat
     _clip(clips_dir / "001_a.mp4", 2.0, 2.3)
     _clip(clips_dir / "002_b.mp4", 2.0, 2.0)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25)
+    final = assemble.assemble(
+        clips_dir, join=assemble.JoinOptions(transition="fade", fade_dur=0.25)
+    )
     durations = _stream_durations(final)
     assert durations["video"] == pytest.approx(3.76, abs=0.02)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
@@ -382,7 +389,9 @@ def test_assemble_fills_clip_audio_timestamp_gaps(tmp_path, monkeypatch):
     entries = [{"file": n, "source": "s.mp4", "start": 0.0, "end": 2.5} for n in names]
     (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    final = assemble.assemble(clips_dir, transition="fade", audio_transition="crossfade")
+    final = assemble.assemble(
+        clips_dir, join=assemble.JoinOptions(transition="fade", audio_transition="crossfade")
+    )
     video = _stream_durations(final)["video"]
     decoded = len(ffmpeg_utils.decode_pcm(final, sr=48000)) / 48000
     assert decoded == pytest.approx(video, abs=0.04)  # one video frame
@@ -428,7 +437,7 @@ def test_burned_in_captions_transcribe_in_the_analysis_language(tmp_path, monkey
         seen.append(kw)
         raise _Transcribed
 
-    def join(files, infos, clips_dir, out, *a):
+    def join(files, infos, clips_dir, out, *a, **_kw):
         out.write_bytes(b"joined")
         return 0.0
 
@@ -438,7 +447,7 @@ def test_burned_in_captions_transcribe_in_the_analysis_language(tmp_path, monkey
     monkeypatch.setattr(assemble, "extract_audio", lambda *a, **k: None)
     monkeypatch.setattr(assemble, "Transcriber", transcriber)
     with pytest.raises(_Transcribed):
-        assemble.assemble(clips_dir, captions=True, loudnorm=True)
+        assemble.assemble(clips_dir, join=assemble.JoinOptions(captions=True, loudnorm=True))
     assert seen == [{"model": None, "language": language}]
 
 
@@ -479,7 +488,9 @@ def test_assemble_refuses_an_audio_crossfade_at_cuts_before_touching_anything(tm
     clips_dir = tmp_path / "clips"
     clips_dir.mkdir()
     with pytest.raises(ValueError, match="--transition fade"):
-        assemble.assemble(clips_dir, transition="cut", audio_transition="crossfade")
+        assemble.assemble(
+            clips_dir, join=assemble.JoinOptions(transition="cut", audio_transition="crossfade")
+        )
     assert not (tmp_path / "final.mp4").exists()
 
 
@@ -523,9 +534,10 @@ def test_fade_with_audio_cut_adds_the_edge_fades_of_clips_without_baked_ones(tmp
     monkeypatch.setattr(assemble, "baked_fades", lambda _d, files: [0.25, 0.0])
     infos = [_info(2.0, 2.0), _info(2.0, 2.0)]
     files = [tmp_path / "001_a.mp4", tmp_path / "002_b.mp4"]
-    used = assemble._join(
-        files, infos, tmp_path, tmp_path / "final.mp4", "fade", 0.25, 0.3, None, "cut"
+    join = assemble.JoinOptions(
+        transition="fade", fade_dur=0.25, audio_fade=0.3, audio_transition="cut"
     )
+    used = assemble._join(files, infos, tmp_path, tmp_path / "final.mp4", join)
     assert used > 0
     assert "acrossfade" not in graphs[0]
     chains = {c.split("[a")[-1][0]: c for c in graphs[0].split(";") if c.endswith(("[a0]", "[a1]"))}
@@ -542,7 +554,10 @@ def test_assemble_fade_with_audio_cut_keeps_audio_as_long_as_the_video(tmp_path,
     for name, audio in zip(("001_a.mp4", "002_b.mp4", "003_c.mp4"), (2.3, 2.0, 2.0), strict=True):
         _clip(clips_dir / name, 2.0, audio)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.25, audio_transition="cut")
+    final = assemble.assemble(
+        clips_dir,
+        join=assemble.JoinOptions(transition="fade", fade_dur=0.25, audio_transition="cut"),
+    )
     infos = [assemble.probe(f) for f in assemble.list_clips(clips_dir, exclude={final})]
     fade = assemble.crossfade_duration(infos, 0.25)
     predicted = timeline.clip_offsets(infos, fade)[-1] + infos[-1].vduration
@@ -550,7 +565,9 @@ def test_assemble_fade_with_audio_cut_keeps_audio_as_long_as_the_video(tmp_path,
     assert durations["video"] == pytest.approx(predicted, abs=0.02)
     assert durations["audio"] == pytest.approx(durations["video"], abs=0.04)  # one frame
     kw = {"transition": "fade", "fade_dur": 0.25, "audio_transition": "cut"}
-    fcpxml = assemble.assemble(clips_dir, final, output_format="fcpxml", **kw)
+    fcpxml = assemble.assemble(
+        clips_dir, final, join=assemble.JoinOptions(output_format="fcpxml", **kw)
+    )
     assert "Audio Crossfade" not in fcpxml.read_text(encoding="utf-8")
 
 
@@ -769,18 +786,22 @@ def test_assemble_cuts_hard_next_to_a_word_splice(tmp_path, monkeypatch):
     ]
     (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
-    final = assemble.assemble(clips_dir, transition="fade", fade_dur=0.5)
+    final = assemble.assemble(clips_dir, join=assemble.JoinOptions(transition="fade", fade_dur=0.5))
     assert _stream_durations(final)["video"] == pytest.approx(4.0, abs=0.05)
     for kind, mark in (("fcpxml", "Cross Dissolve"), ("otio", "Transition")):
         timeline = assemble.assemble(
-            clips_dir, final, output_format=kind, transition="fade", fade_dur=0.5
+            clips_dir,
+            final,
+            join=assemble.JoinOptions(output_format=kind, transition="fade", fade_dur=0.5),
         )
         assert mark not in timeline.read_text(encoding="utf-8"), kind  # a cut, no dissolve
     entries[1].pop("exact")  # the same clips without the splice: the dissolve is there
     (clips_dir / "manifest.json").write_text(json.dumps({"clips": entries}), encoding="utf-8")
     for kind, mark in (("fcpxml", "Cross Dissolve"), ("otio", "Transition")):
         timeline = assemble.assemble(
-            clips_dir, final, output_format=kind, transition="fade", fade_dur=0.5
+            clips_dir,
+            final,
+            join=assemble.JoinOptions(output_format=kind, transition="fade", fade_dur=0.5),
         )
         assert mark in timeline.read_text(encoding="utf-8"), kind
 

@@ -238,7 +238,11 @@ def test_the_manifest_records_an_exact_clip_and_its_short_fade(home, monkeypatch
 
     monkeypatch.setattr(clips, "export_clip_checked", export)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
-    folder = clips.export_clips(project, segments=seg, extend=clips.Padding(1.0, 1.0))
+    folder = clips.export_clips(
+        project,
+        selection=clips.Selection(segments=seg),
+        options=clips.ExportOptions(extend=clips.Padding(1.0, 1.0)),
+    )
     entries = json.loads((Path(folder) / "manifest.json").read_text(encoding="utf-8"))["clips"]
     plain, word = entries
     assert (word["start"], word["end"], word["exact"], word["audio_fade"]) == (
@@ -902,7 +906,13 @@ def test_a_real_export_of_a_short_word_keeps_it(home, monkeypatch) -> None:
         project / "seg.json",
         json.dumps([{"source": str(src), "start": 1.0, "end": 1.12, "label": "a", "exact": True}]),
     )
-    folder = Path(clips.export_clips(project, segments=seg, extend=clips.Padding(1.0, 1.0)))
+    folder = Path(
+        clips.export_clips(
+            project,
+            selection=clips.Selection(segments=seg),
+            options=clips.ExportOptions(extend=clips.Padding(1.0, 1.0)),
+        )
+    )
     (entry,) = json.loads((folder / "manifest.json").read_text(encoding="utf-8"))["clips"]
     assert (entry["start"], entry["end"], entry["exact"]) == (1.0, 1.12, True)
     assert entry["audio_fade"] == planning.EXACT_AUDIO_FADE_S

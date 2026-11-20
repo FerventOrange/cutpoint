@@ -14,7 +14,7 @@ import pytest
 import cutpoint.analyze
 from conftest import envelope
 from cutpoint import cache, cli, folders, procs, progress, runstate
-from resume_helpers import fake_events, read_progress
+from resume_helpers import fake_events, make_project, read_progress
 
 KEYS = {
     "version", "generator", "command", "argv", "cwd", "options_key", "status", "pid", "host",
@@ -26,10 +26,8 @@ STEPS = ("one", "two")  # the fake events command's progress steps
 
 @pytest.fixture
 def project(home: Path) -> Path:
-    p = home / "projects" / "p"
-    p.mkdir(parents=True)
-    cache.save_json(p / "highlights.json", {"sources": [{"path": "/videos/a.mp4"}]})
-    return p
+    """A project of the (missing) ``/videos/a.mp4``, run from the test's own cwd."""
+    return make_project(home, "/videos/a.mp4")
 
 
 def test_events_writes_the_schema_and_ends_done(project, monkeypatch):

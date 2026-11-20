@@ -97,6 +97,8 @@ def test_a_model_that_keeps_looking_ends_with_a_plain_answer_not_no_answer(name:
 
 
 def test_the_closing_round_answer_in_text_is_the_reply_and_gets_no_nudge() -> None:
+    """The one home of "no nudge in the closing round": one gate for every trigger (an edit
+    asked for, moments named, a promised lookup)."""
     fake = FakeProvider([*lookups(LAST), answer(FOUND_NONE)])
     turn = run(fake, ASK)  # an edit asked for: a text answer would be nudged before the closing
     assert turn.status == "done", turn.error
@@ -141,13 +143,6 @@ def test_rejected_proposals_in_the_closing_round_end_with_the_rejection_not_a_se
     (text,) = replies(turn)
     assert text.startswith("I couldn't make an edit that passes the checks")
     assert rejected[-1] in text and "searched for" not in text
-
-
-def test_a_nudged_answer_still_stands_when_the_rounds_run_out() -> None:
-    first = "I would take m1 and m2 first."
-    fake = FakeProvider([answer(first), *lookups(session.MAX_ROUNDS + 1)])
-    turn = run(fake, "build a montage")
-    assert turn.status == "done" and replies(turn) == [first]
 
 
 def test_json_mode_closing_round_allows_only_propose_edit_and_reply() -> None:

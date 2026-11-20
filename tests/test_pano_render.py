@@ -22,7 +22,7 @@ from cutpoint.insta360 import imu_source
 from cutpoint.pano import geometry as G
 from cutpoint.pano import project, qa, render, x3
 from cutpoint.pano.x3 import X3Clip
-from pano_helpers import LRV, fuse_rotations, orientation, qmul, quat, x3clip
+from pano_helpers import LRV, SKY_MOUNT, fuse_rotations, qmul, quat, turning, x3clip
 
 FPS = 30.0
 
@@ -95,16 +95,6 @@ class TestResolveSource:
 
 
 # --------------------------------------------------------------------------- command_lines
-# Sky lens up, skis (FORWARD_V) along world +z: camera -> world = Rp(-90).
-MOUNT = quat((1, 0, 0), -90)
-
-
-def _orient(n: int, heading_deg: np.ndarray | None = None) -> G.Orientation:
-    """Camera on the usual mount, turning about the vertical by ``heading_deg``."""
-    hd = np.zeros(n) if heading_deg is None else heading_deg
-    return orientation(n, FPS, np.array([qmul(quat((0, 1, 0), h), MOUNT) for h in hd]))
-
-
 def _path(*keys: tuple[float, float, float]) -> dict:
     return {"keys": [{"t": t, "yaw": y, "pitch": p, "fov": 90.0} for t, y, p in keys]}
 
@@ -134,7 +124,7 @@ class TestCommandLines:
 
     def test_known_case_forward_ray(self, clip):
         """Sky lens straight up: R_VW = Rp(90), so the view centre samples C @ FORWARD_V."""
-        orient = _orient(300)
+        orient = turning(300, FPS)
         assert np.allclose(render.stabilised_r_vw(orient, np.arange(30, 45), 0.7, 0.5), G.rot_p(90))
         path = _path((0.0, 0.0, 0.0), (10.0, 0.0, 0.0))
         _, init = render.command_lines(
@@ -144,7 +134,7 @@ class TestCommandLines:
         assert np.allclose(centre, G.SDK_EQUIRECT_FROM_CAMERA @ G.FORWARD_V, atol=1e-4)
 
     def test_equirect_is_constant_rotation_of_dfisheye(self, clip):
-        orient = _orient(300, np.linspace(0, 40, 300) ** 1.5 / 40**0.5)  # turning, speeding up
+        orient = turning(300, FPS, np.linspace(0, 40, 300) ** 1.5 / 40**0.5)  # turning, speeding up
         path = _path((0.0, -30.0, -5.0), (10.0, 60.0, 10.0))
         c = G.SDK_EQUIRECT_FROM_CAMERA
         fish_lines, fish_init = render.command_lines(
@@ -185,8 +175,8 @@ class TestCommandLines:
         display up vertical, 0 follows the camera's (smoothed) roll."""
         n = 240
         roll = 10 * np.sin(2 * np.pi * np.arange(n) / FPS / 4)
-        q = np.array([qmul(quat((0, 0, 1), r), MOUNT) for r in roll])
-        orient = dataclasses.replace(_orient(n), q=q)
+        q = np.array([qmul(quat((0, 0, 1), r), SKY_MOUNT) for r in roll])
+        orient = dataclasses.replace(turning(n, FPS), q=q)
         idx = np.arange(n)
 
         def display_tilt(strength: float) -> np.ndarray:
@@ -201,8 +191,8 @@ class TestCommandLines:
     @staticmethod
     def _rolled(roll_deg: np.ndarray) -> G.Orientation:
         """Camera on the usual mount, rolled by ``roll_deg`` about the travel direction."""
-        q = np.array([qmul(quat((0, 0, 1), r), MOUNT) for r in roll_deg])
-        return dataclasses.replace(_orient(len(roll_deg)), q=q)
+        q = np.array([qmul(quat((0, 0, 1), r), SKY_MOUNT) for r in roll_deg])
+        return dataclasses.replace(turning(len(roll_deg), FPS), q=q)
 
     @staticmethod
     def _display_tilt(orient: G.Orientation, idx: np.ndarray, *args: float) -> np.ndarray:
@@ -502,7 +492,7 @@ class TestQuatTrack:
         roll = 20 + 1.5 * np.sin(2 * np.pi * 7 * t)  # lean + shake
         q = np.array(
             [
-                qmul(qmul(quat((0, 1, 0), p), quat((0, 0, 1), r)), MOUNT)
+                qmul(qmul(quat((0, 1, 0), p), quat((0, 0, 1), r)), SKY_MOUNT)
                 for p, r in zip(psi, roll, strict=True)
             ]
         )

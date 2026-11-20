@@ -20,9 +20,9 @@ from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
 from pano_fakes import FAKE_TORCH, Models, Sampler, frames
-from pano_helpers import write_orient, write_views
+from pano_helpers import SKY_UP, orientation, write_orient, write_views
 
-HELMET_UP = [0.0, 0.0, -1.0]  # sky lens up
+HELMET_UP = SKY_UP
 UPRIGHT_UP = [0.0, -1.0, 0.0]  # lenses horizontal, camera -y up (the cruise footage)
 
 
@@ -30,16 +30,6 @@ def _deg(a: np.ndarray, b: np.ndarray) -> float:
     a, b = np.asarray(a, float), np.asarray(b, float)
     return math.degrees(
         math.acos(float(np.clip(a @ b / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))
-    )
-
-
-def _orient(up: list[float], n: int = 600, fps: float = 30.0) -> G.Orientation:
-    return G.Orientation(
-        t=np.arange(n) / fps,
-        up=np.tile(np.asarray(up, float), (n, 1)),
-        heading=np.zeros(n),
-        heading_smooth=np.zeros(n),
-        meta={"fps": fps},
     )
 
 
@@ -58,7 +48,7 @@ def test_helmet_keeps_the_measured_mount() -> None:
     for up in (HELMET_UP, [0.3, 0.2, -0.93], [-1.0, 0.0, 0.0]):
         assert G.wearer_direction(np.tile(up, (5, 1))) is G.WEARER_V
     assert G.wearer_direction(np.zeros((0, 3))) is G.WEARER_V
-    assert _orient(HELMET_UP).wearer is G.WEARER_V
+    assert orientation(up=HELMET_UP).wearer is G.WEARER_V
 
 
 def test_upright_wearer_is_below_the_camera_behind_the_travel_lens() -> None:
@@ -66,7 +56,7 @@ def test_upright_wearer_is_below_the_camera_behind_the_travel_lens() -> None:
     a = math.radians(G.UPRIGHT_WEARER_TILT_DEG)
     assert np.allclose(w, [0.0, math.cos(a), -math.sin(a)])
     assert np.linalg.norm(w) == pytest.approx(1.0)
-    assert _orient(UPRIGHT_UP).wearer.tobytes() == w.tobytes()
+    assert orientation(up=UPRIGHT_UP).wearer.tobytes() == w.tobytes()
 
 
 def test_upright_wearer_follows_the_median_down_of_a_tipped_camera() -> None:
@@ -92,7 +82,7 @@ def test_cached_wearer_direction(home, tmp_path) -> None:
     src.write_bytes(b"x")
     assert G.cached_wearer_direction(src) is None
     write_orient(src, UPRIGHT_UP)
-    assert np.allclose(G.cached_wearer_direction(src), _orient(UPRIGHT_UP).wearer)
+    assert np.allclose(G.cached_wearer_direction(src), orientation(up=UPRIGHT_UP).wearer)
     write_orient(src, HELMET_UP)
     assert G.cached_wearer_direction(src) is G.WEARER_V
 
@@ -110,7 +100,7 @@ def test_wearer_axis_of_an_upright_clip_comes_from_its_track(home, tmp_path) -> 
     write_orient(src, UPRIGHT_UP)
     VW._AXES.clear()
     axis = VW.wearer_axis(_pv(src, UPRIGHT_META, _boxes([0.52, 0.75, -0.41])))
-    assert np.allclose(axis, _orient(UPRIGHT_UP).wearer)
+    assert np.allclose(axis, orientation(up=UPRIGHT_UP).wearer)
 
 
 def test_the_memoised_axis_follows_a_track_rewritten_by_another_process(home, tmp_path) -> None:
@@ -123,13 +113,13 @@ def test_the_memoised_axis_follows_a_track_rewritten_by_another_process(home, tm
     write_orient(src, UPRIGHT_UP)
     VW._AXES.clear()
     pv = _pv(src, UPRIGHT_META, _boxes([0.52, 0.75, -0.41]))
-    assert np.allclose(VW.wearer_axis(pv), _orient(UPRIGHT_UP).wearer)
+    assert np.allclose(VW.wearer_axis(pv), orientation(up=UPRIGHT_UP).wearer)
     tilted = [0.0, -0.8, 0.6]
     write_orient(src, tilted)
     path = G._orient_path(src)
     st = path.stat()
     os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))  # a later write
-    assert np.allclose(VW.wearer_axis(pv), _orient(tilted).wearer)
+    assert np.allclose(VW.wearer_axis(pv), orientation(up=tilted).wearer)
 
 
 def test_wearer_axis_of_a_helmet_clip_is_unchanged(home, tmp_path) -> None:
@@ -238,7 +228,7 @@ def pano(home, tmp_path: Path, monkeypatch):
 def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) -> None:
     """The first selfie pass of an upright clip already looks below the camera, so the
     box median cannot trigger a second (selfie-only) pass."""
-    o = _orient(UPRIGHT_UP)
+    o = orientation(up=UPRIGHT_UP)
     monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
     write_orient(pano.lrv, UPRIGHT_UP)  # what G.orientation caches in a real run
@@ -259,7 +249,7 @@ def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) ->
 
 
 def test_helmet_run_layer_starts_at_the_measured_mount(pano, monkeypatch) -> None:
-    o = _orient(HELMET_UP)
+    o = orientation(up=HELMET_UP)
     monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
     seen = []
@@ -279,7 +269,7 @@ def test_helmet_run_layer_starts_at_the_measured_mount(pano, monkeypatch) -> Non
 def test_director_without_views_places_the_wearer_from_the_track(tmp_path, monkeypatch, up) -> None:
     """No view layer: the wearer penalty uses the clip's wearer direction (the helmet
     mount's WEARER_V on a helmet clip, as before)."""
-    o = _orient(up)
+    o = orientation(up=up)
     got = []
 
     def wiv(orient, axis, *a, **k):

@@ -166,7 +166,7 @@ def test_failed_export_leaves_no_new_empty_clips_folder(monkeypatch, home, preex
     monkeypatch.setattr(clips, "probe", media_info)
     monkeypatch.setattr(clips, "export_clip_checked", second_clip_fails)
     with pytest.raises(FFmpegError):
-        clips.export_clips(project, segments=seg)
+        clips.export_clips(project, selection=clips.Selection(segments=seg))
     assert leftovers() == []
     assert out.is_dir() is preexisting
     # #109 phase 6: the finished first clip is kept for the next run, hidden next to clips
@@ -183,7 +183,7 @@ def test_failed_export_leaves_no_new_empty_clips_folder(monkeypatch, home, preex
 
     monkeypatch.setattr(clips, "probe", broken_probe)
     with pytest.raises(FFmpegError):
-        clips.export_clips(project, segments=seg)
+        clips.export_clips(project, selection=clips.Selection(segments=seg))
     assert out.is_dir() is preexisting
 
 
@@ -225,7 +225,7 @@ def test_clips_force_retries_a_lock_that_clears(monkeypatch, home):
         return real_replace(self, target)
 
     monkeypatch.setattr(Path, "replace", replace)
-    clips.export_clips(project, segments=seg, force=True)
+    clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
     assert attempts and old.read_bytes() == b"new"
 
 

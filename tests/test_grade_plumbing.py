@@ -24,6 +24,7 @@ from cutpoint.styles import get_style
 from cutpoint.tail import TailResult, TailSettings
 
 FMT = OutputFormat(1920, 1080, 30)
+NO_FADE = clips.ExportOptions(audio_fade=0.0)
 
 
 @dataclass(frozen=True)
@@ -90,9 +91,8 @@ def test_a_stand_in_grade_takes_the_place_of_a_lut_in_the_filter_and_the_manifes
     graph = calls[0][calls[0].index("-filter_complex") + 1]
     assert "eq=saturation=1.2" in graph and "lut3d" not in graph
 
-    entry = _entry(
-        plan(1, tmp_path), RenderResult(tmp_path / "001_c.mp4", 11.0), 0.25, grade=Warm()
-    )
+    graded = replace(plan(1, tmp_path), grade=Warm())
+    entry = _entry(graded, RenderResult(tmp_path / "001_c.mp4", 11.0), 0.25)
     assert entry["color"] == {"name": "warm"} and "lut" not in entry
 
 
@@ -116,11 +116,8 @@ def seen(monkeypatch) -> dict[str, Any]:
 @pytest.mark.parametrize("workers", [1, 2])
 def test_render_clips_gives_each_clip_its_own_grade(seen, tmp_path, workers):
     g = Warm()
-    plans = [plan(i, tmp_path) for i in range(3)]
-    clips.render_clips(
-        plans, tmp_path, fmt=FMT, vertical=False, audio_fade=0.0,
-        grades=[g, None, g], workers=workers,
-    )  # fmt: skip
+    plans = [replace(plan(i, tmp_path), grade=k) for i, k in enumerate([g, None, g])]
+    clips.render_clips(plans, tmp_path, fmt=FMT, options=NO_FADE, workers=workers)
     assert seen == {"000_c.mp4": g, "001_c.mp4": None, "002_c.mp4": g}
 
 
@@ -134,10 +131,8 @@ def test_render_clips_hands_a_360_clip_its_grade(seen, tmp_path):
             return None, {}
 
     g = Warm()
-    clips.render_clips(
-        [plan(0, tmp_path, pano=True)], tmp_path, fmt=FMT, vertical=False, audio_fade=0.0,
-        pano=Pano(), grades=[g],
-    )  # fmt: skip
+    plans = [replace(plan(0, tmp_path, pano=True), grade=g)]
+    clips.render_clips(plans, tmp_path, fmt=FMT, options=NO_FADE, pano=Pano())
     assert got["grade"] is g and "lut" not in got
 
 
@@ -166,21 +161,20 @@ def test_render_clips_hands_a_360_clip_its_picked_moment(seen, tmp_path):
         padding=Padding(start=1.0, end=2.0), pano=Pano(),
     )  # fmt: skip
     assert plans[0].pano
-    clips.render_clips(
-        plans, tmp_path, fmt=FMT, vertical=False, audio_fade=0.0, pano=Pano(), grades=[None],
-    )  # fmt: skip
+    clips.render_clips(plans, tmp_path, fmt=FMT, options=NO_FADE, pano=Pano())
     assert got["selected"] == (m["start"], m["end"])
     assert (got["start"], got["end"]) == (3.0, 12.5)  # 1 s lead-in; 1.5 s tail + 2 s pad
 
 
-def _write_manifest(tmp_path: Path, **kw) -> list[dict]:
-    plans = [plan(0, tmp_path), plan(1, tmp_path)]
+def _write_manifest(tmp_path: Path, grades=(None, None)) -> list[dict]:
+    plans = [replace(plan(i, tmp_path), grade=g) for i, g in enumerate(grades)]
     results = [RenderResult(tmp_path / p.name, p.end) for p in plans]
+    edges = clips.EdgeSettings(
+        TailSettings(enabled=False), EventTailSettings(enabled=False), SpeechSettings(enabled=False)
+    )
     clips.write_manifest(
-        tmp_path, tmp_path, plans, results, order="segments", fmt=FMT, vertical=False,
-        style=get_style("gaming"), tail=TailSettings(enabled=False),
-        event_settings=EventTailSettings(enabled=False), padding=None,
-        speech=SpeechSettings(enabled=False), audio_fade=0.25, crop=None, **kw,
+        tmp_path, tmp_path, plans, results, order="segments", style=get_style("gaming"), fmt=FMT,
+        options=clips.ExportOptions(), edges=edges,
     )  # fmt: skip
     return json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))["clips"]
 
@@ -225,7 +219,12 @@ def _run(home, monkeypatch, *, force=True, lut=None, old: dict | str | None = No
 
     monkeypatch.setattr(clips, "export_clip_checked", export)
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)
-    return clips.export_clips(project, segments=seg, force=force, lut=lut)
+    return clips.export_clips(
+        project,
+        selection=clips.Selection(segments=seg),
+        options=clips.ExportOptions(lut=lut),
+        force=force,
+    )
 
 
 GRADED = {"lut": "/l/a.cube", "lut_strength": 1.0}

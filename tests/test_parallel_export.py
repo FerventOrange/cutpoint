@@ -129,8 +129,9 @@ def render(plans, tmp_path, workers):
     """Render into ``tmp_path / "out"`` (the stand-in children keep their flag in tmp_path)."""
     (tmp_path / "out").mkdir(exist_ok=True)
     return clips.render_clips(
-        plans, tmp_path / "out", fmt=FMT, vertical=False, audio_fade=0.0, workers=workers
-    )
+        plans, tmp_path / "out", fmt=FMT, options=clips.ExportOptions(audio_fade=0.0),
+        workers=workers,
+    )  # fmt: skip
 
 
 def fake_export(monkeypatch, behaviors):
@@ -166,8 +167,9 @@ def test_results_come_back_in_plan_order_when_jobs_finish_out_of_order(
     fake_export(monkeypatch, {"000_c.mp4": first, "002_c.mp4": last})
     results = render([plan(0), plan(1), plan(2)], tmp_path, workers=3)
     assert [r.out.name for r in results] == ["000_c.mp4", "001_c.mp4", "002_c.mp4"]
-    logged = [m for m in (r.getMessage() for r in caplog.records) if "<- src.mp4" in m]
-    assert [m.split()[0] for m in logged] == ["000_c.mp4", "001_c.mp4", "002_c.mp4"]
+    msgs = [r.getMessage() for r in caplog.records if r.name == clips.logger.name]
+    logged = [m.split()[0] for m in msgs if "src.mp4" in m]
+    assert logged == ["000_c.mp4", "001_c.mp4", "002_c.mp4"]  # one line per clip, in order
 
 
 @pytest.mark.slow
@@ -731,8 +733,8 @@ def test_a_360_plan_is_never_pooled(monkeypatch, tmp_path):
 
     fake_export(monkeypatch, {})
     results = clips.render_clips(
-        [plan(0), plan(1, pano=True)], tmp_path, fmt=FMT, vertical=False, audio_fade=0.0,
-        pano=Pano(), workers=2,
+        [plan(0), plan(1, pano=True)], tmp_path, fmt=FMT,
+        options=clips.ExportOptions(audio_fade=0.0), pano=Pano(), workers=2,
     )  # fmt: skip
     assert [r.pano for r in results] == [None, {"pano": True}]
     assert threads == [threading.current_thread()]
@@ -780,7 +782,7 @@ def test_manifest_and_names_are_the_same_for_one_and_two_workers(home, monkeypat
         for e in done:
             e.clear()
         live.update(now=0, max=0)
-        out = clips.export_clips(project, segments=seg, force=True)
+        out = clips.export_clips(project, selection=clips.Selection(segments=seg), force=True)
         files = sorted(p.name for p in out.iterdir())
         data = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
         return files, data["clips"], dict(live)
@@ -813,7 +815,7 @@ def test_failed_parallel_export_leaves_no_clips_folder_or_partials(home, monkeyp
 
     monkeypatch.setattr(clips, "export_clip_checked", export)
     with pytest.raises(FFmpegError):
-        clips.export_clips(project, segments=seg)
+        clips.export_clips(project, selection=clips.Selection(segments=seg))
     assert not (project / "clips").exists()
     # #109 phase 6: only the finished clips are kept, hidden, for the next run
     kept = project / ".clips.cutpoint-resume"
@@ -926,8 +928,9 @@ def test_session_limit_in_the_pool_drops_to_one_gpu_encode_and_retries_on_the_gp
     assert [running for *_, running in after] == [0, 0, 0]  # then one encode at a time
     assert not ffmpeg_utils._GPU_ENCODE_FAILED
     assert not ffmpeg_utils._GPU_ENCODE_SUSPECT
-    infos = [r.getMessage() for r in caplog.records if "no free encode session" in r.getMessage()]
-    assert infos == ["NVENC has no free encode session; exporting one clip at a time"]
+    # the drop to one GPU encode is said once, as INFO, not as a WARNING
+    said = [r.levelname for r in caplog.records if r.name == ffmpeg_utils.logger.name]
+    assert said == ["INFO"]
     assert not [r for r in caplog.records if r.levelname == "WARNING"]
 
 

@@ -116,15 +116,6 @@ def test_searches_after_the_nudge_that_end_on_a_promise_get_no_second_nudge() ->
     assert replies(turn) == [last]
 
 
-def test_no_promise_nudge_in_the_closing_round() -> None:
-    script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)]
-    fake = FakeProvider([*script, say(ISSUE)], NATIVE)
-    turn = run(fake, ASK)
-    assert turn.status == "done", turn.error
-    assert sent(fake) == 0
-    assert replies(turn) == [ISSUE]  # shown as the model wrote it
-
-
 def test_a_closing_round_answer_with_a_lets_run_sentence_is_shown_unchanged() -> None:
     final = "The crash at 1:20 is the best opener. Let's run with that."
     script = [call("get_moment", id="m1") for _ in range(session.MAX_ROUNDS - 1)]

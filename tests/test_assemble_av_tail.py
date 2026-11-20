@@ -143,7 +143,9 @@ def test_the_joined_audio_and_container_end_with_the_video(
     monkeypatch.setattr(sources, "source_words", lambda _src, _lang=None: None)  # no final.srt
     clips = _make_clips(exported, tmp_path, audio_extra)
     caplog.set_level(logging.DEBUG)
-    out = assemble.assemble(clips, transition=transition, fade_dur=0.25, loudnorm=loudnorm)
+    out = assemble.assemble(
+        clips, join=assemble.JoinOptions(transition=transition, fade_dur=0.25, loudnorm=loudnorm)
+    )
     video, audio, container, first_pts = _durations(out)
     assert abs(audio - video) <= 0.022
     assert abs(container - video) <= 0.022

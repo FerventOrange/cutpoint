@@ -18,7 +18,7 @@ from cutpoint import cache, cli, folders, memguard, procs, runstate
 from cutpoint.errors import FolderBusyError
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.utils import command_line
-from resume_helpers import _Resp, fake_events, read_progress
+from resume_helpers import _Resp, fake_events, make_project, read_progress
 
 LOCK = ".analysis.run.cutpoint-lock"
 
@@ -27,11 +27,7 @@ LOCK = ".analysis.run.cutpoint-lock"
 def project(home: Path, tmp_path: Path, monkeypatch) -> Path:
     """A project of ``videos/a.mp4``, run from ``tmp_path`` (the recorded cwd)."""
     monkeypatch.chdir(tmp_path)
-    video = write(tmp_path / "videos" / "a.mp4")
-    p = home / "projects" / "p"
-    p.mkdir(parents=True)
-    cache.save_json(p / "highlights.json", {"sources": [{"path": str(video)}]})
-    return p
+    return make_project(home, str(write(tmp_path / "videos" / "a.mp4")))
 
 
 def _record(project: Path, **over: Any) -> dict:
