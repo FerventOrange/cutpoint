@@ -196,6 +196,7 @@ def test_views_cache_follows_the_upright_wearer(home, tmp_path, up, meta, valid)
     write_orient(src, up)
     write_views(src, {"source": str(src)} | meta)
     assert (VW.load_views(src) is not None) is valid
+    assert VW.views_current(src) is valid
 
 
 def test_a_stale_upright_selfie_is_logged_once(home, tmp_path, caplog) -> None:
@@ -307,7 +308,7 @@ def _plan_twice(
     monkeypatch.setattr(P, "clip_for", lambda clips, src: clip)
     monkeypatch.setattr(PC, "_selected_segments", lambda project, a: [seg])
     monkeypatch.setattr(G, "cached_forward_axis", lambda src: axis)
-    monkeypatch.setattr(VW, "load_views", lambda src: SimpleNamespace() if views else None)
+    monkeypatch.setattr(VW, "views_current", lambda src: views)
     planned: list[str] = []
 
     def compute(clip, start, end, *, vertical, kind, **kw):

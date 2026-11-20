@@ -98,7 +98,7 @@ def test_unload_frees_the_model_only_after_a_check(
     monkeypatch.setattr(
         requests, "post", lambda url, json, **kw: posts.append((url, json)) or Resp()
     )
-    with caplog.at_level(logging.INFO, logger=V.__name__):
+    with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
         chk.unload()
     assert posts == []  # nothing asked yet: nothing to unload
     assert any("left as it was (no request this run)" in m for m in caplog.messages)
@@ -126,7 +126,7 @@ def test_unload_frees_only_a_model_this_run_loaded(
 
     monkeypatch.setattr(requests, "post", post)
     chk.ask(b"jpeg")
-    with caplog.at_level(logging.INFO, logger=V.__name__):
+    with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
         chk.unload()
     unloaded = posts[-1].endswith("/api/generate")
     assert unloaded is not preloaded

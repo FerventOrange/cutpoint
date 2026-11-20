@@ -139,6 +139,7 @@ def test_views_cache_follows_the_forward_axis(home, tmp_path, up, meta, valid) -
         write_orient(src, up)
     write_views(src, {"source": str(src)} | meta)
     assert (VW.load_views(src) is not None) is valid
+    assert VW.views_current(src) is valid
 
 
 def test_a_views_meta_written_for_other_arrays_is_not_used(home, tmp_path) -> None:
@@ -156,6 +157,51 @@ def test_a_views_meta_written_for_other_arrays_is_not_used(home, tmp_path) -> No
         meta = {"source": str(src)} | ({"pair": meta_pair} if meta_pair else {})
         cache.save_json(path.with_suffix(".json"), meta)
         assert (VW.load_views(src) is not None) is ok
+        assert VW.views_current(src) is ok
+
+
+def test_views_current_agrees_with_load_views_without_reading_the_arrays(
+    home, tmp_path, monkeypatch
+) -> None:
+    """A728: the presence check answers as load_views does on missing, damaged and
+    incomplete files, from the archive's member list and pair token alone."""
+    src = tmp_path / "clip.lrv"
+    src.write_bytes(b"x")
+    path = VW.cache_path(src)
+    z = np.zeros(0)
+    d = np.zeros((0, len(VW.DET_COLS)), np.float32)
+    good = {"t": z, "emb": z, "det": d, "box_emb": z, "box_idx": z, "pair": np.array("p1")}
+
+    def damaged(case: str) -> None:
+        path.unlink(missing_ok=True)
+        if case == "missing":
+            return
+        cache.save_npz(path, **good)
+        if case == "truncated":
+            path.write_bytes(path.read_bytes()[:40])
+        elif case == "garbage":
+            path.write_bytes(b"not an archive at all")
+        elif case == "no emb":
+            cache.save_npz(path, **{k: v for k, v in good.items() if k != "emb"})
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cache.save_json(path.with_suffix(".json"), {"source": str(src), "pair": "p1"})
+    cases = {"missing": False, "truncated": False, "garbage": False, "no emb": False, "ok": True}
+    for case, want in cases.items():
+        damaged(case)
+        assert (VW.load_views(src) is not None) is want, case
+        assert VW.views_current(src) is want, case
+    read: list[str] = []
+    real = np.lib.npyio.NpzFile.__getitem__
+
+    def spy(self, key):
+        read.append(key)
+        return real(self, key)
+
+    monkeypatch.setattr(np.lib.npyio.NpzFile, "__getitem__", spy)
+    monkeypatch.setattr(cache, "load_npz", lambda p: pytest.fail("arrays decompressed"))
+    assert VW.views_current(src) is True
+    assert read == ["pair"]  # only the token, never the embeddings
 
 
 def test_a_stale_views_cache_is_logged_once(home, tmp_path, caplog) -> None:

@@ -187,28 +187,9 @@ class VLChecker:
         return True
 
     def unload(self) -> None:
-        """Free the model's memory after the last check (:meth:`VisionRater.unload`), only if
-        this run loaded it: an Ollama model this run sent no request (every frame cached) or
-        that was loaded before its first request (the AI Chat, another job) stays loaded (#888).
-        A hosted or other Vision provider goes through the rater as before."""
-        if self.rater.via:
-            self.rater.unload()
-            return
-        if not self.rater.used:
-            logger.info("Vision model %s left as it was (no request this run)", self.model)
-            return
-        if self.preloaded:
-            self.rater.used = False
-            logger.info("Vision model %s left loaded (not loaded by this run)", self.model)
-            return
-        self.rater.unload()
-        if not self.rater.used:  # cleared once Ollama freed it
-            logger.info("Unloaded vision model %s", self.model)
-        else:
-            logger.info(
-                "Vision model %s could not be unloaded; Ollama frees it after its keep_alive",
-                self.model,
-            )
+        """Free the model's memory after the last check, only if this run loaded it
+        (:meth:`VisionRater.unload_own`, #888)."""
+        self.rater.unload_own()
 
     @property
     def preloaded(self) -> bool | None:

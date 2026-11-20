@@ -18,6 +18,25 @@ def conv_same(x: np.ndarray, k: np.ndarray) -> np.ndarray:
     return full[start : start + len(x)]
 
 
+def gauss_smooth(
+    x: np.ndarray, sigma: float, min_sigma: float | None = None, min_len: int = 0
+) -> np.ndarray:
+    """Gaussian low-pass along axis 0 (``sigma`` in samples, +-3 sigma kernel, edge-padded).
+
+    A copy of ``x`` comes back unsmoothed when ``sigma <= min_sigma`` (None: no such
+    floor) or ``x`` has fewer than ``min_len`` samples.
+    """
+    if (min_sigma is not None and sigma <= min_sigma) or len(x) < min_len:
+        return x.copy()
+    r = int(3 * sigma)
+    k = np.exp(-0.5 * (np.arange(-r, r + 1) / sigma) ** 2)
+    k /= k.sum()
+    if x.ndim == 1:
+        return np.convolve(np.pad(x, r, mode="edge"), k, mode="valid")
+    xp = np.pad(x, [(r, r)] + [(0, 0)] * (x.ndim - 1), mode="edge")
+    return np.apply_along_axis(lambda c: np.convolve(c, k, mode="valid"), 0, xp)
+
+
 def mask_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     """``[start, end)`` index pairs of True runs."""
     m = np.concatenate([[False], mask.astype(bool), [False]])
