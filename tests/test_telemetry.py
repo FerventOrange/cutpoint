@@ -510,3 +510,96 @@ def test_rolling_mean_and_std_skip_nans():
     assert std.tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0, 1.0])
     assert np.isnan(telemetry._rolling(np.full(4, np.nan), 3)).all()
     assert telemetry._rolling(x, 0).tolist()[:2] == [1.0, 3.0]  # k < 1: one bin
+
+
+# ------------------------------------------------------------------ hold, median, cache
+NAN = np.nan
+
+
+@pytest.mark.parametrize(
+    ("x", "hold", "want"),
+    [
+        ([1, NAN, NAN, NAN, 5], 2, [1, 1, 1, NAN, 5]),  # held for 2 bins, then the gap shows
+        ([1, NAN, 3], 0, [1, NAN, 3]),  # no hold: unchanged
+        ([NAN, NAN, 2, NAN], 1, [NAN, NAN, 2, 2]),  # nothing to hold before the first value
+        ([1, NAN, NAN, 4, NAN, NAN, NAN], 2, [1, 1, 1, 4, 4, 4, NAN]),  # age resets at a value
+        ([], 3, []),
+    ],
+)
+def test_ffill_hold_repeats_a_value_for_at_most_hold_bins(x, hold, want):
+    # a hold limit off by one, or an age that never resets, changes a bin
+    src = np.array(x, float)
+    got = telemetry._ffill_hold(src, hold)
+    np.testing.assert_array_equal(got, np.array(want, float))
+    np.testing.assert_array_equal(src, np.array(x, float))  # the input is not modified
+
+
+@pytest.mark.parametrize(
+    ("x", "k", "want"),
+    [
+        ([1, 1, 9, 1, 1], 3, [1, 1, 1, 1, 1]),  # a spike is removed
+        ([1, 2, 3, 4, 5], 3, [1, 2, 3, 4, 5]),  # the edges are padded with the edge value
+        ([1, 2, 3, 4], 2, [1, 1.5, 2.5, 3.5]),  # even window: pad k//2 before, the rest after
+        ([1, NAN, 3, 4, 5], 3, [1, 2, 3.5, 4, 5]),  # NaN is ignored, not propagated
+        ([NAN, NAN, NAN], 3, [NAN, NAN, NAN]),  # an all-NaN window stays NaN
+    ],
+)
+def test_rolling_median_is_centered_edge_padded_and_nan_aware(x, k, want):
+    got = telemetry._rolling_median(np.array(x, float), k)
+    np.testing.assert_allclose(got, np.array(want, float), equal_nan=True)
+
+
+@pytest.mark.parametrize(("x", "k"), [([1, 5, 2], 1), ([1, 5, 2], 0), ([1, 5], 3), ([], 3)])
+def test_rolling_median_returns_a_copy_when_the_window_does_not_fit(x, k):
+    src = np.array(x, float)
+    got = telemetry._rolling_median(src, k)
+    np.testing.assert_array_equal(got, src)
+    assert got is not src
+
+
+def test_extract_reads_a_written_track_back_from_the_cache(home, tmp_path, monkeypatch):
+    src = tmp_path / "ride.mp4"
+    src.write_bytes(b"x")
+    monkeypatch.setattr(telemetry, "imu_read_path", lambda s: (src, None, src, False))
+    monkeypatch.setattr("cutpoint.crash.cache_imu_grids", lambda *a: None)
+    grid = {
+        "speed_kmh": np.array([1.0, 2.5, NAN, 4.0]),
+        "gps_ok": np.array([1.0, 1.0, 0.0, 1.0]),
+        "lift_mask": np.array([0.0, 1.0, 1.0, 0.0]),
+        "still_mask": np.zeros(4),
+    }
+    events = [{"type": "airtime", "t": 1.5, "end": 2.0, "confidence": "high"}]
+    calls: list[Path] = []
+
+    def parse(path, *a):
+        calls.append(path)
+        return "parsed"
+
+    def compute(path, duration, params, parsed):
+        assert parsed == "parsed"
+        return Telemetry(
+            source="", duration=duration, grid=dict(grid), events=events, meta={"camera": "X"}
+        )
+
+    monkeypatch.setattr(telemetry, "parse_imu", parse)
+    monkeypatch.setattr(telemetry, "_compute", compute)
+    first = telemetry.extract(src, 0.4)
+    assert first is not None and len(calls) == 1
+
+    # second call: no parse, no compute; the same track from the files
+    monkeypatch.setattr(telemetry, "parse_imu", lambda *a: pytest.fail("parsed again"))
+    monkeypatch.setattr(telemetry, "_compute", lambda *a: pytest.fail("computed again"))
+    again = telemetry.extract(src, 0.4)
+    assert again is not None
+    assert again.source == str(src) and again.duration == 0.4
+    assert again.events == events and again.meta["camera"] == "X"
+    assert set(again.grid) == set(grid)
+    for k, v in grid.items():
+        np.testing.assert_array_equal(again.grid[k], v.astype(np.float32))  # NaN kept
+    assert again.n == 4
+
+    # other thresholds are another cache entry: parsed again
+    seen = []
+    monkeypatch.setattr(telemetry, "parse_imu", lambda *a: seen.append(1))
+    assert telemetry.extract(src, 0.4, TelemetryParams(max_dop=1.0)) is None
+    assert seen == [1]

@@ -1256,3 +1256,99 @@ def test_write_sheets_captions_the_top_candidates_and_skips_a_failed_source(
     # sheets=0 keeps the old files and writes none
     assert crash._write_sheets(cands, out_dir, 0, {}) == []
     assert (out_dir / "c001_a_10.jpg").exists()
+
+
+# ------------------------------------------------------- words_feature, _chain, _normal_view
+def _hits_inputs(hits, kf=None, kf_t=None) -> crash.SourceInputs:
+    visual = None if kf_t is None else SimpleNamespace(t=np.asarray(kf_t, float))
+    return crash.SourceInputs(
+        path=Path("a.mp4"),
+        duration=600.0,
+        hits=hits,
+        visual=visual,
+        kf_crash=None if kf is None else np.asarray(kf, float),
+    )
+
+
+def test_words_feature_decays_after_the_event_and_saturates():
+    # a mutated decay constant, weight or score formula changes these numbers
+    at_end = crash.words_feature(_hits_inputs([(20.0, 1.0, "ouch")]), 10.0, 20.0)
+    assert at_end["sum"] == 1.0 and at_end["score"] == pytest.approx(1 - np.exp(-1), abs=1e-3)
+    later = crash.words_feature(_hits_inputs([(110.0, 1.0, "ouch")]), 10.0, 20.0)
+    assert later["sum"] == pytest.approx(np.exp(-1), abs=0.01)  # 90 s after: 1/e
+    during = crash.words_feature(_hits_inputs([(15.0, 2.0, "ouch")]), 10.0, 20.0)
+    assert during["sum"] == 2.0  # inside the event: no decay, weight counts
+    two = crash.words_feature(_hits_inputs([(15.0, 1.0, "a"), (16.0, 1.0, "b")]), 10.0, 20.0)
+    assert two["sum"] == 2.0 and two["score"] > at_end["score"]
+
+
+@pytest.mark.parametrize(
+    ("t", "counted"),
+    [
+        (8.99, False),  # more than 1 s before the event
+        (9.0, True),  # exactly 1 s before: in
+        (260.0, True),  # exactly horizon after the end: in
+        (260.01, False),
+    ],
+)
+def test_words_feature_window_edges(t, counted):
+    got = crash.words_feature(_hits_inputs([(t, 1.0, "x")]), 10.0, 20.0)
+    assert bool(got["phrases"]) is counted and (got["sum"] > 0) is counted
+
+
+def test_words_feature_empty_horizon_and_phrase_cap():
+    empty = crash.words_feature(_hits_inputs([]), 10.0, 20.0)
+    assert empty == {"score": 0.0, "sum": 0.0, "phrases": []}
+    hits = [(20.0, 0.5, "late")]
+    assert crash.words_feature(_hits_inputs(hits), 0.0, 5.0, horizon_s=10.0)["phrases"] == []
+    many = [(20.0 + i * 0.01, 0.1, f"p{i}") for i in range(15)]
+    got = crash.words_feature(_hits_inputs(many), 10.0, 20.0)
+    assert [p for _, p in got["phrases"]] == [f"p{i}" for i in range(12)]  # first 12, in order
+    assert got["phrases"][0][0] == 20.0
+
+
+def _w(*spans):
+    return [{"start": a, "end": b} for a, b in spans]
+
+
+@pytest.mark.parametrize(
+    ("words", "i", "want"),
+    [
+        (_w((0, 1), (1.5, 2), (2.5, 3)), 1, (0, 2)),  # gaps of 0.5: one utterance
+        (_w((0, 1), (1.8, 2), (2.5, 3)), 2, (1, 2)),  # a gap of exactly 0.8 breaks the chain
+        (_w((0, 1), (1.79, 2), (2.5, 3)), 0, (0, 2)),  # just under 0.8 holds
+        (_w((0, 1), (5, 6), (10, 11)), 1, (1, 1)),  # a lone word
+        (_w((0, 1)), 0, (0, 0)),  # a single-word list
+        (_w((0, 1), (1.2, 2), (4, 5)), 0, (0, 1)),  # the start of the list is a bound
+    ],
+)
+def test_chain_gives_the_first_and_last_word_of_an_utterance(words, i, want):
+    assert crash._chain(words, i) == want
+
+
+def test_chain_gap_is_a_parameter():
+    words = _w((0, 1), (2.0, 3))
+    assert crash._chain(words, 0) == (0, 0)
+    assert crash._chain(words, 0, gap=1.5) == (0, 1)
+
+
+def test_normal_view_reads_the_median_of_the_keyframes_in_the_window():
+    t = [0, 1, 2, 3, 4]
+    kf = [0.9, 0.9, 0.1, 0.1, 0.1]
+    # no keyframe layer: nothing says it is not normal
+    assert crash._normal_view(_hits_inputs([]), 0.0, 4.0) is True
+    inp = _hits_inputs([], kf=kf, kf_t=t)
+    assert crash._normal_view(inp, 0.0, 1.0) is False  # lying on the ground
+    assert crash._normal_view(inp, 2.0, 4.0) is True  # back up
+    assert crash._normal_view(inp, 10.0, 12.0) is True  # no frame in the window
+    # the median, not the mean: median 0.5 is normal, the mean (about 0.67) would not be
+    mixed = _hits_inputs([], kf=[0.5, 0.5, 1.0], kf_t=[0, 1, 2])
+    assert crash._normal_view(mixed, 0.0, 2.0) is True
+    # both window edges are inclusive: dropping either 0.9 edge frame gives median 0.5
+    edges = _hits_inputs([], kf=[0.9, 0.1, 0.9], kf_t=[0, 1, 2])
+    assert crash._normal_view(edges, 0.0, 2.0) is False
+    # the 0.6 limit: a median of exactly 0.6 is not normal
+    edge = _hits_inputs([], kf=[0.6, 0.6], kf_t=[0, 1])
+    assert crash._normal_view(edge, 0.0, 1.0) is False
+    below = _hits_inputs([], kf=[0.59, 0.59], kf_t=[0, 1])
+    assert crash._normal_view(below, 0.0, 1.0) is True
