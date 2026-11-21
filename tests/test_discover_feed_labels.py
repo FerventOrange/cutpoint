@@ -371,11 +371,8 @@ def test_a_call_that_times_out_stops_the_labelling(tmp_path: Path) -> None:
     rater = _rater(describe=describe)
     proposals = [_prop(f"feed{i}", "feed", 0.5, x=1500, y=100 + 100 * i) for i in range(4)]
     assert feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames") == {}
-    # the load gets the long timeout, the call the short one, and the next would time out too
-    assert rater.loads == [feed_labels.FIRST_ASK_TIMEOUT]
-    assert seen == [feed_labels.ASK_TIMEOUT]
-    assert rater.load_ctx == [feed_labels.LABEL_NUM_CTX]
-    assert feed_labels.FIRST_ASK_TIMEOUT > feed_labels.ASK_TIMEOUT
+    assert len(seen) == 1  # the next call would time out too: not sent
+    assert rater.load_ctx == [feed_labels.LABEL_NUM_CTX]  # the call does not reload the model
 
 
 def test_a_model_on_the_cpu_only_is_not_asked(tmp_path: Path) -> None:
@@ -464,23 +461,16 @@ def test_the_budget_ends_the_labelling_and_keeps_the_labels_so_far(
 def test_only_the_model_load_gets_the_load_timeout(
     tmp_path: Path, provider: str, loads: list[float]
 ) -> None:
-    """The load has its own request, so every call gets the short timeout; a hosted rater has
-    no load and is never given the long one."""
+    """The load has its own request with the long timeout (the calls get the short one: see
+    test_each_game_has_its_own_budget); a hosted rater has no load."""
     _write_frames(tmp_path / "frames")
-    seen: list[Any] = []
-
-    def describe(*_a: Any, **kw: Any) -> dict[str, str]:
-        seen.append(kw.get("timeout"))
-        return {"text_in_box": "", "label": "chat"}
-
     proposals = [
         _prop("feed", "feed", 0.5, x=1500, y=100),
         _prop("feed2", "feed", 0.5, x=1500, y=400),
     ]
-    rater = _rater(describe=describe, provider_name=provider)
+    rater = _rater(provider_name=provider)
     assert len(feed_labels.make_labeler(rater)(proposals, FRAMES, tmp_path / "frames")) == 2
     assert rater.loads == loads
-    assert seen == [feed_labels.ASK_TIMEOUT] * 2
 
 
 def test_each_game_has_its_own_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

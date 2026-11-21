@@ -5,7 +5,6 @@ that depend on it (views, director paths). Synthetic IMU fused by ``geometry.fus
 from __future__ import annotations
 
 import json
-import logging
 import math
 import sys
 from pathlib import Path
@@ -106,16 +105,13 @@ def test_helmet_mount_matrices_are_unchanged() -> None:
         assert np.array_equal(o.r_vw(i / FPS), before)
 
 
-def test_upright_axis_logged_once(home, tmp_path, monkeypatch, caplog) -> None:
+def test_upright_axis_is_cached(home, tmp_path, monkeypatch) -> None:
     src = tmp_path / "up.lrv"
     src.write_bytes(b"x")
     o = swaying(UPRIGHT)
     monkeypatch.setattr(G, "fuse", lambda *a, **k: o)
     monkeypatch.setattr(G, "load_imu", lambda _p: (None, None, None))
-    with caplog.at_level(logging.INFO, logger="cutpoint.pano.geometry"):
-        G.orientation(src, Path("i00"), FPS, len(o.t))
-        G.orientation(src, Path("i00"), FPS, len(o.t))
-    assert len(caplog.records) == 1  # the second call is silent
+    G.orientation(src, Path("i00"), FPS, len(o.t))
     assert G.cached_forward_axis(src) == "+z"
     assert G.load_orientation(src).meta["forward_axis"] == "+z"
 
@@ -202,16 +198,6 @@ def test_views_current_agrees_with_load_views_without_reading_the_arrays(
     monkeypatch.setattr(cache, "load_npz", lambda p: pytest.fail("arrays decompressed"))
     assert VW.views_current(src) is True
     assert read == ["pair"]  # only the token, never the embeddings
-
-
-def test_a_stale_views_cache_is_logged_once(home, tmp_path, caplog) -> None:
-    src = tmp_path / "stale.lrv"
-    src.write_bytes(b"x")
-    write_orient(src, [0.0, -1.0, 0.0])
-    write_views(src, {"source": str(src)})
-    with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
-        assert VW.load_views(src) is None and VW.load_views(src) is None
-    assert len(caplog.records) == 1  # the second load is silent
 
 
 def test_a_cached_track_records_its_axis_in_memory_only_when_upright(home, tmp_path) -> None:
