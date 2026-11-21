@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, cache, default_fit, paths, planning, scorer, styles
+from cutpoint import analyze, cache, default_fit, paths, planning, scorer, styles, vision_record
 from cutpoint.assistant import context
 from cutpoint.events import scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, Matcher
@@ -646,14 +646,14 @@ def test_a_rated_nominee_keeps_its_rating_through_the_post_vision_rescore(tmp_pa
     (nom,) = nominees(hl)
     # what _rate_vision does: the rating on the record, blended into the analysis score
     nom["signals"]["vision"] = 8.0
-    nom["score_pre_events"] = analyze.vision_blend(nom["score_pre_events"], 8.0, 0.35)
+    nom["score_pre_events"] = vision_record.vision_blend(nom["score_pre_events"], 8.0, 0.35)
     window, grid_score = (nom["start"], nom["end"]), nom["grid_score"]
     scorer.rescore_events(hl, ev, tmp_path, [grid()])
     (again,) = nominees(hl)
     assert again is nom  # the same record: nothing nominated twice, nothing re-rated
     assert again["signals"]["vision"] == 8.0
     assert (again["start"], again["end"], again["grid_score"]) == (*window, grid_score)
-    assert again["score_pre_events"] == analyze.vision_blend(30.0, 8.0, 0.35)
+    assert again["score_pre_events"] == vision_record.vision_blend(30.0, 8.0, 0.35)
     boost = again["signals"]["events"]["boost"]
     assert again["score"] == scorer.with_bonus(again["score_pre_events"], boost, None)
 
@@ -1132,7 +1132,7 @@ def test_a_weak_laugh_with_another_sound_nearby_is_a_seed(other):
 
 def test_a_weak_laugh_with_a_laughter_word_in_the_transcript_nominates(tmp_path, monkeypatch):
     words = talk((98.0, "that is so funny"), (101.0, "[laughter] okay"))
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: words)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: words)
     hl = highlights([own("h001", 20.0)])
     scoring.nominate(hl, events_of([sound(100.0, confidence=WEAK)]), tmp_path, [grid()])
     assert [c["label"] for c in nominees(hl)] == ["laughter"]
@@ -1142,7 +1142,7 @@ def test_the_spoken_word_laughter_does_not_back_a_weak_laugh(tmp_path, monkeypat
     words = talk(
         (98.0, "he said laughter twice"),
     )
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: words)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: words)
     hl = highlights([own("h001", 20.0)])
     scoring.nominate(hl, events_of([sound(100.0, confidence=WEAK)]), tmp_path, [grid()])
     assert nominees(hl) == []
@@ -1159,12 +1159,12 @@ def test_loud_speech_backs_a_weak_laugh_but_quiet_speech_or_loud_noise_do_not(
 ):
     event = events_of([sound(100.0, confidence=WEAK)])
     speech = talk((99.0, "oh come on now"))
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: speech)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: speech)
     loud, quiet = highlights([own("h001", 20.0)]), highlights([own("h001", 20.0)])
     scoring.nominate(loud, event, tmp_path, [_loud_grid(100.5)])
     scoring.nominate(quiet, event, tmp_path, [grid()])
     assert len(nominees(loud)) == 1 and nominees(quiet) == []
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])  # loud, nobody talking
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: [])  # loud, nobody talking
     noise = highlights([own("h001", 20.0)])
     scoring.nominate(noise, event, tmp_path, [_loud_grid(100.5)])
     assert nominees(noise) == []
@@ -1172,7 +1172,7 @@ def test_loud_speech_backs_a_weak_laugh_but_quiet_speech_or_loud_noise_do_not(
 
 def test_loud_speech_backs_a_weak_laugh_at_the_stream_start(tmp_path, monkeypatch):
     speech = talk((0.0, "oh come on now"))
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: speech)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: speech)
     hl = highlights([own("h001", 20.0)])
     scoring.nominate(hl, events_of([sound(0.5, confidence=WEAK)]), tmp_path, [_loud_grid(1.0)])
     assert len(nominees(hl)) == 1
@@ -1182,7 +1182,7 @@ def test_a_weak_laugh_after_a_part_boundary_reads_its_own_part_not_the_previous(
     tmp_path, monkeypatch
 ):
     speech = talk((599.0, "oh come on now"))
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: speech)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: speech)
     loud_before = _loud_grid(599.5)  # loud at the end of the first part only
     quiet_after = grid(offset=N * DT, index=1)
     hl = highlights([own("h001", 20.0)])

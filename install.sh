@@ -16,6 +16,9 @@ CUTPOINT_VERSION_DEFAULT="0.5.0"
 
 # uv is installed from this pinned installer when missing (keep in step with the Dockerfile pin).
 UV_VERSION="0.13.7"
+# SHA256 of that version's installer script (https://astral.sh/uv/$UV_VERSION/install.sh), checked
+# before it runs. Bump it with UV_VERSION; `python scripts/check_uv_pin.py --urls` prints the new one.
+UV_INSTALLER_SHA256="d263ee68314cf5bea36b08e6bd9e2c4563240d7adb73756cf33af5c199b92db4"
 # Oldest uv that has `uv tool install --torch-backend`.
 UV_MIN_MAJOR=0
 UV_MIN_MINOR=13
@@ -42,8 +45,9 @@ Modes:
                     or start it (the AI assistant can use a third-party provider instead).
 
 Options:
-  --yes, -y         Answer yes to the optional steps (install Ollama, cutpoint setup, Ollama model).
-  --ollama          Install Ollama when it is missing, without asking. Full mode only: with --lite
+  --yes, -y         Answer yes to the optional steps (install Ollama on macOS, cutpoint setup, Ollama model).
+  --ollama          Install Ollama when it is missing, without asking (macOS; on Linux the
+                    installer prints Ollama's command instead). Full mode only: with --lite
                     it prints a warning and is ignored.
   --no-ollama       Never offer to install Ollama (full mode; lite never offers it).
   --dry-run         Print every command that would run and change nothing.
@@ -71,13 +75,12 @@ any other value counts as on):
 Optional prompts (default No; they read from /dev/tty, so they also work under `curl | sh`;
 with no terminal the answer is No unless --yes is given):
   - Install Ollama (full mode only; lite skips this step), when it is not found. Ollama runs the
-    local AI models for --vision rating and the AI assistant. Linux: Ollama's official script
-    (curl -fsSL https://ollama.com/install.sh | sh), which needs sudo (without a terminal only
-    when `sudo -n` works or you are root). macOS: `brew install ollama`, or the download link
-    when Homebrew is missing. Afterwards it waits for the server: macOS runs
-    `brew services start ollama`; Linux relies on the ollama.service the official script sets up.
-    Only when no service exists does it start `ollama serve` in the background (log:
-    ~/.local/state/cutpoint/ollama-serve.log). A declined or failed
+    local AI models for --vision rating and the AI assistant. macOS: `brew install ollama`, or the
+    download link when Homebrew is missing; afterwards it runs `brew services start ollama` and,
+    only when that fails, starts `ollama serve` in the background (log:
+    ~/.local/state/cutpoint/ollama-serve.log). Linux: it does not ask and prints Ollama's official
+    command (curl -fsSL https://ollama.com/install.sh | sh) for you to run: that script needs sudo
+    and has no published checksum, so this installer never runs it. A declined or failed
     Ollama install never fails the Cutpoint install.
   - "cutpoint setup" (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU), full mode only.
   - Pull qwen3.5:9b (about 6.6 GB), full mode only, when Ollama is running.
@@ -467,10 +470,22 @@ uv_version_ok() {
   [ "$major" -eq "$UV_MIN_MAJOR" ] && [ "$minor" -ge "$UV_MIN_MINOR" ]
 }
 
+# SHA256 of file $1 (lowercase hex), or nothing when no hashing tool is found.
+sha256_of() {
+  if have sha256sum; then
+    sha256sum < "$1" | awk '{print $1}'
+  elif have shasum; then
+    shasum -a 256 < "$1" | awk '{print $1}'
+  elif have openssl; then
+    openssl dgst -sha256 < "$1" | awk '{print $NF}'
+  fi
+}
+
 install_uv() {
   url="https://astral.sh/uv/$UV_VERSION/install.sh"
   if [ "$DRY_RUN" = 1 ]; then
-    say "+ curl -LsSf $url | UV_INSTALL_DIR=$BIN_DIR UV_NO_MODIFY_PATH=1 sh"
+    say "+ curl -LsSf $url -o <tmp>, check its SHA256 is $UV_INSTALLER_SHA256"
+    say "+ UV_INSTALL_DIR=$BIN_DIR UV_NO_MODIFY_PATH=1 sh <tmp>"
     return 0
   fi
   tmp=$(mktemp "${TMPDIR:-/tmp}/uv-install.XXXXXX") || die "Could not create a temporary file."
@@ -488,7 +503,16 @@ install_uv() {
     rm -f "$tmp"
     die "Neither curl nor wget found: install one of them (or uv from https://docs.astral.sh/uv/) and run again."
   fi
-  say "+ sh <uv installer $UV_VERSION>"
+  got=$(sha256_of "$tmp")
+  if [ -z "$got" ]; then
+    rm -f "$tmp"
+    die "No sha256sum, shasum or openssl found to check the uv installer: install uv yourself (https://docs.astral.sh/uv/) and run again."
+  fi
+  if [ "$got" != "$UV_INSTALLER_SHA256" ]; then
+    rm -f "$tmp"
+    die "The uv installer from $url has SHA256 $got, expected $UV_INSTALLER_SHA256: not running it. Install uv yourself (https://docs.astral.sh/uv/) and run again."
+  fi
+  say "+ sh <uv installer $UV_VERSION, SHA256 checked>"
   if ! UV_INSTALL_DIR="$BIN_DIR" UV_NO_MODIFY_PATH=1 sh "$tmp"; then
     rm -f "$tmp"
     die "The uv installer failed. Install uv yourself (https://docs.astral.sh/uv/) and run again."
@@ -543,20 +567,11 @@ wait_ollama() {
   ollama_up
 }
 
-# True on Linux when Ollama's official script installed the systemd service (it then owns the server).
-ollama_service() {
-  [ "$OS" != Darwin ] && have systemctl && systemctl cat ollama.service >/dev/null 2>&1
-}
-
-# Start `ollama serve` in the background (macOS, or Linux without the service) and wait for it.
+# Start `ollama serve` in the background (macOS, when the brew service does not) and wait for it.
 start_ollama_serve() {
   olog="${XDG_STATE_HOME:-$HOME/.local/state}/cutpoint/ollama-serve.log"
   if [ "$DRY_RUN" = 1 ]; then
-    if [ "$OS" = Darwin ]; then
-      say "+ nohup ollama serve > $olog 2>&1 &   (only when 'brew services start ollama' fails)"
-    else
-      say "+ nohup ollama serve > $olog 2>&1 &   (only when the server is not up after 20 s)"
-    fi
+    say "+ nohup ollama serve > $olog 2>&1 &   (only when 'brew services start ollama' fails)"
     return 0
   fi
   mkdir -p "${olog%/*}" || return 1
@@ -565,48 +580,19 @@ start_ollama_serve() {
   wait_ollama
 }
 
-# Sets OLLAMA_WHY and returns 1 when Ollama cannot be installed here.
+# Sets OLLAMA_WHY and returns 1 when Ollama cannot be installed here (macOS only: brew).
 ollama_can_install() {
   OLLAMA_WHY=""
-  if [ "$OS" = Darwin ]; then
-    if ! have brew; then
-      OLLAMA_WHY="Homebrew not found; download Ollama from $OLLAMA_DOWNLOAD_URL"
-      return 1
-    fi
-    return 0
-  fi
-  if ! have curl; then
-    OLLAMA_WHY="curl not found; install Ollama yourself: curl -fsSL $OLLAMA_INSTALL_URL | sh"
+  if ! have brew; then
+    OLLAMA_WHY="Homebrew not found; download Ollama from $OLLAMA_DOWNLOAD_URL"
     return 1
-  fi
-  [ "$DRY_RUN" = 1 ] && return 0
-  if [ "$(id -u)" != 0 ] && ! has_tty; then
-    if ! { have sudo && sudo -n true 2>/dev/null; }; then
-      OLLAMA_WHY="needs sudo and there is no terminal; run: curl -fsSL $OLLAMA_INSTALL_URL | sh"
-      return 1
-    fi
   fi
   return 0
 }
 
-# Run the install; returns 1 on failure.
+# Run the install (macOS: brew); returns 1 on failure.
 ollama_install() {
-  if [ "$OS" = Darwin ]; then
-    run brew install ollama
-    return
-  fi
-  if [ "$DRY_RUN" = 1 ]; then
-    say "+ curl -fsSL $OLLAMA_INSTALL_URL | sh"
-    return 0
-  fi
-  otmp=$(mktemp "${TMPDIR:-/tmp}/ollama-install.XXXXXX") || return 1
-  say "+ curl -fsSL $OLLAMA_INSTALL_URL | sh   (sudo may ask for your password)"
-  if curl -fsSL "$OLLAMA_INSTALL_URL" -o "$otmp" && sh "$otmp"; then
-    rm -f "$otmp"
-    return 0
-  fi
-  rm -f "$otmp"
-  return 1
+  run brew install ollama
 }
 
 # Offer to install Ollama; sets OLLAMA_STATUS and OLLAMA_UP (1 when the server is, or in a dry
@@ -631,6 +617,15 @@ offer_ollama() {
     OLLAMA_STATUS="skipped (--no-ollama or CUTPOINT_OLLAMA=0)"
     return 0
   fi
+  if [ "$OS" != Darwin ]; then
+    # Ollama's Linux script runs with sudo and has no published checksum to check it against,
+    # so print the command instead of running it.
+    OLLAMA_STATUS="not installed (Linux: install it yourself, see Next steps)"
+    OLLAMA_HINT="Install Ollama yourself (this installer does not run its script: it needs sudo and has no published checksum): curl -fsSL $OLLAMA_INSTALL_URL | sh (read it first, or follow https://docs.ollama.com/linux), then: ollama pull $OLLAMA_MODEL"
+    # A dry run prints no summary.
+    [ "$DRY_RUN" = 1 ] && say "Ollama: not found. $OLLAMA_HINT"
+    return 0
+  fi
   if [ "$OLLAMA_CHOICE" != 1 ] && ! ask "Install Ollama (local AI models for vision rating and the AI assistant)?"; then
     OLLAMA_STATUS="declined"
     return 0
@@ -650,11 +645,7 @@ offer_ollama() {
   fi
   OLLAMA_STATUS="installed"
   if [ "$DRY_RUN" = 1 ]; then
-    if [ "$OS" = Darwin ]; then
-      say "+ brew services start ollama"
-    else
-      say "+ if systemctl cat ollama.service succeeds: only wait for the service (no second server)"
-    fi
+    say "+ brew services start ollama"
     say "+ wait up to 20 s for $OLLAMA_URL/api/version"
     start_ollama_serve
     OLLAMA_UP=1
@@ -665,26 +656,13 @@ offer_ollama() {
     OLLAMA_STATUS="installed (not on PATH yet; open a new terminal)"
     return 0
   fi
-  if [ "$OS" = Darwin ]; then
-    if run brew services start ollama; then
-      if wait_ollama; then
-        OLLAMA_UP=1
-      else
-        warn "The ollama service is not answering; check: brew services info ollama"
-        OLLAMA_STATUS="installed (service not answering: brew services info ollama)"
-      fi
-      return 0
-    fi
-  elif ollama_service; then
+  if run brew services start ollama; then
     if wait_ollama; then
       OLLAMA_UP=1
     else
-      warn "The ollama service is not answering; check: systemctl status ollama"
-      OLLAMA_STATUS="installed (service not answering: systemctl status ollama)"
+      warn "The ollama service is not answering; check: brew services info ollama"
+      OLLAMA_STATUS="installed (service not answering: brew services info ollama)"
     fi
-    return 0
-  elif wait_ollama; then
-    OLLAMA_UP=1
     return 0
   fi
   if start_ollama_serve && ollama_up; then

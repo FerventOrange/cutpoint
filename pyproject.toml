@@ -13,19 +13,22 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Topic :: Multimedia :: Video",
 ]
+# Upper bounds at the next major (0.x: below 1.0), so a `uv tool install`, which does not read
+# uv.lock, cannot pick up a breaking release; uv.lock pins the exact versions for a clone.
 dependencies = [
-    "faster-whisper>=1.2.1",
-    "scenedetect>=0.7.2",
-    "opencv-python>=5.0.0.93",
+    "faster-whisper>=1.2.1,<2",
+    "scenedetect>=0.7.2,<1",
+    "opencv-python>=5.0.0.93,<6",
     "numpy>=2.5.4,<3",
-    "OpenTimelineIO>=0.18.1",
-    "requests>=2.34.2",
-    "urllib3>=1.26",  # already requests'; the assistant parses URLs as requests does
-    "fastapi>=0.116",  # `cutpoint ui`: local browser workspace
-    "uvicorn>=0.30",
-    "keyring>=25",  # `cutpoint ui`: save an AI Chat API key in the system keyring (small; Linux adds SecretStorage)
+    "OpenTimelineIO>=0.18.1,<1",
+    "requests>=2.34.2,<3",
+    "urllib3>=1.26,<3",  # already requests'; the assistant parses URLs as requests does
+    "fastapi>=0.116,<1",  # `cutpoint ui`: local browser workspace
+    "uvicorn>=0.30,<1",
+    "keyring>=25,<26",  # `cutpoint ui`: save an AI Chat API key in the system keyring (small; Linux adds SecretStorage)
+    # No upper bound: cryptography takes a new major for each feature release (security fixes too).
     "cryptography>=46",  # local proxy TLS identity and encrypted credential recovery
-    "telemetry-parser>=0.3.0",  # action-cam telemetry (GoPro GPS/IMU) and the 360 (Insta360) module
+    "telemetry-parser>=0.3.0,<1",  # action-cam telemetry (GoPro GPS/IMU) and the 360 (Insta360) module
     "send2trash>=2.1,<3",  # `cutpoint ui`: delete a project to the Recycle Bin / Trash (BSD-3-Clause)
 ]
 
@@ -35,10 +38,10 @@ dependencies = [
 # looser floors because the cu126 torch wheels (events extra) pin their own
 # cuDNN/cuBLAS there.
 gpu = [
-    "nvidia-cublas-cu12>=12.9.2.10; sys_platform == 'win32'",
-    "nvidia-cudnn-cu12>=9.27.0.42; sys_platform == 'win32'",
-    "nvidia-cublas-cu12>=12.4; sys_platform == 'linux'",
-    "nvidia-cudnn-cu12>=9.1; sys_platform == 'linux'",
+    "nvidia-cublas-cu12>=12.9.2.10,<13; sys_platform == 'win32'",
+    "nvidia-cudnn-cu12>=9.27.0.42,<10; sys_platform == 'win32'",
+    "nvidia-cublas-cu12>=12.4,<13; sys_platform == 'linux'",
+    "nvidia-cudnn-cu12>=9.1,<10; sys_platform == 'linux'",
 ]
 # `cutpoint events` layers (PANNs audio, HUD OCR, CLIP visual, Silero voice).
 # Also needed by action-cam crash detection (`cutpoint crashes`, torch + open_clip for the visual check).
@@ -47,12 +50,12 @@ gpu = [
 events = [
     "torch==2.14.1",
     "torchvision==0.29.1",
-    "panns-inference>=0.1.1",
-    "torchlibrosa>=0.1.0",
-    "rapidocr-onnxruntime>=1.4.4",
-    "open_clip_torch>=3.3.0",
-    "onnxruntime>=1.31.0",
-    "scipy>=1.18.1",
+    "panns-inference>=0.1.1,<1",
+    "torchlibrosa>=0.1.0,<1",
+    "rapidocr-onnxruntime>=1.4.4,<2",
+    "open_clip_torch>=3.3.0,<4",
+    "onnxruntime>=1.31.0,<2",
+    "scipy>=1.18.1,<2",
 ]
 all = ["cutpoint[events,gpu]"]
 

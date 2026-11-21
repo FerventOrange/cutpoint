@@ -42,6 +42,7 @@ from cutpoint import (
     telemetry,
     transcribe,
     vision,
+    vision_record,
 )
 from cutpoint.errors import FFmpegError
 from cutpoint.events import cli as events_cli
@@ -2236,7 +2237,7 @@ def test_pending_highlights_is_removed_when_the_block_raises(tmp_path):
 
 
 def test_rescore_in_memory_equals_rescore_highlights(tmp_path, monkeypatch):
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: [])
     src = str(tmp_path / "a.mp4")
     cands = [
         {"id": "h001", "source": src, "start": 10.0, "end": 20.0, "score": 40.0, "signals": {}},
@@ -2275,7 +2276,7 @@ def test_a_highlights_file_without_style_or_candidates_rescores_without_raising(
     tmp_path, monkeypatch
 ):
     """#1015: ``cutpoint events`` on a bare {"sources": [...]} file: no KeyError, a sane file."""
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: [])
     src = str(tmp_path / "a.mp4")
     ev = {
         "created": "2026-01-01T00:00:00",
@@ -2300,7 +2301,7 @@ def test_a_detected_gaming_file_without_candidates_keeps_its_nominee(tmp_path, m
     from cutpoint import scorer  # noqa: PLC0415
     from event_candidates_helpers import SRC, events_of, feed, grid  # noqa: PLC0415
 
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: [])
     hl = {"sources": [{"path": SRC}], "detection": {"style": "gaming"}}
     scorer.rescore_events(hl, events_of([feed(100.0)]), tmp_path, [grid()])
     assert len([c for c in hl["candidates"] if scoring.is_nominated(c)]) == 1
@@ -2665,7 +2666,9 @@ def test_a_rating_with_speech_is_centred_on_its_own_kind_not_lifted(run, monkeyp
     centre = (5.9 + 4 * vision.RATING_PRIOR["other", "speech"]) / 5  # 5.26
     assert centre == pytest.approx(5.26)
     assert cand["vision_rated"]["kind"] == "speech" and cand["vision_rated"]["centre"] == 5.26
-    assert cand["score"] == analyze.vision_blend(50.0, 5 + 5.9 - centre, weight)  # 5.64 -> 51.92
+    assert cand["score"] == vision_record.vision_blend(
+        50.0, 5 + 5.9 - centre, weight
+    )  # 5.64 -> 51.92
     assert cand["score"] == 51.9
     assert cand["signals"]["vision"] == 5.9  # the raw rating
 
@@ -2718,7 +2721,7 @@ def test_the_prompt_kind_is_speech_only_when_there_are_words(
     assert out.used is True and out.by_kind == {kind: 1}
     assert out.centres == {kind: pytest.approx(centre)}
     assert cand["vision_rated"]["kind"] == kind and cand["vision_rated"]["centre"] == centre
-    assert cand["score"] == analyze.vision_blend(50.0, centred, weight)
+    assert cand["score"] == vision_record.vision_blend(50.0, centred, weight)
     assert cand["signals"]["vision"] == rating
 
 

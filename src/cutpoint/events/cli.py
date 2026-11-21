@@ -16,7 +16,7 @@ import logging
 import math
 from pathlib import Path
 
-from cutpoint import cache, jsonout
+from cutpoint import cache, jsonout, projectfiles
 from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS, LAYERS
 from cutpoint.styles import ACTION_CAM, project_kind
 from cutpoint.utils import non_negative_float, positive_float, positive_int, unit_float
@@ -242,7 +242,7 @@ def _ocr_det_skip(args: argparse.Namespace) -> bool:
 
     if args.ocr_det_skip is not None:
         return args.ocr_det_skip
-    hl = cache.load_json(args.project / "highlights.json")
+    hl = cache.load_json(args.project / projectfiles.HIGHLIGHTS)
     settings = hl.get("settings") if isinstance(hl, dict) else None
     if isinstance(settings, dict):
         return settings.get("ocr_det_skip") is True
@@ -313,8 +313,8 @@ def run_args(
     if not args.no_rescore:
         from cutpoint.events.common import load_highlights  # noqa: PLC0415
 
-        highlights = args.project / "highlights.json"
-        backup = args.project / "highlights.pre-events.json"
+        highlights = args.project / projectfiles.HIGHLIGHTS
+        backup = args.project / projectfiles.PRE_EVENTS
         had_backup = backup.exists()
         if project_kind(load_highlights(args.project)) == ACTION_CAM:
             # Action-cam: events are features of the scorer, so re-run the (cached) analysis.

@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from cutpoint import analyze, scorer, vision
+from cutpoint import analyze, scorer, vision, vision_record
 from cutpoint.events import scoring
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.styles import get_style
@@ -54,7 +54,7 @@ def rate(c: dict[str, Any]) -> None:
     analyze._rate_vision([c], _Rater(), STYLE, None, 0, deadline=float("inf"))  # type: ignore[arg-type]
 
 
-BLENDED = analyze.vision_blend(40.0, 10.0, STYLE.vision_weight)
+BLENDED = vision_record.vision_blend(40.0, 10.0, STYLE.vision_weight)
 
 
 def test_rating_records_the_span_and_both_scores():
@@ -146,7 +146,7 @@ def test_a_menu_trim_makes_the_rating_stale():
     assert c["vision_stale"]["window"] == [10.0, 30.0]
     assert c["signals"]["vision"] is None and "vision_label" not in c
     assert c["label"] == "gaming-moment"
-    assert analyze.sync_vision(c) == 40.0  # what a rescore ranks it by
+    assert vision_record.sync_vision(c) == 40.0  # what a rescore ranks it by
 
 
 def test_a_label_changed_since_the_rating_is_not_touched():
@@ -154,18 +154,18 @@ def test_a_label_changed_since_the_rating_is_not_touched():
     rate(c)
     c["label"] = "renamed-by-hand"
     c["start"] = 100.0
-    assert analyze.sync_vision(c) == 40.0
+    assert vision_record.sync_vision(c) == 40.0
     assert c["label"] == "renamed-by-hand" and "renamed" not in c["vision_stale"]
     c["start"] = 150.0
-    assert analyze.sync_vision(c) == BLENDED
+    assert vision_record.sync_vision(c) == BLENDED
     assert c["label"] == "renamed-by-hand" and c["vision_label"] == "big jump"
 
 
 def test_a_span_within_the_epsilon_still_matches():
     c = own("h001", 150.0, 40.0, end=158.0)
     rate(c)
-    c["end"] = 158.0 + analyze.VISION_SPAN_EPS / 2
-    assert analyze.sync_vision(c) == BLENDED and "vision_stale" not in c
+    c["end"] = 158.0 + vision_record.VISION_SPAN_EPS / 2
+    assert vision_record.sync_vision(c) == BLENDED and "vision_stale" not in c
 
 
 def test_a_candidate_rated_before_vision_rated_existed_is_unchanged(tmp_path):
@@ -180,4 +180,4 @@ def test_a_candidate_rated_before_vision_rated_existed_is_unchanged(tmp_path):
     assert "vision_stale" not in c and "vision_rated" not in c
     assert c["signals"]["vision"] == 10.0 and c["vision_label"] == "big jump"
     assert c["label"] == "big-jump" and c["score_pre_events"] == BLENDED
-    assert analyze.sync_vision(c) is None
+    assert vision_record.sync_vision(c) is None
