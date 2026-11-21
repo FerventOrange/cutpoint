@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.events import killfeed, ocr_raw, pipeline
+from cutpoint.events import killfeed, menu_rules, ocr_raw, ocr_read, pipeline
 from cutpoint.events.killfeed import OcrParams
 from cutpoint.events.regions import preset_from_dict
 from events_fakes import stub_run_events
@@ -43,8 +43,10 @@ def _bump(monkeypatch) -> None:
 
 def test_replay_equals_the_live_read(tmp_path: Path, monkeypatch) -> None:
     # the 12 s still menu has no other menu frame near it: it counts as long enough alone
-    long_s = killfeed.MENU.static_bare_min_s
-    monkeypatch.setattr(killfeed, "MENU", replace(killfeed.MENU, static_long_s=long_s))
+    long_s = menu_rules.MENU.static_bare_min_s
+    menu = replace(menu_rules.MENU, static_long_s=long_s)
+    monkeypatch.setattr(menu_rules, "MENU", menu)
+    monkeypatch.setattr(ocr_read, "MENU", menu)
     engine = _Engine()
     events, stats = _run(tmp_path, monkeypatch, engine)
     assert engine.calls > 0

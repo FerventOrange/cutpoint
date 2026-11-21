@@ -15,7 +15,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.events import discover, killfeed
+from cutpoint.events import discover, killfeed, ocr_engine, ocr_read
 from cutpoint.events.regions import Region
 from overlap import Overlap
 
@@ -37,16 +37,16 @@ def _fake_rapidocr(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def test_thread_cap_is_at_most_four_and_the_cpu_count() -> None:
-    assert min(4, os.cpu_count() or 1) == killfeed.OCR_THREADS
-    assert 1 <= killfeed.OCR_THREADS <= 4
+    assert min(4, os.cpu_count() or 1) == ocr_engine.OCR_THREADS
+    assert 1 <= ocr_engine.OCR_THREADS <= 4
 
 
 def _layer_engine(tmp_path: Path) -> None:
-    killfeed.OcrEngine(lanes=1)
+    ocr_engine.OcrEngine(lanes=1)
 
 
 def _two_lanes(tmp_path: Path) -> None:
-    killfeed.OcrEngine(lanes=2)
+    ocr_engine.OcrEngine(lanes=2)
 
 
 def _discovery(tmp_path: Path) -> None:
@@ -78,7 +78,7 @@ def test_engines_get_the_thread_cap(
 ) -> None:
     """#374, #403, #443: what each OcrEngine passes to RapidOCR."""
     made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", threads)
+    monkeypatch.setattr(ocr_engine, "OCR_THREADS", threads)
     # discovery makes its engine for the first frame to read
     monkeypatch.setattr(discover, "_burst_frames", lambda *a: [np.zeros((72, 128, 3), np.uint8)])
     make(tmp_path)
@@ -90,12 +90,12 @@ def test_the_ocr_layer_keeps_rapidocrs_rec_batch(monkeypatch: pytest.MonkeyPatch
     pipeline and ocr_prefetch make them) keep RapidOCR's batching, so its raw reads and
     their cache key are unchanged."""
     made = _fake_rapidocr(monkeypatch)
-    monkeypatch.setattr(killfeed, "OCR_THREADS", 4)
+    monkeypatch.setattr(ocr_engine, "OCR_THREADS", 4)
 
-    engine = killfeed.OcrEngine()
+    engine = ocr_engine.OcrEngine()
 
     assert engine.rec_batch is None
-    assert len(made) == killfeed.OCR_LANES
+    assert len(made) == ocr_engine.OCR_LANES
     assert all("rec_batch_num" not in kwargs for kwargs in made)
 
 
@@ -159,7 +159,7 @@ def test_rows_recognised_at_once_in_order(monkeypatch: pytest.MonkeyPatch) -> No
     out, peaks = [], []
     for n in (1, 2):
         lanes.overlap.reset(expect=n == 2)
-        out.append(killfeed.OcrEngine(lanes=n).read_rows(img, rows, 0.5, pad=2))
+        out.append(ocr_engine.OcrEngine(lanes=n).read_rows(img, rows, 0.5, pad=2))
         peaks.append((lanes.peak, lanes.overlap.why()))
 
     assert out[0] == out[1]
@@ -188,9 +188,9 @@ def test_reader_gates_regions_at_once_with_the_records_of_one_lane(
 
     def records(n: int) -> list[dict[str, Any]]:
         lanes.overlap.reset(expect=n == 2)
-        engine = killfeed.OcrEngine(lanes=n)
+        engine = ocr_engine.OcrEngine(lanes=n)
         size = (1920, 1080)
-        reader = killfeed.OcrReader(
+        reader = ocr_read.OcrReader(
             regions, rects, (0, 0, 200, 60), engine, killfeed.OcrParams(), 1.0, "bottom", size
         )
         recs = [reader.read(i, i / 3, f)[0].regions for i, f in enumerate(frames)]
@@ -223,11 +223,11 @@ def test_rapidocr_ignores_the_det_side(monkeypatch: pytest.MonkeyPatch) -> None:
     for i, word in enumerate(("Alpha downed Bravo", "Charlie 1234 eliminated")):
         cv2.putText(img, word, (20 + 500 * i, 60 + 80 * i), 0, 1.4, (255, 255, 255), 3)
 
-    plain = killfeed.OcrEngine(lanes=1)(img, 0.5)
+    plain = ocr_engine.OcrEngine(lanes=1)(img, 0.5)
     monkeypatch.setattr(
         rapidocr, "RapidOCR", functools.partial(rapidocr.RapidOCR, det_limit_side_len=320)
     )
-    small = killfeed.OcrEngine(lanes=1)(img, 0.5)
+    small = ocr_engine.OcrEngine(lanes=1)(img, 0.5)
 
     assert [text for _, text, _ in plain] == ["Alpha downed Bravo", "Charlie 1234 eliminated"]
     assert repr(small) == repr(plain)

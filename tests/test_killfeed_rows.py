@@ -10,17 +10,17 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.events.killfeed import (
+from cutpoint.events.feed_parser import (
     DEFAULT_KILL_WORDS,
-    EventTracker,
     FeedParser,
-    Interpreter,
-    OcrParams,
     _icon_name,
     _join_log_rows,
     is_player,
     player_side,
 )
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_read import Interpreter
+from cutpoint.events.tracker import EventTracker
 
 NAMES = ["Alder", "Birch", "Cedar", "Dunmore", "Elmwood", "Fenwick", "Galewind"]
 VICTIMS = ["Tuvo", "Mara", "Nilo", "Orla", "Pike", "Quin"]

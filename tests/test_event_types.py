@@ -19,9 +19,11 @@ from cutpoint import cache, jsonout, paths
 from cutpoint.events import eventtypes, regions, scoring, tails
 from cutpoint.events import vlm_windows as vw
 from cutpoint.events.common import Source
-from cutpoint.events.killfeed import GENERIC_VERSION, FeedParser, OcrParams, derive_streaks
+from cutpoint.events.feed_parser import FeedParser
+from cutpoint.events.killfeed import GENERIC_VERSION, OcrParams
 from cutpoint.events.regions import GENERIC_BANNERS, load_preset
 from cutpoint.events.report import normalize
+from cutpoint.events.tracker import derive_streaks
 from hud_fixtures import boxfeed, verbfeed, write_preset
 
 

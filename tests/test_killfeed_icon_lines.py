@@ -6,7 +6,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cutpoint.events.killfeed import EventTracker, FeedParser, _icon_cut
+from cutpoint.events.feed_parser import FeedParser, _icon_cut
+from cutpoint.events.tracker import EventTracker
 
 BLUE, ORANGE, BLACK, WHITE = (230, 140, 30), (30, 140, 240), (10, 10, 10), (255, 255, 255)
 ICON = {"row_notices": True}  # a discovered icon feed's preset ``feed``

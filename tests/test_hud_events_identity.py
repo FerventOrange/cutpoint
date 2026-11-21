@@ -13,9 +13,8 @@ import numpy as np
 import pytest
 
 from cutpoint import cache, category
-from cutpoint.events import discover, regions
-from cutpoint.events import killfeed as kf
-from cutpoint.events.killfeed import MENU
+from cutpoint.events import discover, feed_parser, menu_rules, ocr_engine, ocr_read, regions
+from cutpoint.events.menu_rules import MENU
 from cutpoint.events.text import notice_letters
 
 
@@ -60,9 +59,9 @@ def test_row_groupers_identical(seed: int) -> None:
     boxes = [_quad(rng, ints) for _ in range(rng.randint(0, 25))]
     items = [(b, f"t{i}", rng.random()) for i, b in enumerate(boxes)]
     for tol in (0.0, 6.0, 12.0, 30.0):
-        assert kf._rows(items, tol) == _old_rows(items, tol)
+        assert feed_parser._rows(items, tol) == _old_rows(items, tol)
         for min_h in (0, 10.0):
-            assert kf.group_rows(boxes, min_h, tol) == _old_group_rows(boxes, min_h, tol)
+            assert ocr_read.group_rows(boxes, min_h, tol) == _old_group_rows(boxes, min_h, tol)
 
 
 def _old_notice(line: str) -> bool:
@@ -84,17 +83,17 @@ def test_ref_factors_and_box() -> None:
     ref = (100, 50, 1920 / 1280, 1080 / 720)
     rx, ry, sx, sy = ref
     old = [
-        kf._plain((rx + min(p[0] for p in box)) * sx),
-        kf._plain((ry + min(p[1] for p in box)) * sy),
-        kf._plain((rx + max(p[0] for p in box)) * sx),
-        kf._plain((ry + max(p[1] for p in box)) * sy),
+        ocr_read._plain((rx + min(p[0] for p in box)) * sx),
+        ocr_read._plain((ry + min(p[1] for p in box)) * sy),
+        ocr_read._plain((rx + max(p[0] for p in box)) * sx),
+        ocr_read._plain((ry + max(p[1] for p in box)) * sy),
     ]
-    assert kf.ref_box(box, ref) == old
-    assert all(type(a) is type(b) for a, b in zip(kf.ref_box(box, ref), old, strict=True))
+    assert ocr_read.ref_box(box, ref) == old
+    assert all(type(a) is type(b) for a, b in zip(ocr_read.ref_box(box, ref), old, strict=True))
 
 
 def _old_staying_lines(frames, text_spans, text_keys, max_gap):
-    spans = kf.staying_spans(frames, text_spans, text_keys, max_gap)
+    spans = menu_rules.staying_spans(frames, text_spans, text_keys, max_gap)
     starts, ends = sorted(a for a, _ in spans), sorted(b for _, b in spans)
     out = []
     for f in frames:
@@ -123,7 +122,7 @@ def test_staying_lines_identical(seed: int) -> None:
         a = round(rng.uniform(0, 300) * 3) / 3
         spans.append((a, a + rng.choice([0.0, 1.0, MENU.text_stay_s, rng.uniform(0, 40)])))
     keys = [rng.choice("abcde") for _ in spans] if seed % 2 else None
-    got = kf.staying_lines(frames, spans, keys, MENU.static_max_gap_s)
+    got = menu_rules.staying_lines(frames, spans, keys, MENU.static_max_gap_s)
     assert got == _old_staying_lines(frames, spans, keys, MENU.static_max_gap_s)
 
 
@@ -163,8 +162,8 @@ def test_shared_ocr_builds_once_and_releases(monkeypatch) -> None:
         def __init__(self, **kw):
             built.append(kw)
 
-    monkeypatch.setattr(kf, "OcrEngine", Fake)
-    make = kf.SharedOcr(lanes=1, rec_batch=1)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", Fake)
+    make = ocr_engine.SharedOcr(lanes=1, rec_batch=1)
     got = []
     threads = [threading.Thread(target=lambda: got.append(make())) for _ in range(8)]
     for t in threads:
@@ -184,7 +183,7 @@ def test_probe_sources_shares_one_text_engine(monkeypatch, tmp_path) -> None:
         def __init__(self, **kw):
             made.append(self)
 
-    monkeypatch.setattr(kf, "OcrEngine", Fake)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", Fake)
     monkeypatch.setattr(category, "ocr_installed", lambda: True)
     seen = []
 

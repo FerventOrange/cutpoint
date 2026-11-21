@@ -14,18 +14,18 @@ import pytest
 
 from cutpoint.events import discover, text
 from cutpoint.events.discover import DiscoverParams, cluster_regions
-from cutpoint.events.killfeed import (
-    EventTracker,
+from cutpoint.events.feed_parser import (
     FeedParser,
-    Interpreter,
-    OcrParams,
     _word_spans,
     fuzzy_contains,
     is_player,
     norm,
     similar,
 )
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_read import Interpreter
 from cutpoint.events.regions import Region
+from cutpoint.events.tracker import EventTracker
 
 TESTS = Path(__file__).parent
 

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cutpoint.events import discover, killfeed
+from cutpoint.events import discover, ocr_engine
 
 
 @pytest.fixture
@@ -32,7 +32,7 @@ def fake_ocr(monkeypatch: pytest.MonkeyPatch) -> list[float]:
             return [([(0, 0), (40, 0), (40, 10), (0, 10)], f"text {img[0, 0, 0]}", 0.9)]
 
     monkeypatch.setattr(discover, "_burst_frames", burst_frames)
-    monkeypatch.setattr(killfeed, "OcrEngine", Engine)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", Engine)
     return decoded
 
 
@@ -107,7 +107,7 @@ def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
     reference = _run(tmp_path / "reference", bursts)
     frames = discover.DiscoverParams().burst_frames
 
-    real_engine = killfeed.OcrEngine
+    real_engine = ocr_engine.OcrEngine
     calls = {"n": 0}
 
     class InterruptedEngine(real_engine):
@@ -117,7 +117,7 @@ def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
                 raise KeyboardInterrupt
             return super().__call__(img, min_score)
 
-    monkeypatch.setattr(killfeed, "OcrEngine", InterruptedEngine)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", InterruptedEngine)
     with pytest.raises(KeyboardInterrupt):
         _run(tmp_path, bursts)
 
@@ -128,7 +128,7 @@ def test_a_run_interrupted_mid_burst_resumes_with_only_the_unfinished_bursts(
             resumed_calls["n"] += 1
             return super().__call__(img, min_score)
 
-    monkeypatch.setattr(killfeed, "OcrEngine", CountingEngine)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", CountingEngine)
 
     fake_ocr.clear()
     resumed = _run(tmp_path, bursts)

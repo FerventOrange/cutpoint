@@ -17,7 +17,9 @@ from cutpoint.events import (
     discover,
     eventtypes,
     killfeed,
+    menu_rules,
     ocr_raw,
+    ocr_read,
     pipeline,
     report,
     scoring,
@@ -32,14 +34,10 @@ from cutpoint.events.discover import (
     score_region,
     score_value,
 )
-from cutpoint.events.killfeed import (
-    FrameRec,
-    OcrInterpretation,
-    OcrParams,
-    OcrReader,
-    ScoreTracker,
-)
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_read import FrameRec, OcrInterpretation, OcrReader
 from cutpoint.events.regions import Region, preset_from_dict
+from cutpoint.events.score_readout import ScoreTracker
 from hud_fixtures import verbfeed, write_preset
 from ocr_helpers import box, quad, text_frame
 
@@ -302,7 +300,7 @@ def test_score_region_reads_make_no_text_event_and_are_not_learned() -> None:
 
 
 def test_the_interpreter_ignores_a_score_region() -> None:
-    interp = killfeed.Interpreter(OcrParams(game="tilefall", fps=1.0), 1.0)
+    interp = ocr_read.Interpreter(OcrParams(game="tilefall", fps=1.0), 1.0)
     interp.handle(5.0, SCORE, None, [(_box(20.0), "\u670810", 0.95)])
     assert interp.tracker.events == [] and interp.digits.events == []
 
@@ -368,7 +366,7 @@ def test_menu_frames_drop_score_reads(monkeypatch: pytest.MonkeyPatch) -> None:
     def rules(frames: list[dict[str, Any]], **_k: Any) -> tuple[dict[Any, str], dict]:
         return {f["id"]: "cover" if f["t"] > 50 else "none" for f in frames}, {}
 
-    monkeypatch.setattr(killfeed, "menu_rules", rules)
+    monkeypatch.setattr(ocr_read, "menu_rules", rules)
     events, stats = _interpret(_reads((0, 50, "5"), (51, 80, "4")), (SCORE, NOTICE))
     assert events == [] and stats["menu_frames"] == 30
 
@@ -429,16 +427,16 @@ def test_the_static_test_area_leaves_score_regions_out() -> None:
     notice = Region("notice", 0, 124, 400, 200, "notice", gate="det", every=1)
     score = Region("score", 40, 0, 60, 40, "score", gate="read", every=3, upscale=2.5)
     rects = {"notice": (0, 124, 400, 200), "score": (40, 0, 60, 40)}
-    assert killfeed._still_rect((notice, score), rects) == (0, 124, 400, 200)
-    assert killfeed._still_rect((score,), {"score": rects["score"]}) == (40, 0, 60, 40)
+    assert menu_rules._still_rect((notice, score), rects) == (0, 124, 400, 200)
+    assert menu_rules._still_rect((score,), {"score": rects["score"]}) == (40, 0, 60, 40)
     engine = _DetEngine()
-    union = killfeed._union(list(rects.values()))
+    union = menu_rules._union(list(rects.values()))
     params, size = OcrParams(), (1920, 1080)
     reader = OcrReader((notice, score), rects, union, engine, params, 1.0, "bottom", size)  # type: ignore[arg-type]
     frame = np.random.default_rng(0).integers(0, 255, (union[3], union[2], 3), np.uint8)
     rec, _ = reader.read(1, 0.0, frame)
     assert rec.thumb is not None
-    np.testing.assert_array_equal(rec.thumb, killfeed._thumb_bgr(frame[124:324, 0:400]))
+    np.testing.assert_array_equal(rec.thumb, menu_rules._thumb_bgr(frame[124:324, 0:400]))
     stats: dict[str, Any] = {}
     preset = preset_from_dict({"game": "tilefall", "regions": []}, None)
     OcrInterpretation("rec.mp4", params, preset, (notice, score), size, stats)

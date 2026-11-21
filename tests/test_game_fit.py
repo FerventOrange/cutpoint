@@ -535,12 +535,12 @@ def test_a_mixed_date_group_keeps_its_key_on_the_largest_group(folder, caplog, c
 def test_sampling_loads_no_ocr_model_without_frames_to_read(tmp_path, monkeypatch) -> None:
     from types import SimpleNamespace  # noqa: PLC0415
 
-    from cutpoint.events import discover, killfeed  # noqa: PLC0415
+    from cutpoint.events import discover, ocr_engine  # noqa: PLC0415
 
     def engine(**_kwargs):
         raise AssertionError("OCR model loaded")
 
-    monkeypatch.setattr(killfeed, "OcrEngine", engine)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", engine)
     monkeypatch.setattr(discover, "_burst_frames", lambda *a: [])  # nothing decodes
     path = tmp_path / "gone.mp4"
     src = SimpleNamespace(path=path, name=path.name, duration=600.0, io_path=path)

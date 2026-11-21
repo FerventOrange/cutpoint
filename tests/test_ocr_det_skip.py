@@ -14,9 +14,10 @@ import pytest
 from conftest import set_config
 from cutpoint import edit
 from cutpoint.events import cli as events_cli
-from cutpoint.events import killfeed, ocr_raw
-from cutpoint.events.killfeed import OcrParams, OcrReader, scaled
-from cutpoint.events.regions import preset_from_dict
+from cutpoint.events import menu_rules, ocr_raw, ocr_read
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_read import OcrReader
+from cutpoint.events.regions import preset_from_dict, scaled
 from ocr_raw_helpers import _dirs, _Engine, _run, _Stop
 
 RECT = (320, 160, 320, 160)  # the notice region (reference px = frame px at 1080p)
@@ -47,7 +48,7 @@ def _reader(engine: _Det, det_skip: bool = True) -> OcrReader:
         {"game": "zonewar", "regions": [region], "bigtext": False}
     ).all_regions()
     rects = {r.name: scaled(r, 1920, 1080) for r in regions}
-    union = killfeed._union(list(rects.values()))
+    union = menu_rules._union(list(rects.values()))
     params = OcrParams(game="zonewar", det_skip=det_skip)
     return OcrReader(regions, rects, union, engine, params, 1.0, "bottom", (1920, 1080))
 
@@ -66,11 +67,11 @@ def test_tile_diff_sees_a_small_changed_spot() -> None:
     b = a.copy()
     b[8:16, 16:24] += 10  # one tile of 25
     assert np.abs(b.astype(float) - a).mean() < 1  # the global mean hardly moves
-    assert killfeed._tile_diff(a, b) == pytest.approx(10)
+    assert ocr_read._tile_diff(a, b) == pytest.approx(10)
     edge = np.full((21, 21), 100, np.uint8)
     moved = edge.copy()
     moved[16:, 16:] += 9  # the 5x5 tile at the corner
-    assert killfeed._tile_diff(edge, moved) == pytest.approx(9)
+    assert ocr_read._tile_diff(edge, moved) == pytest.approx(9)
 
 
 def test_unchanged_region_skips_the_det_call() -> None:

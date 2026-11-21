@@ -12,7 +12,8 @@ from cutpoint.events import killfeed
 from cutpoint.events import regions as rg
 from cutpoint.events.common import Source
 from cutpoint.events.discover import _padded
-from cutpoint.events.killfeed import OcrParams, OcrReader, readable_regions
+from cutpoint.events.killfeed import OcrParams, readable_regions
+from cutpoint.events.ocr_read import OcrReader
 from cutpoint.events.regions import HudPreset, Region, preset_from_dict
 
 

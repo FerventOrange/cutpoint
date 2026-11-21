@@ -5,16 +5,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from cutpoint.events.killfeed import (
-    FrameRec,
-    OcrInterpretation,
-    OcrParams,
-    link_teamkills,
-    mark_replay_kills,
-    replay_spans,
-)
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_read import FrameRec, OcrInterpretation
 from cutpoint.events.regions import Region, marker_seen, preset_from_dict
 from cutpoint.events.report import _event_line, normalize
+from cutpoint.events.tracker import link_teamkills, mark_replay_kills, replay_spans
 
 
 def _replay(t: float, end: float, sightings: int | None = None) -> dict[str, Any]:

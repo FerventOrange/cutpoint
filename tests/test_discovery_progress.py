@@ -83,7 +83,7 @@ def test_two_games_split_the_discovery_part(ocr_run, monkeypatch, capsys):
 def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
     import numpy as np  # noqa: PLC0415
 
-    from cutpoint.events import killfeed  # noqa: PLC0415
+    from cutpoint.events import ocr_engine  # noqa: PLC0415
 
     src = SimpleNamespace(name="rec.mp4", path=tmp_path / "rec.mp4", io_path=tmp_path / "rec.mp4")
     params = discover.DiscoverParams()
@@ -112,7 +112,7 @@ def test_ocr_frames_report_cached_short_and_new_bursts(tmp_path, monkeypatch):
         def __call__(self, img, min_score):
             return []
 
-    monkeypatch.setattr(killfeed, "OcrEngine", Engine)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", Engine)
     monkeypatch.setattr(  # a short burst: 2 of 4 frames decode
         discover, "_burst_frames", lambda *a: [np.zeros((72, 128, 3), np.uint8)] * 2
     )

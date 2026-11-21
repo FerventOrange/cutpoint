@@ -19,7 +19,8 @@ from cutpoint.errors import LowMemoryError
 from cutpoint.events import discover, game_fit
 from cutpoint.events import hud_map as vision_map
 from cutpoint.events import regions as hud
-from cutpoint.events.killfeed import OcrParams, SharedOcr
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_engine import SharedOcr
 from cutpoint.events.pipeline import (
     DISCOVERY_PCT,
     USER_PRESET_KEYS,

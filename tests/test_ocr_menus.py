@@ -9,13 +9,10 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.events import killfeed
-from cutpoint.events.killfeed import (
-    EventTracker,
-    FeedParser,
-    menu_rules,
-    text_frames,
-)
+from cutpoint.events import menu_rules as menu_rules_mod
+from cutpoint.events.feed_parser import FeedParser
+from cutpoint.events.menu_rules import menu_rules, text_frames
+from cutpoint.events.tracker import EventTracker
 from ocr_menus_helpers import (
     FEED,
     FPS,
@@ -45,7 +42,7 @@ def test_menu_frames_give_no_events(tmp_path: Path, monkeypatch) -> None:
 def test_menu_and_event_frames_are_logged_at_debug_without_ocr_text(
     tmp_path: Path, monkeypatch, caplog
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger="cutpoint.events.killfeed")
+    caplog.set_level(logging.DEBUG, logger="cutpoint.events.menu_rules")
     _run(tmp_path, monkeypatch, _Engine())
     lines = [r.getMessage() for r in caplog.records if " menu test " in r.getMessage()]
     assert len([x for x in lines if not x.endswith("-> none")]) == 30  # 20-30 s at 3 fps
@@ -339,8 +336,8 @@ def test_long_still_menu_without_menu_text_is_static(tmp_path: Path, monkeypatch
 def _still_records(times: list[float], grey: list[float]) -> list[dict[str, Any]]:
     """Frame records at ``times`` whose thumbnails are one grey level each, with
     their still run ids (:class:`StillRuns` at 3 fps)."""
-    runs = killfeed.StillRuns(FPS)
-    shape = killfeed.MENU.static_thumb[::-1]
+    runs = menu_rules_mod.StillRuns(FPS)
+    shape = menu_rules_mod.MENU.static_thumb[::-1]
     return [
         {"id": n, "t": t, "source": "rec.mp4", "boxes": [], "still": runs.add(t, np.full(shape, g))}
         for n, (t, g) in enumerate(zip(times, grey, strict=True))
@@ -359,7 +356,7 @@ def test_static_rule_needs_still_runs_and_feed_times() -> None:
     old = [{k: v for k, v in f.items() if k != "still"} for f in still]
     assert set(menu_rules(old, feed_times=set())[0].values()) == {"none"}
     # a small change (a cursor) stays still; a larger one starts a new run
-    diff = killfeed.MENU.static_max_diff
+    diff = menu_rules_mod.MENU.static_max_diff
     grey = [90.0] * 10 + [90 + 2 * diff] * 10 + [90 + 2.5 * diff] * 5 + [90 + 2 * diff] * 15
     # 2 menu lines read as the cursor's screen opens (3.5 s), on screen to the end: 0-3 s
     # is too short; 3.3-13 s holds still with the cursor
@@ -391,17 +388,17 @@ def test_bare_static_screen_needs_menu_frames_near_it() -> None:
     times = [n / 3 for n in range(40)]  # 0-13 s still, no menu text
     records = _still_records(times, [90.0] * 40)
     everything = {f["id"] for f in records}
-    assert killfeed.static_frames(records, set()) == set()
-    near = [13.0 + killfeed.MENU.static_anchor_s]  # another rule's menu frame after the part
-    assert killfeed.static_frames(records, set(), None, near) == everything
-    far = [13.0 + killfeed.MENU.static_anchor_s + 0.5]
-    assert killfeed.static_frames(records, set(), None, far) == set()
-    before = [-killfeed.MENU.static_anchor_s]
-    assert killfeed.static_frames(records, set(), None, before) == everything
+    assert menu_rules_mod.static_frames(records, set()) == set()
+    near = [13.0 + menu_rules_mod.MENU.static_anchor_s]  # another rule's menu frame after the part
+    assert menu_rules_mod.static_frames(records, set(), None, near) == everything
+    far = [13.0 + menu_rules_mod.MENU.static_anchor_s + 0.5]
+    assert menu_rules_mod.static_frames(records, set(), None, far) == set()
+    before = [-menu_rules_mod.MENU.static_anchor_s]
+    assert menu_rules_mod.static_frames(records, set(), None, before) == everything
     # a very long still stretch needs none
-    n = int(killfeed.MENU.static_long_s * 3) + 3
+    n = int(menu_rules_mod.MENU.static_long_s * 3) + 3
     long = _still_records([k / 3 for k in range(n)], [90.0] * n)
-    assert killfeed.static_frames(long, set()) == {f["id"] for f in long}
+    assert menu_rules_mod.static_frames(long, set()) == {f["id"] for f in long}
     assert set(menu_rules(records, feed_times=set(), text_spans=[])[0].values()) == {"none"}
 
 
@@ -419,7 +416,7 @@ def test_still_screen_with_menu_text_is_no_evidence_for_a_bare_one() -> None:
 def test_static_goes_before_text_for_a_still_text_screen() -> None:
     times = [n / 3 for n in range(49)]  # 16 s still; 5 lines read together at 1-8 s
     records = _still_records(times, [90.0] * 49)
-    lines = [(1.0, 8.0)] * killfeed.MENU.text_lines
+    lines = [(1.0, 8.0)] * menu_rules_mod.MENU.text_lines
     texts = text_frames(records, lines)
     assert texts  # the text rule fires on 1-8 s...
     rules = menu_rules(records, feed_times=set(), text_spans=lines)[0]
@@ -432,10 +429,10 @@ def test_static_runs_end_at_gaps() -> None:
     times = [0.0, 1 / 3, 2 / 3, 1.0, 9.0, 9 + 1 / 3, 9 + 2 / 3, 40.0, 40 + 1 / 3]
     records = _still_records(times, [90.0] * len(times))
     assert len({f["still"] for f in records}) == 3
-    assert killfeed.static_frames(records, set()) == set()
+    assert menu_rules_mod.static_frames(records, set()) == set()
     # long enough but too few frames (a very low OCR rate): no static screen
     sparse = [dict(f, still=0) for f in _still_records([0.0, 6.0], [90.0, 90.0])]
-    assert killfeed.static_frames(sparse, set()) == set()
+    assert menu_rules_mod.static_frames(sparse, set()) == set()
 
 
 def test_small_hud_area_has_no_static_rule(tmp_path: Path, monkeypatch) -> None:
@@ -496,7 +493,7 @@ def test_text_screen_ends_at_gaps() -> None:
     rules = menu_rules(records, feed_times=set(), text_spans=[(0.0, 12.0)] * 5)[0]
     assert set(rules.values()) == {"none"}  # each part holds 2 s
     # (staying lines, first read together): the sixth line came 5 s after the others
-    shown = killfeed.staying_lines(records, [(0.0, 12.0)] * 5 + [(5.0, 12.0)])
+    shown = menu_rules_mod.staying_lines(records, [(0.0, 12.0)] * 5 + [(5.0, 12.0)])
     assert shown == [(5, 5)] * 3 + [(6, 5)] * 5 + [(0, 0)]
 
 
@@ -504,7 +501,7 @@ def test_text_screen_at_low_ocr_frame_rates() -> None:
     # --ocr-fps 0.5: frames 2 s apart, as far apart as StillRuns allows (2 frame intervals)
     records = _moving_records([2.0 * n for n in range(13)])  # 0-24 s
     lobby = [(4.0, 14.0)] * 5
-    gap = killfeed.StillRuns(0.5).max_gap
+    gap = menu_rules_mod.StillRuns(0.5).max_gap
     assert gap == 4.0
     rules = menu_rules(records, feed_times=set(), text_spans=lobby, max_gap=gap)[0]
     assert [f["t"] for f in records if rules[f["id"]] == "text"] == [

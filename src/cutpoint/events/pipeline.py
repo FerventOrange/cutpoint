@@ -43,19 +43,15 @@ from cutpoint.events.common import (
     load_transcript_lines,
 )
 from cutpoint.events.eventtypes import types_for
-from cutpoint.events.killfeed import (
-    OcrEngine,
-    OcrParams,
-    derive_streaks,
-    detect_ocr_events,
-    link_teamkills,
-)
+from cutpoint.events.killfeed import OcrParams, detect_ocr_events
 from cutpoint.events.layers import ACTION_CAM_LAYERS, DEFAULT_LAYERS
 from cutpoint.events.menu_spans import ocr_stats_key
+from cutpoint.events.ocr_engine import OcrEngine
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.events.regions import game_key_for_path, load_preset
 from cutpoint.events.report import kept_dialogue, normalize, write_outputs
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
+from cutpoint.events.tracker import derive_streaks, link_teamkills
 from cutpoint.events.vlm_windows import (
     VlmParams,
     action_cam_wording,

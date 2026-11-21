@@ -340,7 +340,7 @@ def _src(f: dict[str, Any]) -> str:
     (``<file name>~<cache key>``), so two files of one name in different folders stay
     apart (#817). A record without one (written between #815 and #828) has it as its id's
     prefix (``<src_key>@<time>``, see :func:`_ocr_frames`); a record whose id has no
-    ``@`` (frame records of the OCR layer, :func:`~cutpoint.events.killfeed.menu_rules`)
+    ``@`` (frame records of the OCR layer, :func:`~cutpoint.events.menu_rules.menu_rules`)
     is grouped by its ``source``."""
     key = f.get("src_key")
     if not key:
@@ -396,7 +396,7 @@ def _ocr_frames(
     ``make_engine`` gives the engine of the run (#1085 A707), an ``OcrEngine(lanes=1,
     rec_batch=1)`` as below; None: one of its own."""
 
-    from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
+    from cutpoint.events.ocr_engine import OcrEngine  # noqa: PLC0415
 
     done = {rec["id"]: rec for rec in read_ocr_samples(cache_path)}
     total = len(bursts) * params.burst_frames

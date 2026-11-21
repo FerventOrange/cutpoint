@@ -5,16 +5,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from cutpoint.events.killfeed import (
-    EventTracker,
-    FrameRec,
-    Interpreter,
-    OcrInterpretation,
-    OcrParams,
-    collapse_banner_bursts,
-    merge_kill_reads,
-)
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.ocr_read import FrameRec, Interpreter, OcrInterpretation
 from cutpoint.events.regions import Region, preset_from_dict
+from cutpoint.events.tracker import EventTracker, collapse_banner_bursts, merge_kill_reads
 from ocr_helpers import quad
 
 FEED = Region("feed", 1500, 0, 400, 400, "feed")

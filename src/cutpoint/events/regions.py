@@ -62,10 +62,10 @@ class Region:
         kind: How OCR text is interpreted: "feed" (stacked text lines: "A
             destroyed B" or coloured names), "banner", "bigtext" (large
             centred text), "notice", "score" (a small on-screen number such as a
-            round score or a counter; :class:`cutpoint.events.killfeed.ScoreTracker`) or
+            round score or a counter; :class:`cutpoint.events.score_readout.ScoreTracker`) or
             "replay" (a replay or killcam marker the vision HUD map found: text there marks
             a replay, whose kills are no kills of the player;
-            :func:`cutpoint.events.killfeed.mark_replay_kills`).
+            :func:`cutpoint.events.tracker.mark_replay_kills`).
         gate: When to run recognition: "det" (the default: RapidOCR text *detection*
             on the crop; recognition only when the text-box layout changed) or "read"
             (detection and recognition on every frame the region is due).

@@ -47,10 +47,10 @@ from cutpoint.errors import LowMemoryError, is_out_of_memory
 from cutpoint.events.common import Source, load_source
 from cutpoint.events.killfeed import (
     OcrCancelled,
-    OcrEngine,
     OcrParams,
     detect_ocr_events,
 )
+from cutpoint.events.ocr_engine import OcrEngine
 from cutpoint.events.regions import HudPreset, game_key_for_path, load_preset
 
 logger = logging.getLogger(__name__)
