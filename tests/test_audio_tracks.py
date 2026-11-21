@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, needs_ffmpeg, write
-from cutpoint import analyze, audio_tracks, cache, encode, errors, ffmpeg_utils
+from cutpoint import analyze, audio_tracks, cache, encode, errors, ffmpeg_utils, scenes
 from cutpoint.ffmpeg_utils import MediaInfo, VideoEncoder, measure_loudness
 from cutpoint.styles import get_style
 
@@ -382,7 +382,7 @@ def _cdir(tmp_path: Path) -> Path:
         "transcript-small-en.json",
         "events-audio-ab12.json",
         "voice-ab12.npz",
-        analyze.SCENES_FILE,
+        scenes.SCENES_FILE,
         "events-ocr-ab12.json",
         "visual-ab12.npz",
         "audio-tracks.json",
@@ -409,7 +409,7 @@ def test_a_wav_made_with_copies_is_analysed_again_once(tmp_path):
     names = {f.name for f in cdir.iterdir()}
     assert not names & AUDIO_DERIVED  # the hot WAV and everything made from it
     assert {
-        analyze.SCENES_FILE,
+        scenes.SCENES_FILE,
         "events-ocr-ab12.json",
         "visual-ab12.npz",
         "audio-tracks.json",

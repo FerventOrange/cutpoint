@@ -313,9 +313,9 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
     when the crash layer will use it; the caller closes it."""
     from cutpoint.analyze import (  # noqa: PLC0415
         analyze,
-        reanalyze_if_reachable,
         report_highlights,
     )
+    from cutpoint.reanalyze import reanalyze_if_reachable  # noqa: PLC0415
     from cutpoint.styles import get_style  # noqa: PLC0415
 
     t_start = time.perf_counter()  # total_s: the whole run, scan included

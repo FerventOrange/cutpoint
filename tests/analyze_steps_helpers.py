@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from conftest import HOP, StubTranscriber, add_profile, write
-from cutpoint import activity, analyze, cache, crash, progress
+from cutpoint import activity, analyze, cache, crash, progress, vision_step
 from cutpoint.events import common, pipeline, report
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import get_style
@@ -120,7 +120,7 @@ def run(home, tmp_path, monkeypatch):
     monkeypatch.setattr(crash, "decode_window", lambda *a, **k: frames)
     monkeypatch.setattr(analyze, "Transcriber", StubTranscriber)
     monkeypatch.setattr(analyze, "analyze_source", fake_analyze_source)
-    monkeypatch.setattr(analyze, "VisionRater", FakeRater)
+    monkeypatch.setattr(vision_step, "VisionRater", FakeRater)
     monkeypatch.setattr(
         analyze,
         "plan_layers",

@@ -22,7 +22,7 @@ import requests
 
 import cutpoint.analyze
 from conftest import HOP, SLED, needs_ffmpeg
-from cutpoint import activity, backends, cache, cli, errors, vision, vision_record
+from cutpoint import activity, backends, cache, cli, errors, vision, vision_record, vision_step
 from cutpoint.styles import get_style
 from vision_helpers import Resp
 
@@ -297,7 +297,7 @@ NO_CAP = float("inf")  # a deadline that never passes: these tests are not about
 
 def rate_all(cands, rater, style, activity=None, batch_size=0):
     """``_rate_vision`` over ``cands`` in the order given, with no time cap."""
-    return cutpoint.analyze._rate_vision(cands, rater, style, activity, batch_size, deadline=NO_CAP)
+    return vision_step._rate_vision(cands, rater, style, activity, batch_size, deadline=NO_CAP)
 
 
 class _ByStartRater:
@@ -474,7 +474,7 @@ class _FakeRater:
 
 @pytest.fixture
 def rater(monkeypatch) -> type[_FakeRater]:
-    monkeypatch.setattr(cutpoint.analyze, "VisionRater", _FakeRater)
+    monkeypatch.setattr(vision_step, "VisionRater", _FakeRater)
     monkeypatch.setattr(_FakeRater, "calls", [])
     monkeypatch.setattr(cutpoint.config, "vision_time_share", lambda: 1000.0)  # never capped
     return _FakeRater
@@ -541,7 +541,7 @@ def test_rerun_asks_the_model_nothing_and_gives_the_same_ratings(posts, src, cap
     posts.clear()
     again = cands()
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
-    with caplog.at_level(logging.INFO, logger="cutpoint.analyze"):
+    with caplog.at_level(logging.INFO, logger="cutpoint.vision_step"):
         out = rate_all(again, rater, style)
     assert (out.used, out.failed) == (True, 0)
     assert posts == []

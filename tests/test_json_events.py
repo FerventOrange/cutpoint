@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import envelope, run_json, warned_about, warning_codes, write
-from cutpoint import analyze, cache, cli, crash
+from cutpoint import cache, cli, crash, reanalyze
 from cutpoint.events import pipeline, scoring
 
 
@@ -100,7 +100,7 @@ def test_events_json_ski_rerank_skipped(project, monkeypatch, capsys):
     hl = cache.load_json(project / "highlights.json")
     cache.save_json(project / "highlights.json", hl | {"style_kind": "action-cam"})
     _fake_run_events(monkeypatch, ["audio", "voice", "visual", "crash", "vlm"])
-    monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda project: None)
     code, doc = run_json(capsys, ["events", "ev"])
     assert code == 0 and doc["ok"] is True
     assert warning_codes(doc) == ["highlights_not_updated"]

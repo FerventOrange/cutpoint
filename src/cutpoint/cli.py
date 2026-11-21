@@ -638,7 +638,7 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
         jsonout.output("activity_file", project / ACTIVITY_FILE)
         jsonout.output("profile_name", (data.get("activity") or {}).get("name"))
     if a.reanalyze:
-        from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
+        from cutpoint.reanalyze import reanalyze_if_reachable  # noqa: PLC0415
 
         if reanalyze_if_reachable(project) is None:
             jsonout.warn(

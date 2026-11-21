@@ -16,7 +16,7 @@ pytest.importorskip("httpx")
 from fastapi.testclient import TestClient
 
 from conftest import patch_ui
-from cutpoint import analyze, projectfiles, rerank, ui
+from cutpoint import analyze, projectfiles, reanalyze, rerank, ui
 from cutpoint.styles import get_style
 from test_rerank import lite_layers, make_project, read  # noqa: F401 (lite_layers: a fixture)
 from test_ui_ranking import (  # noqa: F401 (torch_imports: a fixture)
@@ -66,7 +66,7 @@ def rewrite(project: Path, name: str, edit: Callable[[dict[str, Any]], object]) 
 def relink(project: Path) -> None:
     """highlights.json linked to the backup as it is now and sealed again: only the backup's own
     change is left for the Undo to notice."""
-    link = analyze.backup_digest((project / projectfiles.RERANK_BACKUP).read_bytes())
+    link = reanalyze.backup_digest((project / projectfiles.RERANK_BACKUP).read_bytes())
     rewrite(
         project, "highlights.json", lambda hl: hl["settings"].__setitem__("rerank_backup", link)
     )

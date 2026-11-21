@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import media_info, needs_ffmpeg
-from cutpoint import analyze, ffmpeg_utils
+from cutpoint import analyze, ffmpeg_utils, scenes
 from cutpoint.errors import FFmpegError
 from scene_helpers import concat_clip, late_copy, near
 
@@ -53,8 +53,8 @@ def first_time(monkeypatch):
             raise box["value"]
         return box["value"]
 
-    monkeypatch.setattr(analyze, "first_frame_time", fake)
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0, fstart=1.0))
+    monkeypatch.setattr(scenes, "first_frame_time", fake)
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 60.0, fstart=1.0))
     return calls, box
 
 
@@ -65,15 +65,15 @@ def first_time(monkeypatch):
 )
 def test_no_lead_in_for_exact_seekers_or_a_pass_from_the_start(first_time, name, offset):
     calls, _box = first_time
-    assert analyze._lead_in(Path(name), offset, 60.0, 0.0) is None
+    assert scenes._lead_in(Path(name), offset, 60.0, 0.0) is None
     assert calls == []  # nothing is measured
 
 
 @pytest.mark.parametrize("offset", [300.0, 6.4, 10.0, 10.5])
 def test_the_lead_in_seeks_earlier_and_clamps_at_the_start(first_time, offset):
     calls, _box = first_time
-    seek = max(0.0, round(offset - analyze.LEAD_IN_S, 3))
-    got = analyze._lead_in(Path("a.ts"), offset, 60.0, 0.0)
+    seek = max(0.0, round(offset - scenes.LEAD_IN_S, 3))
+    got = scenes._lead_in(Path("a.ts"), offset, 60.0, 0.0)
     assert got is not None and got[0] == seek
     assert got[1] == pytest.approx(12.0 - 1.0 - offset)  # first frame on the clock, less offset
     assert calls == [{"keyframes": False, "start": seek}]
@@ -82,7 +82,7 @@ def test_the_lead_in_seeks_earlier_and_clamps_at_the_start(first_time, offset):
 def test_a_failed_measurement_keeps_the_old_seek(first_time):
     _calls, box = first_time
     box["value"] = FFmpegError("no frame")
-    assert analyze._lead_in(Path("a.ts"), 300.0, 60.0, 0.0) is None
+    assert scenes._lead_in(Path("a.ts"), 300.0, 60.0, 0.0) is None
 
 
 @pytest.mark.parametrize(
@@ -99,7 +99,7 @@ def test_the_lead_in_never_seeks_before_the_end_of_the_damage(
     first_time, offset, readable_from, seek
 ):
     calls, _box = first_time
-    got = analyze._lead_in(Path("a.ts"), offset, 60.0, readable_from)
+    got = scenes._lead_in(Path("a.ts"), offset, 60.0, readable_from)
     assert got is not None and got[0] == seek >= readable_from
     assert calls == [{"keyframes": False, "start": seek}]  # nothing was decoded before it
 
@@ -113,15 +113,15 @@ def test_no_lead_in_with_under_two_seconds_left_or_an_unknown_end_of_the_damage(
     first_time, offset, readable_from
 ):
     calls, _box = first_time
-    assert analyze._lead_in(Path("a.ts"), offset, 60.0, readable_from) is None
+    assert scenes._lead_in(Path("a.ts"), offset, 60.0, readable_from) is None
     assert calls == []
 
 
 def test_a_seek_clamped_to_zero_has_no_ss_in_the_proxy_args():
-    pre, _post, vf, _enc = analyze._proxy_args(60.0, 6.4, None, None, (0.0, 1.25))
+    pre, _post, vf, _enc = scenes._proxy_args(60.0, 6.4, None, None, (0.0, 1.25))
     assert "-ss" not in pre
     assert vf.startswith("setpts=PTS-STARTPTS+1.250000/TB,fps=")
-    pre, *_ = analyze._proxy_args(60.0, 300.0, None, None, (290.0, -8.5))
+    pre, *_ = scenes._proxy_args(60.0, 300.0, None, None, (290.0, -8.5))
     assert pre[pre.index("-ss") + 1] == "290.000"
 
 
@@ -132,11 +132,11 @@ def retry(tmp_path, monkeypatch):
     says per run: "" = ok, "raise" = FFmpegError, other text = the stderr of a run exiting 0 that
     made no output (a ``(stderr, out_time)`` tuple: with that much output)."""
     runs, plan = [], []
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0, fstart=0.0))
-    monkeypatch.setattr(analyze, "first_frame_time", lambda p, **k: 291.0)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 60.0, fstart=0.0))
+    monkeypatch.setattr(scenes, "first_frame_time", lambda p, **k: 291.0)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: [3.0])
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path, **k: [3.0])
 
     def run(args, total, label, **kw):
         runs.append(args)
@@ -148,12 +148,12 @@ def retry(tmp_path, monkeypatch):
             return ffmpeg_utils.ProgressResult(stderr=step[0], out_time=step[1])
         return ffmpeg_utils.ProgressResult(stderr=step, out_time=0.0 if step else total)
 
-    monkeypatch.setattr(analyze, "run_progress", run)
+    monkeypatch.setattr(scenes, "run_progress", run)
 
     def call(name="s.ts", offset=300.0, readable_from="far"):
         if readable_from == "far":  # the default: damage long before the part
             readable_from = offset - 20.0
-        return analyze.scene_cuts(
+        return scenes.scene_cuts(
             tmp_path / name, tmp_path, 60.0, offset=offset, readable_from=readable_from
         )
 
@@ -205,7 +205,7 @@ def test_the_lead_in_range_covering_the_damage_is_cut_back_to_its_end(retry, mon
     runs, _plan, call = retry
     starts = []
     monkeypatch.setattr(
-        analyze, "first_frame_time", lambda p, **k: starts.append(k["start"]) or 297.0
+        scenes, "first_frame_time", lambda p, **k: starts.append(k["start"]) or 297.0
     )
     assert call(readable_from=296.5) == [3.0]
     assert starts == [296.5] and [seek_of(r) for r in runs] == ["296.500"]
@@ -260,13 +260,13 @@ def make_clip(out: Path, *codec: str, fmt: str | None = None) -> Path:
 def scene(src: Path, cdir: Path, duration: float, offset: float = 0.0) -> list[float]:
     cdir.mkdir()
     lead = {"readable_from": 0.0} if offset else {}  # a recovered part, clean before it
-    return analyze.scene_cuts(src, cdir, duration, offset, **lead)
+    return scenes.scene_cuts(src, cdir, duration, offset, **lead)
 
 
 @pytest.fixture
 def real(monkeypatch):
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
 
 
 @pytest.fixture
@@ -307,9 +307,9 @@ def test_a_recovered_ts_part_far_into_the_file_keeps_its_first_cut(
     ts_2s, tmp_path, real, offset, cut
 ):
     duration = ffmpeg_utils.probe(ts_2s).duration
-    assert offset - analyze.LEAD_IN_S > 0
-    lead = analyze._lead_in(ts_2s, offset, duration - offset, 0.0)
-    assert lead is not None and lead[0] == pytest.approx(offset - analyze.LEAD_IN_S)
+    assert offset - scenes.LEAD_IN_S > 0
+    lead = scenes._lead_in(ts_2s, offset, duration - offset, 0.0)
+    assert lead is not None and lead[0] == pytest.approx(offset - scenes.LEAD_IN_S)
     got = [c + offset for c in scene(ts_2s, tmp_path / "part", duration - offset, offset)]
     assert any(abs(c - cut) <= 0.2 for c in got), got
     assert near([c for c in got if c > cut + 1.0], [c for c in CUT_TIMES if c > cut + 1.0]), got
@@ -321,7 +321,7 @@ def test_the_ts_regression_fails_without_the_lead_in(
     ts_2s, tmp_path, monkeypatch, real, offset, cut
 ):
     """Control: with no lead-in (the code before #1038) the part loses the cut after its start."""
-    monkeypatch.setattr(analyze, "_lead_in", lambda *a: None)
+    monkeypatch.setattr(scenes, "_lead_in", lambda *a: None)
     duration = ffmpeg_utils.probe(ts_2s).duration
     part = scene(ts_2s, tmp_path / "part", duration - offset, offset)
     assert not any(abs(c + offset - cut) <= 0.2 for c in part), part
@@ -337,16 +337,16 @@ def test_a_forced_split_of_a_late_video_matches_one_pass_on_the_gpu(tmp_path, mo
     base = make_clip(tmp_path / "base.mp4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "20")
     late = late_copy(base, tmp_path / "late.mp4", "aac")
     assert ffmpeg_utils.probe(late).vstart > 0.2
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     duration = ffmpeg_utils.probe(late).duration
     one = scene(late, tmp_path / "one", duration)
     assert near(one, [c + 0.25 for c in CUT_TIMES]), one
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: dec)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: dec)
     cdir = tmp_path / "hy"
     cdir.mkdir()
     for split in (11.0, 10.9, 15.2, 6.0):
-        got = analyze._hybrid_cuts(late, cdir, duration, dec, split, 2)
+        got = scenes._hybrid_cuts(late, cdir, duration, dec, split, 2)
         assert near(got, one), (split, got, one)
 
 
@@ -372,16 +372,16 @@ def test_a_late_webm_seeks_exactly_for_windows_and_a_split(webm, tmp_path, real)
     forced split of the pass matches one pass."""
     info = ffmpeg_utils.probe(webm)
     assert info.vcodec == "vp9" and info.vstart > 0.2
-    assert analyze._seeks_exactly(webm)
+    assert scenes._seeks_exactly(webm)
     one = scene(webm, tmp_path / "one", info.duration)
     assert near(one, [c + info.vstart for c in CUT_TIMES]), one
     edges = [2.5, 8.0, 11.5, 15.0, 19.0]
     wdir = tmp_path / "windows"
     wdir.mkdir()
-    got = analyze.EdgeCuts(webm, wdir, info.duration).around(edges)
+    got = scenes.EdgeCuts(webm, wdir, info.duration).around(edges)
     assert near(got, one), (got, one)
     cdir = tmp_path / "hy"
     cdir.mkdir()
     for split in (11.0, 10.9, 15.2):
-        got = analyze._hybrid_cuts(webm, cdir, info.duration, None, split, 2)
+        got = scenes._hybrid_cuts(webm, cdir, info.duration, None, split, 2)
         assert near(got, one), (split, got, one)

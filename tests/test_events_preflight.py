@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from conftest import HOP, SLED, add_profile
-from cutpoint import activity, crash
+from cutpoint import activity, crash, reanalyze
 from cutpoint import analyze as analyze_mod
 from cutpoint.events import common, paths, pipeline, visual
 from cutpoint.pano import cli, views
@@ -194,7 +194,7 @@ def _analyze_stubs(monkeypatch, tmp_path: Path) -> list[str]:
         views, "run_layer", lambda clips, force=False, handoff=None: order.append("views") or {}
     )
     monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: order.append("analyze"))
-    monkeypatch.setattr(analyze_mod, "reanalyze", lambda project: None)
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda project: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     return order
@@ -307,9 +307,9 @@ def test_cmd_analyze_scan_only_naming_a_missing_clip_says_so(monkeypatch, tmp_pa
 def test_cmd_analyze_footage_gone_before_rescoring_keeps_highlights(
     monkeypatch, tmp_path: Path, caplog
 ):
-    reanalyze = analyze_mod.reanalyze
+    real_reanalyze = reanalyze.reanalyze
     _analyze_stubs(monkeypatch, tmp_path)
-    monkeypatch.setattr(analyze_mod, "reanalyze", reanalyze)
+    monkeypatch.setattr(reanalyze, "reanalyze", real_reanalyze)
     lrv = tmp_path / "a.lrv"
     lrv.write_bytes(b"x")
     hl = tmp_path / "highlights.json"

@@ -18,7 +18,17 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, cache, default_fit, paths, planning, scorer, styles, vision_record
+from cutpoint import (
+    analyze,
+    cache,
+    default_fit,
+    paths,
+    planning,
+    scenes,
+    scorer,
+    styles,
+    vision_record,
+)
 from cutpoint.assistant import context
 from cutpoint.events import scoring
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, Matcher
@@ -856,7 +866,7 @@ def test_a_source_with_scenes_and_no_audio_nominates_on_both_paths(tmp_path):
     src = tmp_path / "silent.mp4"
     src.write_bytes(b"x")
     cache.save_json(
-        cache.source_dir(src) / analyze.SCENES_FILE, [30.0]
+        cache.source_dir(src) / scenes.SCENES_FILE, [30.0]
     )  # no loudness, no transcript
     style = get_style("gaming")
     hl = analysis_of(src, 120.0)

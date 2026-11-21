@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from conftest import needs_ffmpeg
-from cutpoint import analyze
+from cutpoint import scenes
 from cutpoint.assistant import watch
 from cutpoint.events import eventtypes, explosions, pipeline, scoring, sheets, vlm_windows
 from cutpoint.events.audio_events import DEFAULT_GROUPS
@@ -103,7 +103,7 @@ def test_confirm_without_loudness_confirms_nothing():
 def test_confirm_reads_the_source_cache(tmp_path):
     t, m = _loudness({20.0: 10.0})
     (tmp_path / "loudness.json").write_text(json.dumps({"t": t.tolist(), "m": m.tolist()}))
-    (tmp_path / analyze.SCENES_FILE).write_text("[20.4]")
+    (tmp_path / scenes.SCENES_FILE).write_text("[20.4]")
     events = [_boom(20.0), _boom(40.0)]
     assert explosions.confirm(events, [(0.0, tmp_path)]) == 1
     assert [e["confirmed"] for e in events] == [True, False]
@@ -179,7 +179,7 @@ def test_two_parts_are_read_with_their_offsets(tmp_path):
     (first / "loudness.json").write_text(json.dumps({"t": t.tolist(), "m": m.tolist()}))
     # the second part starts at 100 s of the source and has its own boom at 20 s of its own time
     (second / "loudness.json").write_text(json.dumps({"t": t.tolist(), "m": m.tolist()}))
-    (second / analyze.SCENES_FILE).write_text("[20.4]")
+    (second / scenes.SCENES_FILE).write_text("[20.4]")
     events = [_boom(20.0), _boom(120.0), _boom(60.0)]
     parts = [(0.0, first), (100.0, second)]
     assert explosions.confirm(events, parts) == 2

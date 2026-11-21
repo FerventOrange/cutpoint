@@ -13,7 +13,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import envelope
-from cutpoint import cache, cli, folders, procs, progress, runstate
+from cutpoint import cache, cli, folders, procs, progress, reanalyze, runstate
 from resume_helpers import fake_events, make_project, read_progress
 
 KEYS = {
@@ -368,7 +368,7 @@ def test_360_analyze_records_once_and_does_not_lock_itself_out(project, monkeypa
     monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
     monkeypatch.setattr(views, "run_layer", lambda clips, force=False, handoff=None: {})
     monkeypatch.setattr(cutpoint.analyze, "analyze", analyze)
-    monkeypatch.setattr(cutpoint.analyze, "reanalyze_if_reachable", lambda p: None)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda p: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     monkeypatch.setattr(candidates, "cache_candidate_paths", lambda p: {"seconds": 0.0})
@@ -451,7 +451,7 @@ def test_360_analyze_scan_of_a_new_project_records_the_transcribed_sources(
     monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
     monkeypatch.setattr(views, "run_layer", lambda clips, force=False, handoff=None: {})
     monkeypatch.setattr(cutpoint.analyze, "analyze", analyze)
-    monkeypatch.setattr(cutpoint.analyze, "reanalyze_if_reachable", lambda p: None)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda p: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     monkeypatch.setattr(candidates, "cache_candidate_paths", lambda p: {"seconds": 0.0})

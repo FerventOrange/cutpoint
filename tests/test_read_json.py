@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import analyze, cli
+from cutpoint import cli, reanalyze
 from cutpoint.events.common import load_highlights
 from cutpoint.planning import select_moments
 
 READERS = {
     "select_moments": select_moments,
-    "reanalyze": analyze.reanalyze,
+    "reanalyze": reanalyze.reanalyze,
     "load_highlights": load_highlights,
 }
 HINT = "cutpoint analyze"

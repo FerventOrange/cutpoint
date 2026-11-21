@@ -12,11 +12,11 @@ import pytest
 
 from cutpoint import analyze
 from cutpoint.analyze import (
-    SNAP_REACH_S,
     Candidate,
     _longest_pause,
     sentence_bounds,
 )
+from cutpoint.scenes import SNAP_REACH_S
 from cutpoint.styles import get_style
 from cutpoint.transcribe import flat_words
 

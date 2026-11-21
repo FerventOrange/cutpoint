@@ -17,20 +17,15 @@ the available features, optionally re-scored by a vision model, and written to
 from __future__ import annotations
 
 import contextlib
-import copy
 import gc
-import hashlib
 import importlib.util
-import json
 import logging
-import math
 import os
-import re
 import sys
 import threading
 import time
 from bisect import bisect_left, bisect_right
-from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from functools import cached_property
@@ -44,60 +39,48 @@ from cutpoint import (
     backends,
     cache,
     category,
-    config,
     default_fit,
     features,
-    ffmpeg_utils,
     folders,
     intervals,
     jsonout,
     memguard,
-    paths,
     progress,
-    projectfiles,
+    reanalyze,
     repeats,
     runstate,
     scorer,
     selfcheck,
     tsrepair,
+    vision_step,
 )
-from cutpoint.config import path_key, remap_source, unc_path
+from cutpoint import scenes as scene_mod
+from cutpoint.config import remap_source, unc_path
+from cutpoint.crash_moments import CrashPart, add_crash_candidates
 from cutpoint.dsp import conv_same, gauss_kernel, gauss_smooth
-from cutpoint.errors import FFmpegError, LowMemoryError
+from cutpoint.errors import LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
     Seed,
-    heard_laughter,
-    is_nominated,
     number_candidates,
     rescore,
-    restore_widened,
 )
 from cutpoint.events.setup import COMPONENTS, EVENTS_MODULES
 from cutpoint.ffmpeg_utils import (
-    NVDEC_DOWNLOAD,
     READ_ERROR_RE,
     READ_PROBE_S,
-    STOP_GRACE_S,
-    HwDecoder,
     MediaInfo,
     ProgressResult,
-    RunCancelled,
-    decoder_for,
     extract_audio,
-    first_frame_time,
-    gpu_chain,
     momentary_loudness,
-    nvdec_download,
     probe,
     read_window_ok,
-    run_progress,
     source_tracks,
     wav_duration,
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
-from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS, RERANK_BACKUP
+from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
 from cutpoint.styles import (
     ACTION_CAM,
@@ -105,9 +88,7 @@ from cutpoint.styles import (
     PROFANITY,
     AutoRequest,
     Style,
-    analysis_style,
     style_hash,
-    style_name,
 )
 from cutpoint.telemetry import has_telemetry
 from cutpoint.transcribe import (
@@ -134,17 +115,13 @@ from cutpoint.utils import (
     slugify,
     title_slug,
 )
-from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
-from cutpoint.vision_record import vision_blend
 
 if TYPE_CHECKING:
-    from cutpoint.activity import Prompts
     from cutpoint.events.ocr_prefetch import OcrPrefetch
 
 logger = logging.getLogger(__name__)
 
 DT = 0.1  # analysis grid step (s), matches ebur128's 10 Hz momentary output
-LONG_FILE_S = 1800  # above this, scene detection decodes keyframes only
 PROFANE = {p.rstrip("*") for p in PROFANITY}  # names as keyword_hits reports them
 PROFANITY_CUE_S = 3.0  # a profane word counts only if another cue is this close
 PROFANITY_CUE_MIN = 0.8  # minimum weight of a keyword that counts as a cue
@@ -163,9 +140,6 @@ DELIVERY_PRE_S, DELIVERY_POST_S, DELIVERY_BASE_S = 1.0, 2.0, 9.0
 DELIVERY_JUMP = 0.2
 DELIVERY_LOUD = 0.5
 DELIVERY_FLAT = 0.3
-# the vision band (#909): the default edit plus k below its cut, k = this share of the edit's
-# moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
-VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
 PICK_FLOOR = 0.25  # a peak below this share of the source's reference is not a candidate ...
 LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
 # The reference of those shares (:func:`pick_reference`, #1085 A104): the strongest window peak
@@ -533,34 +507,6 @@ def _write_clock(cdir: Path) -> None:
 
 
 SOURCE_STAGES = ("probe_s", "audio_extract_s", "loudness_s", "transcribe_s", "scenes_s")
-SCENE_OVERLAP_ENV = "ANALYZE_SCENE_OVERLAP"  # CUTPOINT_ANALYZE_SCENE_OVERLAP=1: opt in (#725)
-SCENE_JOIN_S = 8.0  # a cancelled scene thread gets this long to stop (a daemon, never waited on)
-SCENE_POLL_S = 0.5  # waits on the scene thread in steps this long: Ctrl+C gets through on Windows
-# The full scene pass's cuts per part cache folder: "-v3" since the proxy is lossless (#994,
-# a lossy one added cuts at its keyframes); "-v2" counted every pass from the container start
-# (#976). An older file is not read, the source's scenes are detected again.
-SCENES_FILE = "scenes-v3.json"
-# Scene cuts of a style that does not weigh them, only around candidate edges (#730, EdgeCuts)
-SCENE_WINDOWS_FILE = "scenes-windows.json"  # per part cache folder, next to SCENES_FILE
-SCENE_WINDOWS_VERSION = 3  # 3: lossless proxy (#994), 2: container clock (#976); else decoded again
-SNAP_REACH_S = 1.0  # _snap moves an edge to a scene cut at most this far
-SCENE_WARMUP_S = 1.5  # picture the detector needs around a cut (2-frame window, 0.5 s min)
-WINDOW_PAD_S = SNAP_REACH_S + SCENE_WARMUP_S  # a window reaches this far either side of an edge
-SCENE_GRID_S = 0.1  # the full proxy's frame step (10 fps, _proxy_args): windows start on it
-# A recovered part of a container that seeks inexactly (MPEG-TS) is decoded from this far before
-# its start (_lead_in): ffmpeg's seek there lands on the next keyframe, past cuts near the start
-LEAD_IN_S = 10.0
-# ... but never from before the end of the unreadable stretch before it (the read-error record's
-# ``unreadable_until``), and not at all when less than this is left: about one GOP of a common
-# recording (OBS and stream encoders put a keyframe every 2 s), so a shorter lead-in mostly lands
-# on the keyframe the plain seek does and only costs its measuring decode
-LEAD_IN_MIN_S = 2.0
-
-
-def scene_overlap() -> bool:
-    """True when ``CUTPOINT_ANALYZE_SCENE_OVERLAP=1``: a source's scene cuts are detected
-    while Whisper transcribes it."""
-    return (paths.env(SCENE_OVERLAP_ENV) or "").strip() == "1"
 
 
 def _source_timings(results: Sequence[SourceResult], prefetch: OcrPrefetch | None) -> list[Any]:
@@ -628,797 +574,6 @@ def _watch_extract(
     finally:
         stop.set()
         thread.join()
-
-
-def _first_shift(src: Path, offset: float, duration: float) -> float | None:
-    """Where on the container clock (from :attr:`MediaInfo.fstart`) the first frame a whole
-    scene pass of ``src`` decodes lies (:func:`_proxy_args`), or None when ffmpeg's own count
-    is that clock: a pass that seeks (in a container that does not seek exactly a recovered
-    part places its frames by :func:`_lead_in` instead), a whole pass of a container that seeks
-    exactly, and a source ffprobe or the one-frame decode fails on (the pass then counts as
-    ffmpeg does)."""
-    if offset > 0 or _seeks_exactly(src):
-        return None
-    try:
-        first = first_frame_time(src, keyframes=duration > LONG_FILE_S)
-        return first - probe(src).fstart
-    except FFmpegError as exc:
-        logger.debug("%s: no first frame time (%s); the scene pass counts as ffmpeg does", src, exc)
-        return None
-
-
-def _lead_in(
-    src: Path, offset: float, duration: float, readable_from: float | None
-) -> tuple[float, float] | None:
-    """The seek point and the shift of a scene pass of ``src`` from ``offset`` (a recovered
-    part) in a container that does not seek exactly (:func:`_seeks_exactly`), or None: a pass
-    from the start, a container that seeks exactly, no ``readable_from`` known (a read-error
-    record older than it), less than :data:`LEAD_IN_MIN_S` between it and ``offset``, and a
-    source ffprobe or the one-frame decode fails on (the pass then seeks ``offset`` as ffmpeg
-    does).
-
-    MPEG-TS seeks to the next keyframe after ``offset`` (``-ss 6.4`` decodes from 8.02), so
-    cuts before it were lost. The pass seeks :data:`LEAD_IN_S` earlier instead, but never
-    before ``readable_from`` (the end of the unreadable stretch before the part,
-    :func:`find_resume_point`: the read error must not come back), and the first frame decoded
-    from there is put at its container time less ``offset`` (measured by a decode of its own:
-    the seek may land anywhere, or clamp to the start), so ``fps`` drops the lead-in and the
-    proxy starts at ``offset`` (:func:`_proxy_args`)."""
-    if offset <= 0 or readable_from is None or _seeks_exactly(src):
-        return None
-    seek = round(max(0.0, offset - LEAD_IN_S, readable_from), 3)
-    if offset - seek < LEAD_IN_MIN_S:
-        return None
-    try:
-        first = first_frame_time(src, keyframes=duration > LONG_FILE_S, start=seek)
-        return seek, first - probe(src).fstart - offset
-    except FFmpegError as exc:
-        logger.debug("%s: no first frame time (%s); the scene pass seeks as ffmpeg does", src, exc)
-        return None
-
-
-REINIT_OFF = ["-reinit_filter", "0"]  # input option: one filter graph per pass (_proxy_args)
-
-
-def _proxy_args(
-    duration: float,
-    offset: float = 0.0,
-    limit: float | None = None,
-    shift: float | None = None,
-    lead_in: tuple[float, float] | None = None,
-) -> tuple[list[str], list[str], str, list[str]]:
-    """The scene proxy's input options, output options, filter chain and encoder arguments.
-
-    Every pass counts from the container start (#976), so its cuts are on the clock clips are
-    cut on: ``fps`` with ``start_time=0`` makes the proxy's first frame the seek point (the
-    container start without one) and pads a video that starts later with its first frame.
-    That is ffmpeg's own count in a container that seeks exactly (:func:`_seeks_exactly`). In
-    MPEG-TS ffmpeg 6.1 counts a whole pass from the video instead (``-an``), so the first
-    decoded frame is put at ``shift`` (:func:`_first_shift`: its container time, also when the
-    file starts in the middle of a GOP); ffmpeg's own timestamps stay, so a timestamp reset
-    (joined TS files) still runs on. A seek is exact only in a container that seeks exactly;
-    elsewhere ``lead_in`` (:func:`_lead_in`: seek point and shift) seeks earlier and puts the
-    first decoded frame at ``shift``, so ``fps`` drops the frames before ``offset``.
-
-    ``-reinit_filter 0`` keeps one filter graph for the whole pass: where the video parameters
-    change mid-file (a joined file's second half with other color tags) ffmpeg 9 would rebuild
-    it, and ``setpts`` re-reads its start and ``fps`` pads from 0 again, so the timestamps
-    after the join are wrong or lost."""
-    long_file = duration > LONG_FILE_S
-    pre = [*REINIT_OFF, *(["-skip_frame", "nokey"] if long_file else [])]
-    if lead_in is not None:
-        if lead_in[0] > 0:
-            pre += ["-ss", f"{lead_in[0]:.3f}"]
-    elif offset > 0:
-        pre += ["-ss", f"{offset:.3f}"]
-    post = ["-t", f"{limit:.3f}"] if limit else []
-    rate, width = (2, 256) if long_file else (10, 320)
-    vf = f"fps={rate}:start_time=0,scale={width}:-2"
-    if lead_in is not None:
-        vf = f"setpts=PTS-STARTPTS+{lead_in[1]:.6f}/TB,{vf}"
-    elif shift is not None and offset <= 0:
-        vf = f"setpts=PTS-STARTPTS+{shift:.6f}/TB,{vf}"
-    # Lossless: a lossy proxy has a keyframe every 250 frames (25 s at 10 fps) that adds to the
-    # detector's content value, so cuts appeared there and moved with the pass's start (#994)
-    return pre, post, vf, ["-c:v", "libx264", "-preset", "ultrafast", "-qp", "0"]
-
-
-def _fixed_scale(vf: str, src: Path) -> str:
-    """``vf`` with the proxy's ``scale=W:-2`` given the height of ``src``'s probed picture
-    (``scale=W:H``, even): with ``-reinit_filter 0`` a picture that changes size mid-file
-    would reach libx264 in a new size, which crashes ffmpeg 9 now and then. ``vf`` as it is
-    when the probe fails or has no size."""
-    head, sep, rest = vf.rpartition(",scale=")
-    if not sep or not rest.endswith(":-2"):
-        return vf
-    try:
-        info = probe(src)
-    except FFmpegError:
-        return vf
-    if info.width <= 0 or info.height <= 0:
-        return vf
-    width = int(rest[: -len(":-2")])
-    return f"{head}{sep}{width}:{max(2, round(width * info.height / info.width / 2) * 2)}"
-
-
-def _scene_decode(
-    hw: HwDecoder | None, vf: str, src: Path, download: bool = False
-) -> tuple[list[str], str]:
-    """The decoder's input options and the filter chain of the scene proxy. On a GPU decoder and
-    an 8- or 10-bit 4:2:0 source the frames stay on the GPU until the ``fps`` filter
-    dropped the ones the detector does not read, so only those are downloaded. Other formats
-    (4:4:4, 12-bit, unknown) and the CPU keep the plain path. The proxy's size is fixed
-    (:func:`_fixed_scale`).
-
-    A container that does not seek exactly (MPEG-TS, possibly joined files), and any source with
-    ``download`` (its stream parameters change mid-file, :func:`_run_scene_proxy`), is decoded
-    without a ``hwdownload`` in the chain: NVDEC reinitialises at a join and ffmpeg rebuilds the
-    graph despite ``-reinit_filter 0`` (``setpts`` and ``fps`` start again, the encoder drops
-    the rest, exit 0). CUDA then downloads the frames itself (``-hwaccel cuda`` alone, the plain
-    chain); VAAPI always needs the download, so it decodes on the CPU."""
-    vf = _fixed_scale(vf, src)
-    if hw is None:
-        return [], vf
-    if download or not _seeks_exactly(src):
-        if hw.kind == "cuda":
-            try:
-                info = probe(src)
-            except FFmpegError:
-                info = None  # the decode reports an unreadable file itself
-            if info is not None and nvdec_download(info.vcodec, info.pix_fmt or "") is None:
-                logger.debug(
-                    "%s: %s %s is outside what NVDEC decodes (8/10-bit 4:2:0 HEVC, VP9, AV1, "
-                    "8-bit 4:2:0 H.264); NVDEC may not decode it and ffmpeg then decodes it "
-                    "in software",
-                    src.name, info.vcodec or "unknown", info.pix_fmt or "unknown",
-                )  # fmt: skip
-            return hw.input_args(), vf
-        return [], vf
-    info = probe(src)
-    if hw.kind == "cuda":
-        fmt = nvdec_download(info.vcodec, info.pix_fmt or "")
-    else:
-        fmt = NVDEC_DOWNLOAD.get(info.pix_fmt or "")
-    if fmt is None:
-        return hw.input_args(), gpu_chain(hw, vf) or vf
-    head, sep, rest = vf.partition(",scale=")  # the proxy chain's fps filter comes before it
-    return hw.input_args(keep_on_gpu=True), f"{head},hwdownload,format={fmt}{sep}{rest}"
-
-
-def _run_scene_proxy(
-    command: Callable[[bool], list[str]],
-    proxy: Path,
-    seconds: float,
-    label: str,
-    cancel: threading.Event | None = None,
-) -> ProgressResult:
-    """Run the scene proxy's ffmpeg ``command(False)``; when its frames stayed on the GPU
-    (``hwdownload``, :func:`_scene_decode`) and ffmpeg dropped frames, run ``command(True)``
-    again, which does not keep them there. Returns the last run's result.
-
-    The stream parameters changed mid-file (#1031: an MP4 or MKV whose second part has another
-    size): the GPU decoder starts again with new frames, and ffmpeg rebuilds the filter graph
-    for them despite ``-reinit_filter 0``. The new ``fps`` pads from 0 again, the encoder drops
-    those frames but keeps one, and every later cut is a frame late (or lost). Frames that
-    are not on the GPU keep one graph, as on the CPU. A pass whose ``fps`` output is the only
-    frame source drops none, so a normal file runs once."""
-    opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
-    first = command(False)
-    res = run_progress(first, seconds, label, **opts)
-    if not any("hwdownload" in arg for arg in first) or not res.dropped:
-        return res
-    logger.info(
-        "%s: the video changes its size or format mid-file and the GPU decode lost its frame "
-        "timing there (%d frames dropped); making it again without keeping its frames on the GPU",
-        label,
-        res.dropped,
-    )
-    proxy.unlink(missing_ok=True)  # the re-run starts clean
-    return run_progress(command(True), seconds, label, **opts)
-
-
-def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
-    """Scene cuts of ``proxy`` (deleted after), saved to ``path``.
-
-    With ``cancel`` (a :class:`_SceneJob`), setting it stops the detection within about 0.1 s plus a
-    frame decode and raises :class:`~cutpoint.ffmpeg_utils.RunCancelled`, writing nothing."""
-    try:
-        cuts = _scan(proxy, cancel)  # its video handle is closed on return
-    finally:
-        try:
-            proxy.unlink(missing_ok=True)
-        except OSError as exc:  # never replace the original exception
-            logger.debug("could not delete %s: %s", proxy, exc)
-    cache.save_json(path, cuts)
-    return cuts
-
-
-def _scan(proxy: Path, cancel: threading.Event | None) -> list[float]:
-    from scenedetect import AdaptiveDetector, SceneManager, open_video  # noqa: PLC0415
-
-    video = open_video(str(proxy))
-    manager = SceneManager()
-    manager.auto_downscale = False
-    manager.add_detector(AdaptiveDetector(min_scene_len=5))
-
-    done = threading.Event()
-
-    def watch() -> None:
-        # PySceneDetect calls a callback only at a cut, so a stop is requested from here. It is
-        # repeated: detect_scenes clears its stop flag when it starts, so one early stop can be lost.
-        while not done.is_set():
-            if cancel.wait(0.1):  # type: ignore[union-attr]
-                manager.stop()
-                done.wait(0.1)
-
-    watcher = None
-    if cancel is not None:
-        watcher = threading.Thread(target=watch, name="scene-cancel", daemon=True)
-        watcher.start()
-    try:
-        manager.detect_scenes(video, show_progress=False)
-    finally:
-        done.set()
-        if watcher is not None:
-            watcher.join(1.0)
-        # The OpenCV backend has no close(); a traceback keeps the handle (and the file open).
-        release = getattr(getattr(video, "capture", None), "release", None)
-        if release is not None:
-            release()
-    if cancel is not None and cancel.is_set():
-        raise RunCancelled(f"scene detection {proxy.parent.name}")
-    return [round(s[0].seconds, 3) for s in manager.get_scene_list()[1:]]
-
-
-def scene_cuts(
-    src: Path,
-    cdir: Path,
-    duration: float,
-    offset: float = 0.0,
-    limit: float | None = None,
-    cancel: threading.Event | None = None,
-    cpu_free: bool = False,
-    readable_from: float | None = None,
-) -> list[float]:
-    """Scene-cut times (s) via PySceneDetect AdaptiveDetector on a tiny proxy.
-
-    Normal files: 320px / 10 fps proxy. Files longer than ``LONG_FILE_S``:
-    keyframes-only decode (``-skip_frame nokey``) at 256px / 2 fps, which is
-    roughly I/O-bound even for multi-hour VODs (cut precision ~ one GOP).
-
-    Args:
-        src: Source video.
-        cdir: Cache folder of this source (or recovered part).
-        duration: Length to analyse (s).
-        offset: Seek here first; returned times are relative to it.
-        limit: Stop decoding after this many seconds (stays clear of a known
-            unreadable region instead of hitting it again).
-        cancel: For a run in a background thread (:class:`_SceneJob`): once set, ffmpeg is
-            killed or the detection stopped, the proxy removed and :class:`~cutpoint.ffmpeg_utils.RunCancelled` raised,
-            before any :data:`SCENES_FILE` is written.
-        cpu_free: The caller knows no CPU-heavy step (the background HUD OCR, Whisper on the
-            CPU) runs meanwhile, so the decode may be split between NVDEC and the CPU
-            (:func:`_hybrid_plan`, #730). False (the default): one decode, as before.
-        readable_from: For a recovered part (``offset`` above 0): where the unreadable stretch
-            before it ends (absolute s, the read-error record's ``unreadable_until``). In a
-            container that does not seek exactly the pass starts a little before ``offset``,
-            but never before this (:func:`_lead_in`); None: it seeks ``offset``.
-    """
-    path = cdir / SCENES_FILE
-    cached = cache.load_json(path)
-    if cached is not None:
-        return cached
-    logger.info("%s: detecting scene cuts", src.name)
-    importlib.import_module("scenedetect")  # not installed: fails before any decode
-    dopts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
-    plan = _hybrid_plan(src, duration, offset, limit, cpu_free)
-    if plan is not None and (cuts := _hybrid_cuts(src, cdir, duration, *plan, cancel)) is not None:
-        cache.save_json(path, cuts)
-        return cuts
-    fixed = cdir / "proxy.mp4"
-    ffmpeg_utils.sweep_tmp(fixed)  # leftovers of killed runs; other live runs keep theirs
-    with contextlib.suppress(OSError):
-        fixed.unlink(missing_ok=True)  # the fixed name of older versions
-    proxy = ffmpeg_utils.unique_tmp(fixed)  # another run may share cdir
-    gpu = scene_decode_mode() != "cpu"
-    lead = _lead_in(src, offset, duration, readable_from)
-    args = _proxy_args(duration, offset, limit, _first_shift(src, offset, duration), lead)
-    try:
-        res = _make_proxy(src, proxy, args, duration, cancel, gpu=gpu)
-        # ffmpeg stops at a read error and exits 0: one in the lead-in left no frame past the
-        # part's start (out_time is part-relative, fps drops the lead-in); one later in the part
-        # leaves the proxy as the plain seek would, so it is kept
-        failed = (
-            lead is not None
-            and bool(READ_ERROR_RE.search(res.stderr))
-            and res.out_time < SCENE_GRID_S
-        )
-    except FFmpegError:
-        if lead is None:
-            raise
-        failed = True
-    if failed:  # the lead-in reached back to the damage before a recovered part
-        logger.info(
-            "%s: the scene decode's lead-in before %s hit a read error; decoding from there",
-            src.name,
-            clock(offset),
-        )
-        proxy.unlink(missing_ok=True)
-        _make_proxy(src, proxy, _proxy_args(duration, offset, limit), duration, cancel, gpu=gpu)
-    return _detect(proxy, path, **dopts)
-
-
-# The scene pass split between NVDEC and the CPU (#730 PR 2). Measured on an RTX 3080 and an
-# 8-core i7-9700K (1080p60 H.264, 600 s): NVDEC alone 57 s, the CPU alone 74 s, both at once
-# 38 s with the same cuts (P/R 0.98-1.00 against the single decode), at the cost of every core.
-SCENE_DECODE_ENV = "SCENE_DECODE"  # CUTPOINT_SCENE_DECODE=auto (default) | hybrid | gpu | cpu
-SCENE_DECODE_MODES = ("auto", "hybrid", "gpu", "cpu")
-# Below this a source decodes on NVDEC in about 10 s (1080p60, about 685 frames/s): a split
-# saves 3 s or less, not worth a second ffmpeg start, seek and scan plus every core.
-HYBRID_MIN_S = 120.0
-HYBRID_HEADROOM_CPUS = 2  # left to the NVDEC half's ffmpeg (download, scale, x264) and the scans
-HYBRID_MIN_THREADS = 4  # fewer CPU decode threads give too little to pay for the split
-# Codecs the CPU decodes fast enough next to NVDEC: H.264 1080p60 and 4K60 halve or better the
-# pass; 4K120 HEVC decodes about 3x slower per CPU thread, so its CPU half took twice as long
-# as NVDEC alone (113 s vs 57 s for 218 s).
-HYBRID_CODECS = frozenset({"h264"})
-# 8-bit 4:2:0 only: NVDEC here decodes no 10-bit or 4:2:2 H.264 (the NVDEC half fails, or decodes
-# on the CPU without saying so)
-HYBRID_PIX_FMTS = frozenset({"yuv420p", "yuvj420p"})
-# Containers whose input seek is frame-accurate (WebM too, also without cues, #1038); MPEG-TS
-# seeks inexactly and moves the CPU half's cuts (up to 0.6 s, or loses them)
-HYBRID_SUFFIXES = frozenset({".mp4", ".mov", ".m4v", ".mkv", ".webm"})
-# The CPU decodes at about this share of NVDEC's rate per decode thread (74 s on 8 threads vs
-# 57 s); the split puts each half's end at about the same time: 8 threads 0.57, 6 0.63.
-CPU_RATE_PER_THREAD = 0.096
-# Each half decodes this far past the split. The CPU half's detector gives no cut in its first
-# 0.6 s (a frame score needs the frame before, min_scene_len 5 frames after the first scored
-# frame), and must see a cut up to 0.5 s (min_scene_len) before the split to drop one just
-# after it as one pass would: 1.1 s needed, 3 s leaves room for a chain of close cuts. The
-# NVDEC half needs 2 frames (the detector's window) past the split to decide a cut before it.
-SEAM_S = 3.0
-# One pass never gives two cuts closer than min_scene_len (5 frames at 10 fps = 0.5 s): a CPU
-# cut this close after the last NVDEC cut is the same cut, a frame off at the seam.
-SEAM_DEDUP_S = 0.45
-
-
-def scene_decode_mode() -> str:
-    """``CUTPOINT_SCENE_DECODE``: ``auto`` (default, and any unknown value), ``hybrid``,
-    ``gpu`` or ``cpu``."""
-    mode = (paths.env(SCENE_DECODE_ENV) or "").strip().lower()
-    return mode if mode in SCENE_DECODE_MODES else "auto"
-
-
-def _hybrid_threads() -> int:
-    """CPU decode threads of the split's CPU half: every logical CPU but the headroom."""
-    return (os.cpu_count() or 1) - HYBRID_HEADROOM_CPUS
-
-
-def _hybrid_split(duration: float, threads: int) -> float:
-    """Where the NVDEC half ends and the CPU half takes over, on the proxy's frame grid
-    (:data:`SCENE_GRID_S`), so both halves' frames are those of one pass: the share of NVDEC
-    is its rate over both rates (:data:`CPU_RATE_PER_THREAD`)."""
-    share = 1.0 / (1.0 + CPU_RATE_PER_THREAD * threads)
-    return round(round(duration * share / SCENE_GRID_S) * SCENE_GRID_S, 3)
-
-
-def _hybrid_plan(
-    src: Path, duration: float, offset: float, limit: float | None, cpu_free: bool
-) -> tuple[HwDecoder, float, int] | None:
-    """The NVDEC decoder, split point and CPU threads of a split scene pass of ``src``, or None
-    for one decode. ``CUTPOINT_SCENE_DECODE``: ``gpu`` and ``cpu`` never split; ``hybrid``
-    splits whenever NVDEC decodes ``src`` and its container seeks exactly, as the CPU half
-    seeks (:func:`_seeks_exactly`); ``auto`` only when also ``cpu_free`` (no CPU-heavy step
-    runs meanwhile), the source is at least :data:`HYBRID_MIN_S` long, in one of
-    :data:`HYBRID_CODECS` and :data:`HYBRID_PIX_FMTS`, and :data:`HYBRID_MIN_THREADS` CPU
-    threads are left after the headroom.
-    Only a whole, clean source of up to :data:`LONG_FILE_S` (a longer one decodes keyframes
-    only)."""
-    mode = scene_decode_mode()
-    if mode in ("gpu", "cpu") or offset or limit or duration > LONG_FILE_S:
-        return None
-    if not _seeks_exactly(src):
-        return None
-    threads = _hybrid_threads()
-    if mode == "auto" and (
-        not cpu_free
-        or duration < HYBRID_MIN_S
-        or threads < HYBRID_MIN_THREADS
-        or not _hybrid_source_ok(src)
-    ):
-        return None
-    hw = decoder_for(src)
-    if hw is None or hw.kind != "cuda":  # VAAPI or the CPU: one decode, as before
-        return None
-    threads = max(1, threads)
-    return hw, _hybrid_split(duration, threads), threads
-
-
-def _hybrid_source_ok(src: Path) -> bool:
-    """``src`` is a source ``auto`` splits: see :func:`_hybrid_plan`."""
-    info = probe(src)
-    return info.vcodec in HYBRID_CODECS and info.pix_fmt in HYBRID_PIX_FMTS
-
-
-def _seeks_exactly(src: Path) -> bool:
-    """``src`` is in a container whose input seek lands on the frame asked for
-    (:data:`HYBRID_SUFFIXES`): a scene pass may start in the middle (a split pass's CPU half,
-    an edge window). MPEG-TS (#976: cuts 1.4 s late on ffmpeg 6.1) and the others decode from
-    the container start."""
-    return src.suffix.lower() in HYBRID_SUFFIXES
-
-
-def _merge_seam(
-    gpu: Sequence[float], cpu: Sequence[float], split: float, cstart: float
-) -> list[float]:
-    """The cuts of a split pass: the NVDEC half's before ``split``, the CPU half's (times from
-    its start ``cstart``) from ``split`` on; a CPU cut closer than :data:`SEAM_DEDUP_S` after
-    the last NVDEC cut is that cut seen a frame off and dropped."""
-    eps = 1e-6
-    out = [round(c, 3) for c in gpu if c < split - eps]
-    for x in cpu:
-        t = round(cstart + x, 3)
-        if t < split - eps or (out and t - out[-1] < SEAM_DEDUP_S):
-            continue
-        out.append(t)
-    return out
-
-
-def _hybrid_cuts(
-    src: Path,
-    cdir: Path,
-    duration: float,
-    hw: HwDecoder | None,
-    split: float,
-    threads: int,
-    cancel: threading.Event | None = None,
-) -> list[float] | None:
-    """Scene cuts of ``src`` from two proxies made and scanned at once: NVDEC decodes
-    ``[0, split + SEAM_S]``, the CPU (``threads`` decode threads) ``[split - SEAM_S, end]``;
-    merged by :func:`_merge_seam` (``hw`` None decodes both halves on the CPU). None when a
-    half failed (a WARNING; the caller decodes in one pass). Both proxies are removed, also on
-    Ctrl+C or ``cancel`` (then :class:`~cutpoint.ffmpeg_utils.RunCancelled`)."""
-    cstart = round(max(0.0, split - SEAM_S), 3)
-    gend = min(duration, split + SEAM_S)
-    # a container that seeks exactly (_hybrid_plan): both halves count as ffmpeg does
-    _pre, _post, vf, enc = _proxy_args(duration)
-    tag = f"{os.getpid()}-{threading.get_ident()}"  # another run may share the cache folder
-    dec_args, chain = _scene_decode(hw, vf, src)
-    # the CPU half converts to the format NVDEC downloads before it scales, as that half does,
-    # so the same frames give the same proxy pixels
-    cpu_vf = (
-        chain.replace("hwdownload,", "", 1) if "hwdownload," in chain else _fixed_scale(vf, src)
-    )
-    out = ["-an", "-vf"]
-
-    def gpu_args(download: bool) -> list[str]:  # download: see _run_scene_proxy
-        dec, gchain = _scene_decode(hw, vf, src, True) if download else (dec_args, chain)
-        return [*REINIT_OFF, *dec, "-i", str(src), "-t", f"{gend:.3f}", *out, gchain]
-
-    halves = {
-        "gpu": (cdir / f"proxy-gpu-{tag}.mp4", gpu_args(False), gend),
-        "cpu": (
-            cdir / f"proxy-cpu-{tag}.mp4",
-            # both halves count from the container start (the chain's fps start_time, #976)
-            [
-                *REINIT_OFF,
-                "-ss",
-                f"{cstart:.3f}",
-                "-threads",
-                str(threads),
-                "-i",
-                str(src),
-                *out,
-                cpu_vf,
-            ],
-            duration - cstart,
-        ),
-    }
-    stop = threading.Event()  # one half failed or the run is stopped: the other stops too
-    found: dict[str, list[float]] = {}
-    errors: dict[str, BaseException] = {}
-
-    def half(name: str) -> None:
-        proxy, args, seconds = halves[name]
-
-        def command(download: bool) -> list[str]:  # only the GPU half runs again (no hwdownload)
-            given = gpu_args(True) if download else args
-            return ["ffmpeg", "-y", "-v", "error", *given, *enc, str(proxy)]
-
-        try:
-            _run_scene_proxy(command, proxy, seconds, f"scene proxy {src.name} ({name} part)", stop)
-            found[name] = _scan(proxy, stop)
-        except BaseException as exc:  # noqa: BLE001 - reported by the caller's thread
-            errors[name] = exc
-            stop.set()
-        finally:
-            with contextlib.suppress(OSError):
-                proxy.unlink(missing_ok=True)
-
-    logger.info(
-        "%s: scene decode split at %s: NVDEC before, the CPU (%d threads) after",
-        src.name,
-        clock(split),
-        threads,
-    )
-    workers = [
-        threading.Thread(target=half, args=(n,), name=f"scene-{n}", daemon=True) for n in halves
-    ]
-    try:
-        for w in workers:
-            w.start()
-        while any(w.is_alive() for w in workers):
-            for w in workers:
-                w.join(SCENE_POLL_S)  # in steps: Ctrl+C gets through on Windows
-            if cancel is not None and cancel.is_set():
-                stop.set()
-    except BaseException:
-        stop.set()
-        for w in workers:
-            w.join(SCENE_JOIN_S)
-        raise
-    finally:
-        for proxy, _args, _s in halves.values():  # a half still busy after the join
-            with contextlib.suppress(OSError):
-                proxy.unlink(missing_ok=True)
-    if cancel is not None and cancel.is_set():
-        raise RunCancelled(f"scene detection {src.name}")
-    if errors:
-        if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg first
-            raise RunCancelled(f"scene detection {src.name}") from None
-        if cancel is None:
-            time.sleep(STOP_GRACE_S)  # a Ctrl+C that reached ffmpeg first is raised here
-        # the half that failed first; the other one was stopped (RunCancelled) because of it
-        real = [e for e in errors.values() if not isinstance(e, RunCancelled)]
-        first = (real or list(errors.values()))[0]
-        reason = str(first).strip().splitlines()[-1:] or [type(first).__name__]
-        logger.warning(
-            "%s: the split scene decode failed (%s); decoding it in one pass",
-            src.name,
-            reason[0],
-        )
-        return None
-    return _merge_seam(found["gpu"], found["cpu"], split, cstart)
-
-
-def _make_proxy(
-    src: Path,
-    proxy: Path,
-    args: tuple[list[str], list[str], str, list[str]],
-    seconds: float,
-    cancel: threading.Event | None = None,
-    gpu: bool = True,
-) -> ProgressResult:
-    """Encode the scene proxy ``proxy`` of ``src`` with the :func:`_proxy_args` ``args``
-    (``seconds`` long, for the progress lines): on the GPU decoder when there is one, else or
-    when that fails on the CPU; ``gpu`` False always on the CPU. A ``cancel`` (see
-    :func:`scene_cuts`) or a failure removes the partial proxy. Returns the last ffmpeg run's
-    result (its stderr may name a read error ffmpeg did not fail on)."""
-    pre, post, vf, enc = args
-    label = f"scene proxy {src.name}"
-
-    def command(dec: HwDecoder | None, download: bool = False) -> list[str]:
-        dec_args, chain = _scene_decode(dec, vf, src, download)  # input options go before -i
-        args = [*pre, *dec_args, "-i", str(src), *post]
-        return ["ffmpeg", "-y", "-v", "error", *args, "-an", "-vf", chain, *enc, str(proxy)]
-
-    # NVDEC or VAAPI when probed here; a failed GPU run decodes on the CPU
-    hw = decoder_for(src) if gpu else None
-    opts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
-    try:
-        try:
-            res = _run_scene_proxy(
-                lambda download: command(hw, download), proxy, seconds, label, cancel
-            )
-        except FFmpegError as err:
-            if cancel is not None and cancel.wait(STOP_GRACE_S):  # Ctrl+C reached ffmpeg too
-                raise RunCancelled(label) from None
-            if hw is None:
-                raise
-            # message: ffmpeg's header line, then the tail of its stderr; show its first line
-            lines = [ln.strip() for ln in str(err).splitlines() if ln.strip()]
-            first = (lines[1] if len(lines) > 1 else lines[0] if lines else "")[:200]
-            logger.debug(
-                "scene proxy: GPU decode failed for %s (%s); re-running on the CPU", src.name, first
-            )
-            proxy.unlink(missing_ok=True)  # the re-run starts clean
-            res = run_progress(command(None), seconds, label, **opts)
-        if cancel is not None and cancel.is_set():
-            raise RunCancelled(label)
-    except BaseException:  # a partial lossless proxy is large: never leave it behind
-        proxy.unlink(missing_ok=True)
-        raise
-    return res
-
-
-class _SceneJob:
-    """:func:`scene_cuts` of one source in a thread, alongside its Whisper run (#725).
-
-    ``cancel`` stops it: ffmpeg is killed (``run_progress``) or the detection stopped, and no
-    :data:`SCENES_FILE` is written.
-    An exception of the detection is kept and raised by :meth:`result`, in the caller's thread."""
-
-    def __init__(
-        self,
-        src: Path,
-        cdir: Path,
-        duration: float,
-        offset: float,
-        limit: float | None,
-        cpu_free: bool = False,
-        readable_from: float | None = None,
-    ) -> None:
-        self.cancel = threading.Event()
-        self.cuts: list[float] = []
-        self.took = 0.0  # seconds the thread ran
-        self._error: BaseException | None = None
-        self._args = (src, cdir, duration, offset, limit)
-        # the split decode (scene_cuts' cpu_free): a plain call when Whisper is on the CPU
-        self._opts: dict[str, Any] = {"cpu_free": True} if cpu_free else {}
-        if readable_from is not None:  # a recovered part's lead-in (scene_cuts)
-            self._opts["readable_from"] = readable_from
-        self._thread = threading.Thread(target=self._main, name="scene-overlap", daemon=True)
-        self._thread.start()
-
-    def _main(self) -> None:
-        t0 = time.perf_counter()
-        try:
-            self.cuts = scene_cuts(*self._args, cancel=self.cancel, **self._opts)
-        except BaseException as exc:  # noqa: BLE001 - re-raised by result()
-            self._error = exc
-        self.took = round(time.perf_counter() - t0, 2)
-
-    def result(self) -> list[float]:
-        """Wait for the cuts (or the thread's exception, raised here)."""
-        while self._thread.is_alive():
-            self._thread.join(SCENE_POLL_S)
-        if self._error is not None:
-            raise self._error
-        return self.cuts
-
-    def stop(self) -> None:
-        """Cancel and wait for the thread, for a bounded time. Idempotent."""
-        self.cancel.set()
-        self._thread.join(SCENE_JOIN_S)
-        if self._thread.is_alive():
-            logger.debug("scene thread still busy after %.0fs; left to exit", SCENE_JOIN_S)
-
-
-def scores_scenes(style: Style) -> bool:
-    """True when ``style`` weighs the scene curve. A style that does not (``funny``,
-    ``commentary``, a user style whose weights give ``scene`` 0) uses scene cuts only to snap
-    candidate edges, so they are detected only around those edges (:func:`edge_windows`)."""
-    return bool(style.weights.get("scene"))
-
-
-def edge_windows(style: Style, span: float) -> bool:
-    """True when the scene cuts of a part ``span`` seconds long are detected only around its
-    candidate edges (:class:`EdgeCuts`, #730): ``style`` does not weigh them
-    (:func:`scores_scenes`) and the part is not longer than :data:`LONG_FILE_S`. A longer part's
-    full pass decodes keyframes only (:func:`_proxy_args`), faster than the windows' 10 fps
-    decode, so it keeps the full pass (:data:`SCENES_FILE`)."""
-    return not scores_scenes(style) and span <= LONG_FILE_S
-
-
-def _edge_window(t: float, span: float) -> tuple[float, float]:
-    """The decode window of the candidate edge ``t`` of a part ``span`` long:
-    :data:`WINDOW_PAD_S` either side, its start on the full proxy's frame grid
-    (:data:`SCENE_GRID_S`) so the window's frames are those of a full pass."""
-    a = math.floor(max(0.0, t - WINDOW_PAD_S) / SCENE_GRID_S + 1e-6) * SCENE_GRID_S
-    return round(a, 3), round(min(span, t + WINDOW_PAD_S), 3)
-
-
-def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> list[float]:
-    """Scene cuts of ``[a, b]`` of the part at ``offset`` of ``io`` (part-relative time), from a
-    proxy of that stretch made as the full one of a normal-length file (:func:`_proxy_args`),
-    always decoded on the CPU: each window is a short ffmpeg run, and a GPU decoder's start-up
-    costs more than the few seconds it decodes. The seek counts from the container start, as the
-    full pass's time does (#976), so ``io`` must seek exactly (:func:`_seeks_exactly`)."""
-    # its own name: another run (project) may read the same source from the shared cache folder
-    proxy = cdir / f"proxy-window-{os.getpid()}-{threading.get_ident()}.mp4"
-    try:
-        _make_proxy(io, proxy, _proxy_args(b - a, offset + a, b - a), b - a, gpu=False)
-        found = _scan(proxy, None)  # its video handle is closed on return
-    finally:
-        try:
-            proxy.unlink(missing_ok=True)
-        except OSError as exc:  # never replace the original exception
-            logger.debug("could not delete %s: %s", proxy, exc)
-    return [round(a + t, 3) for t in found]
-
-
-class EdgeCuts:
-    """The scene cuts of one part (or recovered part) of a style that does not weigh the scene
-    curve, up to :data:`LONG_FILE_S` long (:func:`edge_windows`), detected only in windows
-    around candidate edges (#730), decoded on the CPU (:func:`_window_cuts`).
-
-    :func:`_snap` moves an edge to a cut at most :data:`SNAP_REACH_S` away, and the detector
-    needs :data:`SCENE_WARMUP_S` of picture around a cut, so a window reaches
-    :data:`WINDOW_PAD_S` either side of an edge. The windows decoded and their cuts are kept in
-    the part's cache folder as :data:`SCENE_WINDOWS_FILE` (part-relative time, as
-    :data:`SCENES_FILE`): a later run decodes only the windows not covered yet and adds them.
-    The saved windows never overlap: a new window that touches saved ones is decoded together with
-    them, so every cut comes from one decode that saw the whole window. A full
-    :data:`SCENES_FILE` of the part (a full pass, for a style that weighs scenes) is always used
-    instead, and a container that does not seek exactly (:func:`_seeks_exactly`) gets the full
-    pass instead of windows."""
-
-    def __init__(
-        self,
-        io: Path,
-        cdir: Path,
-        span: float,
-        offset: float = 0.0,
-        limit: float | None = None,
-        on_time: Callable[[float], None] | None = None,
-    ) -> None:
-        self.io, self.cdir, self.span, self.offset, self.limit = io, cdir, span, offset, limit
-        self.on_time = on_time  # gets the seconds each decode took (``scenes_s``)
-
-    def _saved(self) -> tuple[list[tuple[float, float]], list[float]]:
-        data = cache.load_json(self.cdir / SCENE_WINDOWS_FILE)
-        try:
-            if data["version"] != SCENE_WINDOWS_VERSION:  # another clock (#976)
-                return [], []
-            wins = [(float(a), float(b)) for a, b in data["windows"]]
-            return wins, [float(x) for x in data["cuts"]]
-        except (TypeError, KeyError, ValueError):  # none yet, or not this file's shape
-            return [], []
-
-    def around(self, edges: Iterable[float]) -> list[float]:
-        """All the cuts known, once the windows of ``edges`` (part-relative) are decoded."""
-        full = cache.load_json(self.cdir / SCENES_FILE)
-        if full is not None:
-            return list(full)
-        wins, cuts = self._saved()
-        eps = 1e-6
-        need = [
-            w
-            for w in (_edge_window(t, self.span) for t in edges)
-            if w[1] > w[0] and not any(a <= w[0] + eps and w[1] - eps <= b for a, b in wins)
-        ]
-        if not need:
-            return sorted(cuts)
-        if not _seeks_exactly(self.io):  # MPEG-TS and the like: a window would seek inexactly
-            logger.info(
-                "%s: no exact seek in this container; detecting scene cuts in one pass",
-                self.io.name,
-            )
-            return self.full()
-        t0 = time.perf_counter()
-        todo = intervals.merge(need)
-        logger.info(
-            "%s: detecting scene cuts around the candidate edges (%d windows, %.0fs)",
-            self.io.name,
-            len(todo),
-            sum(b - a for a, b in todo),
-        )
-        for a, b in todo:
-            touch = [w for w in wins if w[0] <= b and a <= w[1]]
-            a, b = min([a, *(w[0] for w in touch)]), max([b, *(w[1] for w in touch)])
-            found = _window_cuts(self.io, self.cdir, self.offset, a, b)
-            wins = sorted([*(w for w in wins if w not in touch), (a, b)])
-            cuts = sorted([*(x for x in cuts if not a <= x <= b), *found])
-            cache.save_json(
-                self.cdir / SCENE_WINDOWS_FILE,
-                {
-                    "version": SCENE_WINDOWS_VERSION,
-                    "windows": [list(w) for w in wins],
-                    "cuts": cuts,
-                },
-            )
-        if self.on_time is not None:
-            self.on_time(time.perf_counter() - t0)
-        return cuts
-
-    def full(self) -> list[float]:
-        """The full pass (:func:`scene_cuts`, cached as :data:`SCENES_FILE`): for a style that
-        weighs the scene curve after all (``--style auto`` decided after the transcript)."""
-        t0 = time.perf_counter()
-        cuts = scene_cuts(self.io, self.cdir, self.span, self.offset, self.limit)
-        if self.on_time is not None:
-            self.on_time(time.perf_counter() - t0)
-        return cuts
 
 
 # --------------------------------------------------------------------------- windowing
@@ -1675,7 +830,7 @@ def _snap(
     ix = index or _SnapIndex(segments)
     for attr in ("start", "end"):
         t = getattr(c, attr)
-        near = [x for x in cuts if abs(x - t) <= SNAP_REACH_S]
+        near = [x for x in cuts if abs(x - t) <= scene_mod.SNAP_REACH_S]
         if near:
             setattr(c, attr, min(near, key=lambda x: abs(x - t)))
     if style.snap_sentences and not c.whole:  # a dialogue stretch ends where the reader said
@@ -1757,34 +912,6 @@ def transcript_text(name: str, segments: list[Segment], pause: float = 0.6) -> l
     return lines
 
 
-def prior_group(base: str) -> str:
-    """The style group of the vision rating prior (#948) for a style whose built-in base is
-    ``base``: ``"action"`` for :data:`ACTION_STYLES`, ``"other"`` for every other style."""
-    return "action" if base in ACTION_STYLES else "other"
-
-
-def rating_centres(ratings: Iterable[tuple[str, float]], group: str) -> dict[str, float]:
-    """The centre of each prompt kind's ratings (#909): ``ratings`` are ``(kind, rating)``
-    pairs, the kind ``"speech"`` or ``"frames"``. A kind's centre is the mean of its ratings,
-    shrunk toward the ``group``'s (:func:`prior_group`) prior in
-    :data:`cutpoint.vision.RATING_PRIOR` while it has fewer than
-    :data:`cutpoint.vision.PRIOR_N`: ``(sum + max(0, PRIOR_N - n) * prior) / max(n, PRIOR_N)``.
-    Only the kinds rated are in the result."""
-    sums: dict[str, list[float]] = {}
-    for kind, r in ratings:
-        sums.setdefault(kind, []).append(r)
-    return {
-        kind: (sum(rs) + max(0, PRIOR_N - len(rs)) * RATING_PRIOR[group, kind])
-        / max(len(rs), PRIOR_N)
-        for kind, rs in sums.items()
-    }
-
-
-def centred_rating(rating: float, centre: float) -> float:
-    """``rating`` moved so its kind's ``centre`` (:func:`rating_centres`) is 5, within 0-10."""
-    return max(0.0, min(10.0, 5 + rating - centre))
-
-
 def label_for(signals: Mapping[str, Any], style: Style, hint: str | None = None) -> str:
     """The label of a moment: its keyword ``hint`` as a slug, else "laugh" or "loud-moment"
     from its ``signals``, else "<style>-moment"."""
@@ -1810,7 +937,7 @@ class PartSignals:
     segments: list[Segment]
     cuts: list[float]  # for snapping; with ``edge_cuts``, those found around edges so far
     scenes: bool = False  # scene detection is on (the scene curve follows the style)
-    edge_cuts: EdgeCuts | None = None  # the cuts are detected around candidate edges only
+    edge_cuts: scene_mod.EdgeCuts | None = None  # the cuts are detected around candidate edges only
 
 
 def text_signals(ps: PartSignals, style: Style, name: str) -> None:
@@ -1874,11 +1001,11 @@ def part_signals(
 
 def scene_signal(ps: PartSignals, style: Style) -> None:
     """The scene curve of ``ps`` for ``style``: from the cuts when scene detection is on and the
-    style weighs it (:func:`scores_scenes`), else zeros (it would add nothing to the score). Cuts
-    found only around edges (``edge_cuts``) are replaced by a full pass first."""
+    style weighs it (:func:`~cutpoint.scenes.scores_scenes`), else zeros (it would add nothing to
+    the score). Cuts found only around edges (``edge_cuts``) are replaced by a full pass first."""
     if not ps.scenes:
         return
-    if not scores_scenes(style):
+    if not scene_mod.scores_scenes(style):
         ps.sig["scene"] = np.zeros(ps.n)
         return
     if ps.edge_cuts is not None:  # --style auto chose a style that weighs scenes after all
@@ -2026,8 +1153,8 @@ def find_resume_point(src: Path, fail_t: float, duration: float) -> tuple[float,
     Returns:
         Absolute resume time and where the unreadable stretch before it ends (the last
         failed probe, or ``fail_t``, plus :data:`READ_PROBE_S`, at most the first good probe:
-        the scene pass of the recovered part never seeks before it, :func:`_lead_in`), or None
-        if nothing readable was found.
+        the scene pass of the recovered part never seeks before it,
+        :func:`~cutpoint.scenes._lead_in`), or None if nothing readable was found.
     """
     last_bad, good = fail_t, None
     for step in RESUME_STEPS_S:
@@ -2092,9 +1219,9 @@ def analyze_source(
     ``on_transcript`` is called once the transcript is there (made or cached), before the
     scene cuts. ``cpu_busy`` says whether a CPU-heavy step of the caller (the background HUD
     OCR) runs right now (None: none does); the scene cuts split their decode between NVDEC and
-    the CPU only when it does not, nor Whisper on the CPU (:func:`_hybrid_plan`).
+    the CPU only when it does not, nor Whisper on the CPU (:func:`~cutpoint.scenes._hybrid_plan`).
     ``readable_from`` (a recovered part): where the unreadable stretch before ``offset`` ends,
-    for :func:`scene_cuts`.
+    for :func:`~cutpoint.scenes.scene_cuts`.
     """
 
     stages: dict[str, Any] = {}
@@ -2113,7 +1240,7 @@ def analyze_source(
     cdir = cache.source_dir(src, offset)
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
-    overlap: _SceneJob | None = None  # the scene cuts, run alongside Whisper
+    overlap: scene_mod._SceneJob | None = None  # the scene cuts, run alongside Whisper
     segments: list[Segment] = []
     lufs_data: tuple[np.ndarray, np.ndarray] | None = None
     if info.audio_streams:
@@ -2156,9 +1283,9 @@ def analyze_source(
         try:
             if (
                 use_scenes
-                and not edge_windows(style, span)
-                and scene_overlap()
-                and cache.load_json(cdir / SCENES_FILE) is None
+                and not scene_mod.edge_windows(style, span)
+                and scene_mod.scene_overlap()
+                and cache.load_json(cdir / scene_mod.SCENES_FILE) is None
                 and cached_transcript(tr, cdir) is None
             ):
                 tr.load()  # the memory guard runs before the scene thread takes any VRAM
@@ -2166,7 +1293,7 @@ def analyze_source(
                 free = getattr(tr, "device", None) == "cuda" and not (cpu_busy and cpu_busy())
                 limit = span if read_error else None
                 lead = {"readable_from": readable_from} if readable_from is not None else {}
-                overlap = _SceneJob(io, cdir, span, offset, limit, free, **lead)
+                overlap = scene_mod._SceneJob(io, cdir, span, offset, limit, free, **lead)
             segments = _transcript(wav, cdir, tr, transcribed if report else None, src)
             tick("transcribe_s", t0)
             if on_transcript is not None:
@@ -2189,16 +1316,16 @@ def analyze_source(
             read_checked(info, None)
 
     cuts: list[float] = []
-    edge_cuts: EdgeCuts | None = None
+    edge_cuts: scene_mod.EdgeCuts | None = None
     # A style that does not weigh the scene curve: cuts only around candidate edges (#730), in a
     # container that seeks exactly (MPEG-TS takes the full pass, #976)
-    windowed = use_scenes and edge_windows(style, span) and _seeks_exactly(io)
+    windowed = use_scenes and scene_mod.edge_windows(style, span) and scene_mod._seeks_exactly(io)
     if windowed:  # a full pass already cached is used as it is
-        if (found := cache.load_json(cdir / SCENES_FILE)) is not None:
+        if (found := cache.load_json(cdir / scene_mod.SCENES_FILE)) is not None:
             cuts = found
         else:
             stages["scene_windows"] = True
-            edge_cuts = EdgeCuts(
+            edge_cuts = scene_mod.EdgeCuts(
                 io,
                 cdir,
                 span,
@@ -2216,7 +1343,9 @@ def analyze_source(
             opts: dict[str, Any] = {} if cpu_busy is not None and cpu_busy() else {"cpu_free": True}
             if readable_from is not None:
                 opts["readable_from"] = readable_from
-            cuts = scene_cuts(io, cdir, span, offset, limit=span if read_error else None, **opts)
+            cuts = scene_mod.scene_cuts(
+                io, cdir, span, offset, limit=span if read_error else None, **opts
+            )
             took = time.perf_counter() - t0
         add("scenes_s", took)
     ps = part_signals(
@@ -2466,12 +1595,12 @@ def nominate_candidates(
 
 @dataclass(frozen=True)
 class CachedSource:
-    """What the caches of an analysis hold for one of its sources (:func:`cached_sources`):
-    its ``index`` in highlights.json's ``sources``, its cache folder ``cdir`` (None while
-    ``gap`` is ``recovered`` or ``offline``), ``span`` (0: none recorded), which of the cached
-    loudness, transcript and full scene pass (:data:`SCENES_FILE`) are there, and whether its
-    scene cuts come from edge windows instead (``windowed``, :func:`edge_windows`). ``gap``:
-    why it gets no grid, None when it gets one: ``recovered`` (read in parts), ``offline``
+    """What the caches of an analysis hold for one of its sources (:func:`cached_sources`): its
+    ``index`` in highlights.json's ``sources``, its cache folder ``cdir`` (None while ``gap`` is
+    ``recovered`` or ``offline``), ``span`` (0: none recorded), which of the cached loudness,
+    transcript and full scene pass (:data:`~cutpoint.scenes.SCENES_FILE`) are there, and whether its
+    scene cuts come from edge windows instead (``windowed``, :func:`~cutpoint.scenes.edge_windows`).
+    ``gap``: why it gets no grid, None when it gets one: ``recovered`` (read in parts), ``offline``
     (not reachable), ``length`` (no length recorded) or ``caches`` (nothing cached to build
     from)."""
 
@@ -2507,9 +1636,9 @@ def cached_sources(hl: dict[str, Any], style: Style, *, create: bool = True) -> 
             continue
         loud = (cdir / "loudness.json").is_file()
         heard = cdir.is_dir() and any(cdir.glob("transcript-*.json"))
-        found = (cdir / SCENES_FILE).is_file()
+        found = (cdir / scene_mod.SCENES_FILE).is_file()
         span = float(e.get("analyzed_s") or e.get("duration") or 0.0)
-        windowed = bool(span) and scenes_on and not found and edge_windows(style, span)
+        windowed = bool(span) and scenes_on and not found and scene_mod.edge_windows(style, span)
         if not span:
             gap: str | None = "length"  # no source length recorded (hand-made file)
         elif not (loud or heard or found or windowed):
@@ -2521,15 +1650,15 @@ def cached_sources(hl: dict[str, Any], style: Style, *, create: bool = True) -> 
 
 
 def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
-    """The grids of the analysis ``hl`` as its caches give them (what :func:`analyze_source`
-    built: the loudness, the transcript of the analysis's model and language, the scene cuts).
-    A source :func:`cached_sources` gives a ``gap`` has none: one with a recovered part, offline,
-    without a recorded length, or whose caches are gone, unless the style detects its scene cuts
-    around candidate edges (:func:`edge_windows`): such a source (also one without audio, so
-    without loudness or transcript) gets its part, the cuts decoded when an edge needs them.
-    Nor has one whose cache files cannot be read. Otherwise a source without :data:`SCENES_FILE`
-    gets no scene curve or cuts (with a style that weighs the curve, an INFO line names it;
-    ``analyze`` detects them again)."""
+    """The grids of the analysis ``hl`` as its caches give them (what :func:`analyze_source` built:
+    the loudness, the transcript of the analysis's model and language, the scene cuts). A source
+    :func:`cached_sources` gives a ``gap`` has none: one with a recovered part, offline, without a
+    recorded length, or whose caches are gone, unless the style detects its scene cuts around
+    candidate edges (:func:`~cutpoint.scenes.edge_windows`): such a source (also one without audio,
+    so without loudness or transcript) gets its part, the cuts decoded when an edge needs them. Nor
+    has one whose cache files cannot be read. Otherwise a source without
+    :data:`~cutpoint.scenes.SCENES_FILE` gets no scene curve or cuts (with a style that weighs the
+    curve, an INFO line names it; ``analyze`` detects them again)."""
     settings = hl.get("settings") or {}
     scenes = bool(settings.get("scenes", True))
     out: list[GridPart] = []
@@ -2539,11 +1668,12 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
         src, cdir, span = c.source, c.cdir, c.span
         loud = cache.load_json(cdir / "loudness.json")
         segments = source_segments(src, settings.get("language"), settings.get("whisper_model"))
-        found = cache.load_json(cdir / SCENES_FILE)
-        windowed = scenes and found is None and edge_windows(style, span)  # EdgeCuts serve it
+        found = cache.load_json(cdir / scene_mod.SCENES_FILE)
+        # EdgeCuts serve it
+        windowed = scenes and found is None and scene_mod.edge_windows(style, span)
         if loud is None and segments is None and found is None and not windowed:
             continue  # the cache files there cannot be read
-        if scenes and found is None and scores_scenes(style):
+        if scenes and found is None and scene_mod.scores_scenes(style):
             logger.info(
                 "%s: no scene cuts cached; its scene score is missing until analyze runs again",
                 src.name,
@@ -2552,7 +1682,7 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
         lufs = (np.asarray(loud["t"]) - 0.2, np.asarray(loud["m"])) if loud else None
         ps = part_signals(span, lufs, segments or [], cuts, style, src.name)
         if windowed:  # as the analysis did: cuts around edges (scenes-windows.json, else decoded)
-            ps.edge_cuts = EdgeCuts(remap_source(src), cdir, span)
+            ps.edge_cuts = scene_mod.EdgeCuts(remap_source(src), cdir, span)
         out.append(GridPart(src, c.index, 0.0, span, ps))
     return out
 
@@ -2641,345 +1771,6 @@ def _action_cam_candidates(
         cands.append(c)
     timings["action_cam_s"] = round(timings.get("action_cam_s", 0.0) + time.perf_counter() - t0, 2)
     return cands, src_avail
-
-
-CRASH_KIND = (
-    "crash"  # the ``kind`` of a crash moment outside action-cam (action-cam's: ``wipeout``)
-)
-
-
-def _crash_event(c: dict[str, Any]) -> dict[str, Any]:
-    """The ``crash`` record of a candidate for the crashes.json crash ``c`` (as action-cam's)."""
-    return {
-        "type": "crash",
-        "id": c.get("id"),
-        "t": c["t0"],
-        "end": c["t1"],
-        "confidence": c["confidence"],
-    }
-
-
-def _crash_entries(crashes: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """The usable crashes of a crashes.json object: a source, a finite confidence, ``t0`` and
-    ``t1``, and a planned clip (with a reaction that has a start and end, or none)."""
-
-    def num(x: Any) -> bool:
-        return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
-
-    raw = crashes.get("crashes") if isinstance(crashes, dict) else None
-    return [
-        c
-        for c in (raw if isinstance(raw, list) else [])
-        if isinstance(c, dict)
-        and isinstance(c.get("source"), str)
-        and all(num(c.get(k)) for k in ("confidence", "t0", "t1"))
-        and isinstance(c.get("clip"), dict)
-        and num(c["clip"].get("start"))
-        and num(c["clip"].get("end"))
-        and (
-            (r := c["clip"].get("reaction")) is None
-            or (isinstance(r, dict) and num(r.get("start")) and num(r.get("end")))
-        )
-    ]
-
-
-class CrashPart(Protocol):
-    """What :func:`add_crash_candidates` reads and changes of a part: a :class:`SourceResult`
-    of this run, or a :class:`HighlightsPart` of an earlier one."""
-
-    source: Path
-    offset: float
-    duration: float
-    candidates: list[Candidate]
-    signals: PartSignals | None
-
-
-@dataclass
-class HighlightsPart:
-    """A part of an earlier analysis, for :func:`rebuild_crash_moments`: its cached grids and
-    the candidates of its highlights.json records."""
-
-    source: Path
-    offset: float
-    duration: float
-    candidates: list[Candidate]
-    signals: PartSignals | None
-
-
-def _crash_windows(r: CrashPart, c: dict[str, Any], style: Style, forced: bool) -> list[Candidate]:
-    """The candidates of the crash ``c`` in the part ``r`` (absolute source time): its planned
-    clip (approach, impact, aftermath) and, when ``forced``, its reaction. A forced one scores
-    its confidence (:func:`cutpoint.scorer.score`); any other is scored from the part's grids
-    over its span, as a picked window there would be. Word edges only (no scene snapping)."""
-    ps, off, span = r.signals, r.offset, r.duration
-    if ps is None:
-        return []
-    spans = [("crash", c["clip"]["start"], c["clip"]["end"], c["t0"])]
-    reaction = c["clip"].get("reaction")
-    if forced and isinstance(reaction, dict):
-        spans.append(("crash reaction", reaction["start"], reaction["end"], reaction["start"]))
-    words_only = replace(style, snap_sentences=False)
-    combined = scorer.combined(ps.sig, style)
-    out = []
-    for label, a, b, peak_t in spans:
-        a, b = max(0.0, a - off), min(span, b - off)
-        if b - a < 1.0:
-            continue  # in another part of a recovered source
-        cand = Candidate(
-            r.source,
-            a,
-            b,
-            peak_t - off,
-            0.0,
-            {},
-            label_hint=label,
-            kind=CRASH_KIND,
-            must_include=forced,
-            event=_crash_event(c),
-        )
-        _snap(cand, [], ps.segments, span, words_only)
-        i = max(0, min(int(cand.start / DT), ps.n - 1))
-        j = max(i + 1, int(cand.end / DT))
-        cand.signals = {k: round(float(v[i:j].max()), 3) for k, v in ps.sig.items()}
-        cand.peak = float(c["confidence"]) if forced else float(combined[i:j].max())
-        out.append(cand)
-    return describe_candidates(out, style, ps, off)
-
-
-def add_crash_candidates(
-    results: Sequence[CrashPart], style: Style, crashes: dict[str, Any] | None
-) -> None:
-    """Make the crashes of ``crashes`` (a crashes.json object) moments of ``results`` (any
-    style but action-cam, whose own scorer reads crashes.json).
-
-    Only crashes at or above the project's floor (:func:`cutpoint.crash.crash_floor`) count.
-    One at or above ``style.must_include_crash`` (0: none) is forced, as in action-cam: its
-    clip and its reaction become must-include candidates (``kind`` crash) that replace the
-    candidates they overlap. A weaker one marks the candidate it overlaps most (its ``event``;
-    span and score stay), or else becomes a candidate of its own, scored and ranked like any
-    other. A crash counts in the part (of a recovered source) its ``t0`` falls in."""
-    from cutpoint.crash import crash_floor  # noqa: PLC0415
-
-    entries = _crash_entries(crashes)
-    if not entries:
-        return
-    floor = crash_floor(c["confidence"] for c in entries)
-    at = style.must_include_crash
-    n_forced = n_new = n_marked = 0
-    for r in results:
-        if r.signals is None:
-            continue
-        key = path_key(str(r.source))
-        mine = [
-            c
-            for c in entries
-            if c["confidence"] >= floor
-            and path_key(c["source"]) == key
-            and r.offset <= c["t0"] < r.offset + r.duration
-        ]
-        forced = [c for c in mine if at > 0 and c["confidence"] >= at]
-        made = [x for c in forced for x in _crash_windows(r, c, style, forced=True)]
-        if made:
-            r.candidates = made + [
-                x
-                for x in r.candidates
-                if not any(x.start < f.end and f.start < x.end for f in made)
-            ]
-            n_forced += len(forced)
-        weak = sorted((c for c in mine if c not in forced), key=lambda c: -c["confidence"])
-        for c in weak:
-            a, b = c["clip"]["start"], c["clip"]["end"]
-            hits = [x for x in r.candidates if x.start < b and a < x.end]
-            if hits:
-                host = max(hits, key=lambda x: min(b, x.end) - max(a, x.start))
-                if host.event is None:  # a crash moment shows its own crash
-                    host.event = _crash_event(c)
-                    n_marked += 1
-                continue
-            new = _crash_windows(r, c, style, forced=False)
-            r.candidates += new
-            n_new += len(new)
-    if n_forced or n_new or n_marked:
-        logger.info(
-            "Crashes: %d must-include (confidence >= %.2f), %d new moment(s), %d marked "
-            "(floor %.2f)",
-            n_forced,
-            at,
-            n_new,
-            n_marked,
-            floor,
-        )
-
-
-CRASH_MARKS = ("crash", "crash_confidence", "crash_forced")  # the keys of a candidate's crash
-
-
-def _crash_keys(recs: list[dict[str, Any]]) -> dict[tuple[Any, ...], dict[str, Any]]:
-    """The crash moments ``recs`` by what names one across runs: its part and crash (id and
-    impact span, not its confidence) and its place among that crash's windows in time order
-    (0: its clip, 1: its reaction). Not its span, which menu time may have trimmed, nor its
-    label."""
-    out: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for rec in sorted(recs, key=lambda r: (r["source_index"], r["start"])):
-        crash = rec.get("crash") or {}
-        base = (rec["source_index"], crash.get("id"), crash.get("t"), crash.get("end"))
-        out[(*base, sum(k[:4] == base for k in out))] = rec
-    return out
-
-
-def _canonical(hl: dict[str, Any]) -> dict[str, Any]:
-    """``hl`` with its candidates in a fixed order, to compare two analyses whatever the order."""
-    cands = sorted(hl.get("candidates", []), key=lambda c: str(c.get("id", "")))
-    return {**hl, "candidates": cands}
-
-
-def rebuild_crash_moments(project: Path) -> bool:
-    """Rebuild the crash moments of ``<project>/highlights.json`` from the current crashes.json,
-    as :func:`analyze` and :func:`reanalyze` build them (:func:`add_crash_candidates`), for a
-    re-run of ``cutpoint events`` that does not re-analyse. Returns whether it wrote the file.
-
-    The crash moments and marks of the analysis are taken off and made again over the grids its
-    caches give (:func:`cached_grid_parts`), so a moment whose crash is unchanged stays as it is
-    (id, vision rating, a span menu time trimmed) and repeat runs change nothing. A moment is
-    matched by its crash, not its span. As in :func:`analyze`, the candidates events nominated
-    host no crash (they come after the crash moments; the re-rank nominates again) and menu time
-    drops or trims a new crash moment (:func:`drop_menu_time`) before it takes an id. New ones
-    get the next ids (``settings.last_candidate_id``). Left alone: action-cam (its scorer reads
-    crashes.json), 360 projects, ``settings.crash_moments`` false, and a source whose grids are
-    not cached (recovered, offline). A candidate that a forced crash moment replaced is not brought back
-    when that crash goes away: only a re-analysis does. A file without ``style`` takes the
-    fallback style of :func:`_recorded_style`.
-
-    Raises:
-        ValueError: If the style is not in the library and the file records no built-in base
-            (:func:`_recorded_style`).
-    """
-    from cutpoint.crash import load_crashes  # noqa: PLC0415
-    from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415
-
-    path = project / HIGHLIGHTS
-    hl = projectfiles.load_highlights(project)
-    if not isinstance(hl, dict) or "sources" not in hl:
-        return False
-    if (hl.get("settings") or {}).get("crash_moments") is False or (project / PANO_FILE).is_file():
-        return False
-    style = _recorded_style(hl)
-    if style.kind == ACTION_CAM:
-        return False
-    parts = {
-        p.index: HighlightsPart(p.source, p.offset, p.duration, [], p.signals)
-        for p in cached_grid_parts(hl, style)
-    }
-    if not parts:
-        return False
-    cands = hl.get("candidates", [])
-    restore_widened(cands)  # as analyze made the crash moments, before any widening
-    before = copy.deepcopy(hl)
-    rest: list[dict[str, Any]] = []
-    rec_of: dict[int, dict[str, Any]] = {}  # id() of a candidate made from a record -> record
-    olds: list[dict[str, Any]] = []  # the crash moments there were
-    for rec in cands:
-        i = rec.get("source_index")
-        if i not in parts or is_pool(rec):
-            rest.append(rec)
-        elif is_nominated(rec):  # analyze builds crash moments before events nominate
-            for k in CRASH_MARKS:
-                rec.pop(k, None)
-            rest.append(rec)
-        elif rec.get("kind") == CRASH_KIND:
-            olds.append(rec)
-        else:
-            c = Candidate(parts[i].source, rec["start"], rec["end"], rec["start"], 0.0, {})
-            parts[i].candidates.append(c)
-            rec_of[id(c)] = rec
-    add_crash_candidates(list(parts.values()), style, load_crashes(project))
-    kept: list[dict[str, Any]] = []
-    built: list[dict[str, Any]] = []  # the crash moments made now
-    for i, part in parts.items():
-        for c in part.candidates:
-            rec = rec_of.get(id(c))
-            if rec is not None:  # a candidate of the analysis: with its crash mark, or none
-                for k in CRASH_MARKS:
-                    rec.pop(k, None)
-                if c.event:
-                    rec["crash"] = c.event
-                    rec["crash_confidence"] = round(float(c.event["confidence"]), 3)
-                    rec["crash_forced"] = c.must_include
-                kept.append(rec)
-                continue
-            built.append(_candidate_record(c, i, style))
-    was = _crash_keys(olds)
-    fresh: list[dict[str, Any]] = []  # crash moments with no earlier record
-    for key, new in _crash_keys(built).items():
-        old = was.get(key)
-        if old is None:
-            fresh.append(new)
-            continue
-        # the same crash: as it was (a span menu time trimmed included) if its marks are the
-        # same, else the new moment with its id
-        same = all(old.get(k) == new.get(k) for k in (*CRASH_MARKS, "must_include"))
-        kept.append(old if same else ({"id": old["id"]} if "id" in old else {}) | new)
-    ev = cache.load_json(project / "events.json")
-    if fresh and ev:  # menu time drops or trims a new one as analyze does, so it takes no id
-        menu_hl = {
-            "style": hl.get("style") or style.name,
-            "style_base": hl.get("style_base"),
-            "settings": hl.get("settings"),
-            "candidates": fresh,
-        }
-        drop_menu_time(menu_hl, ev)
-        fresh = menu_hl["candidates"]
-    pool = [c for c in rest if is_pool(c)]
-    kept = sorted(
-        [c for c in rest if not is_pool(c)] + kept + fresh,
-        key=lambda c: (not c.get("must_include"), *scorer.rank_key(c), *scorer.tie_key(c)),
-    )
-    hl["candidates"] = kept + pool
-    number_candidates(hl)
-    if _canonical(hl) == _canonical(before):  # the same records, maybe in another order
-        return False
-    cache.save_json(path, backends.saved_settings(hl), durable=True)
-    logger.info("Crash moments rebuilt from crashes.json in %s", path.name)
-    return True
-
-
-def band_k(suggested_top: int) -> int:
-    """How many moments the vision band takes below the default edit's cut (#909):
-    :data:`VISION_BAND_SHARE` of the edit's ``suggested_top`` moments, rounded up, within
-    :data:`VISION_BAND_MIN` and :data:`VISION_BAND_MAX`."""
-    k = math.ceil(round(VISION_BAND_SHARE * suggested_top, 9))  # no float error can add one
-    return min(VISION_BAND_MAX, max(VISION_BAND_MIN, k))
-
-
-def vision_band(
-    ranked: list[dict[str, Any]], picks: list[dict[str, Any]], max_n: int | None
-) -> tuple[list[dict[str, Any]], int, int]:
-    """The moments the vision model rates (#909): the default edit and ``k`` below its cut.
-
-    ``ranked``: the candidates that are neither ``must_include`` nor visual pool moments, in
-    :func:`cutpoint.scorer.edit_rank_key` order. ``picks``: the default edit
-    (:func:`cutpoint.default_fit.fit_target` before vision). The cut is 1 + the index in
-    ``ranked`` of the last pick that is not ``must_include`` (the picks need not be the first
-    ones; 0 without one). The band is every pick in ``ranked`` (a moment above the cut that the
-    edit skipped for its length or because it overlaps a pick is not one) plus ``ranked[cut : cut + k]``, ``k`` =
-    :func:`band_k` of the number of picks, clipped at the end. Closest to the cut first: the
-    last pick, the first moment below the cut, the pick before the last, the second below, and
-    so on, the rest of one side once the other runs out; then cut to ``max_n``
-    (``--vision-top``; None: all). Returns ``(band, cut, k)``."""
-    where = {id(c): i for i, c in enumerate(ranked)}
-    at = sorted(
-        {where[id(c)] for c in picks if not c.get("must_include") and id(c) in where},
-        reverse=True,
-    )
-    cut = at[0] + 1 if at else 0
-    k = band_k(len(picks))
-    above = [ranked[i] for i in at]
-    below = ranked[cut : cut + k]
-    order: list[dict[str, Any]] = []
-    for i in range(max(len(above), len(below))):
-        order.extend(side[i] for side in (above, below) if i < len(side))
-    return (order if max_n is None else order[:max_n]), cut, k
 
 
 def _find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[Path]:
@@ -3732,208 +2523,6 @@ def _visual_pool(
     return out
 
 
-def vision_budget(
-    share: float, pre_vision_s: float, earlier_total_s: float | None
-) -> tuple[float, str]:
-    """The vision step's time budget (#909): ``share`` (``vision_time_share``) of the analysis
-    before it. A re-rank measures against the first analysis (``earlier_total_s``, its
-    ``timings.total_s``), as its own run before vision is mostly cached. Returns
-    ``(budget_s, the name of the base)``."""
-    if earlier_total_s is not None:
-        return share * earlier_total_s, "earlier_total_s"
-    return share * pre_vision_s, "pre_vision_s"
-
-
-def cap_reached(now: float, deadline: float, calls: int) -> bool:
-    """Whether the vision time cap stops further model calls: at least one call was made and
-    the clock ``now`` is at or past the ``deadline``."""
-    return calls >= 1 and now >= deadline
-
-
-@dataclass
-class VisionOutcome:
-    """What :func:`_rate_vision` did: ``used`` any rating applied; ``failed`` moments without a
-    rating (cache misses of a ``cache_only`` rater included); ``capped`` the time cap stopped
-    the model calls and ``skipped_by_cap`` moments were left unrated for it; ``centres`` per
-    prompt kind (:func:`rating_centres`); ``by_kind`` the moments rated per prompt kind."""
-
-    used: bool = False
-    failed: int = 0
-    capped: bool = False
-    skipped_by_cap: int = 0
-    centres: dict[str, float] = field(default_factory=dict)
-    by_kind: dict[str, int] = field(default_factory=dict)
-
-
-def _ask_rater(
-    method: Callable[..., Any], c: dict[str, Any], style: Style, activity: Prompts | None
-) -> Any:
-    """``VisionRater.rate`` or ``cached`` (``method``) for the candidate ``c``."""
-    return method(
-        remap_source(Path(c["source"])),
-        c["start"],
-        c["end"],
-        style.base,
-        activity=activity,
-        transcript=c.get("transcript"),
-        laughter=heard_laughter(c),
-    )
-
-
-def _rate_vision(
-    order: list[dict[str, Any]],
-    rater: VisionRater,
-    style: Style,
-    activity: Prompts | None = None,
-    batch_size: int = 0,
-    *,
-    deadline: float,
-    clock: Callable[[], float] = time.perf_counter,
-) -> VisionOutcome:
-    """Rate the candidates of ``order`` (the vision band, closest to the cut first,
-    :func:`vision_band`) with the vision model and apply the ratings to their analysis score
-    (``score_pre_events`` once events rescored them).
-
-    The model is asked in ``order`` until the time cap: once a call was made and ``clock()``
-    reached ``deadline`` (:func:`cap_reached`), a moment without a cached rating is skipped; a
-    cached one is still taken (it costs nothing). A call under way when the deadline passes
-    finishes, so the step can overrun its budget by one call.
-
-    Then each prompt kind's ratings (``"speech"`` when the moment has speech to send with its
-    frames, :func:`~cutpoint.vision.speech_excerpt`, else ``"frames"``) are centred on their
-    mean (:func:`rating_centres` with the prior of the style's :func:`prior_group`,
-    :func:`centred_rating`) and blended in with
-    :func:`~cutpoint.vision_record.vision_blend` and the style's ``vision_weight``.
-    ``signals.vision`` keeps the model's rating as given; its label goes to ``vision_label``,
-    never to ``label`` (#913).
-    Each rated candidate keeps ``vision_rated`` (the span rated, the score before and after the
-    blend, the prompt kind and its centre) for :func:`~cutpoint.vision_record.sync_vision`.
-    ``activity`` words the action-cam prompt (the project's activity
-    prompt set). ``batch_size``: ``--batch-size`` (#713), the model is unloaded after the
-    candidates of every this many sources (:func:`_vision_batches`); the ratings are the same,
-    but once the time cap is reached, which moments near the cut get rated can differ."""
-    out = VisionOutcome()
-
-    def cached(c: dict[str, Any]) -> bool:
-        return _ask_rater(rater.cached, c, style, activity) is not None
-
-    if not rater.cache_only:  # a resumed run: the ratings made before are cached
-        progress.continuing("vision", sum(cached(c) for c in order), len(order))
-    got: list[tuple[dict[str, Any], float, str | None]] = []
-    done = calls = 0
-    try:
-        for k, part in enumerate(_vision_batches(order, batch_size)):
-            if k:  # a batch boundary: memory back until the next request loads the model
-                rater.unload()
-                progress.continuing("vision", done, len(order))
-            for c in part:
-                progress.update(progress.fraction(done, len(order)))
-                done += 1
-                if cap_reached(clock(), deadline, calls) and not cached(c):
-                    out.skipped_by_cap += 1
-                    continue
-                hits = rater.hits
-                res = _ask_rater(rater.rate, c, style, activity)
-                if rater.hits == hits and not rater.cache_only:
-                    calls += 1
-                if res is None:
-                    out.failed += 1
-                    continue
-                got.append((c, res.score, res.label))
-                logger.info(
-                    "vision %.1f '%s' for %.1f-%.1f", res.score, res.label, c["start"], c["end"]
-                )
-    finally:  # free the VRAM now, not after Ollama's default 5 min keep_alive
-        rater.unload()
-    out.capped = out.skipped_by_cap > 0
-    logger.info("Vision: %d ratings from the cache, %d asked the model", rater.hits, rater.asked)
-    # each prompt kind centred on this run's ratings of it
-    kinds = [
-        "speech" if speech_excerpt(c.get("transcript"), style.base) else "frames" for c, _, _ in got
-    ]
-    out.centres = rating_centres(
-        ((kind, r) for kind, (_, r, _) in zip(kinds, got, strict=True)), prior_group(style.base)
-    )
-    for kind, (c, score, label) in zip(kinds, got, strict=True):
-        out.used = True
-        out.by_kind[kind] = out.by_kind.get(kind, 0) + 1
-        c["signals"]["vision"] = score
-        if label:
-            c["vision_label"] = label
-        key = "score_pre_events" if "score_pre_events" in c else "score"
-        centre = out.centres[kind]
-        base = c[key]
-        c[key] = vision_blend(base, centred_rating(score, centre), style.vision_weight)
-        # for sync_vision: the rating holds for this span only
-        c["vision_rated"] = {
-            "start": c["start"],
-            "end": c["end"],
-            "base": base,
-            "blended": c[key],
-            "kind": kind,
-            "centre": round(centre, 2),
-        }
-        c.pop("vision_stale", None)
-    return out
-
-
-def _vision_stats(
-    rater: VisionRater,
-    *,
-    rated: int,
-    vision_s: float,
-    pre_vision_s: float,
-    rerank: bool = False,
-) -> dict[str, Any]:
-    """The vision step's cost for ``settings.vision`` (#909): the ratings made and taken from
-    the cache, the step's seconds against the analysis before it, and the run's request
-    timings and tokens summed (:attr:`VisionRater.stats`). Logs the one INFO line. ``rerank``:
-    the run re-ranks an earlier analysis, so ``pre_vision_s`` is only the cached re-run and no
-    share is logged."""
-    st = rater.stats
-    if rerank:
-        logger.info("Vision: %d rated (%d cached) in %.0f s", rated, rater.hits, vision_s)
-    else:
-        share = 100 * vision_s / pre_vision_s if pre_vision_s > 0 else 0.0
-        logger.info(
-            "Vision: %d rated (%d cached) in %.0f s (%.0f%% of analyze before vision)",
-            rated,
-            rater.hits,
-            vision_s,
-            share,
-        )
-    return {
-        **({"rerank": True} if rerank else {}),
-        "rated": rated,
-        "cached": rater.hits,
-        "calls": int(st["calls"]),
-        "vision_s": round(vision_s, 2),
-        "pre_vision_s": round(pre_vision_s, 2),
-        "grab_s": round(st["grab_s"], 2),
-        "load_s": round(st["load_s"], 2),
-        "prompt_s": round(st["prompt_s"], 2),
-        "reply_s": round(st["reply_s"], 2),
-        "prompt_tokens": int(st["prompt_tokens"]),
-        "reply_tokens": int(st["reply_tokens"]),
-        "model": rater.model,
-        "provider": rater.provider_name,
-    }
-
-
-def _vision_batches(top: list[dict[str, Any]], size: int) -> list[list[dict[str, Any]]]:
-    """The candidates to rate in batches for ``--batch-size`` ``size``: those of ``size``
-    sources each (sources in the order of their first candidate in ``top``, each one's
-    candidates in band order, closest to the cut first). One batch, ``top`` in band order, for
-    ``size`` 0 or ``size`` sources or fewer."""
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for c in top:
-        groups.setdefault(c["source"], []).append(c)
-    if size <= 0 or len(groups) <= size:
-        return [top]
-    parts = list(groups.values())
-    return [[c for g in parts[i : i + size] for c in g] for i in range(0, len(parts), size)]
-
-
 def analyze(
     target: Path | Sequence[Path],
     style: Style | AutoRequest,
@@ -4004,8 +2593,8 @@ def analyze(
         use_scenes: Run scene detection.
         max_candidates: Max candidates per source before merging (None = auto).
         vision_top: Most moments sent to the vision model: the default edit and the moments
-            below its cut (:func:`vision_band`) are cut to this many, closest to the cut first
-            (None = the whole band).
+            below its cut (:func:`~cutpoint.vision_step.vision_band`) are cut to this many, closest
+            to the cut first (None = the whole band).
         ollama_url: Ollama base URL.
         ollama_model: Ollama vision model name.
         exclude: Glob patterns (file name or full path) to skip.
@@ -4016,11 +2605,11 @@ def analyze(
             events.json as it is.
         skip: Steps of :data:`cutpoint.progress.SKIPPABLE` left out.
         earlier_total_s: ``timings.total_s`` of the analysis this run re-ranks
-            (:func:`reanalyze`): kept as ``total_s``, and this run's own time is recorded as
-            ``timings.rerank_s``. None: this run's time is ``total_s``.
+            (:func:`~cutpoint.reanalyze.reanalyze`): kept as ``total_s``, and this run's own time is
+            recorded as ``timings.rerank_s``. None: this run's time is ``total_s``.
         detection: The ``detection`` block of the auto analysis this run re-ranks
-            (:func:`reanalyze`, with the style it chose): recorded again as it is, and its
-            category plans the layers. Nothing is detected again.
+            (:func:`~cutpoint.reanalyze.reanalyze`, with the style it chose): recorded again as it
+            is, and its category plans the layers. Nothing is detected again.
         batch_size: ``--batch-size`` (#109): Whisper is closed after every this many sources
             and loaded again for the next ones, and so are the event layers' models
             (:func:`~cutpoint.events.pipeline.run_events`); 0: one batch. The results are
@@ -4032,35 +2621,41 @@ def analyze(
         ocr_det_skip: True = the HUD OCR skips the det gate of a region that has not
             changed since its last det call (``OcrParams.det_skip``), recorded as
             ``settings.ocr_det_skip`` for ``cutpoint events``; False or None = off.
-        crash_moments: Make the crashes of crashes.json moments (:func:`add_crash_candidates`,
-            every style but action-cam); False (``360 analyze``) leaves them out and records
-            ``settings.crash_moments`` false, which :func:`reanalyze` keeps.
+        crash_moments: Make the crashes of crashes.json moments
+            (:func:`~cutpoint.crash_moments.add_crash_candidates`, every style but action-cam);
+            False (``360 analyze``) leaves them out and records
+            ``settings.crash_moments`` false, which :func:`~cutpoint.reanalyze.reanalyze` keeps.
         footage: The caller's :class:`~cutpoint.category.FootageVision` for ``--style auto``
             (shared with its own detection; not closed here). None: one of this run.
         vision_time_share: The vision step's time cap, a share of the analysis before it
-            (:func:`vision_budget`); None = ``vision_time_share`` in config.json.
+            (:func:`~cutpoint.vision_step.vision_budget`); None = ``vision_time_share`` in
+            config.json.
         telemetry_fallback: An action-cam ``style`` (built-in or a style file over it) whose
             sources all lack camera telemetry (:func:`has_telemetry`) runs as ``action``
             instead, recorded as ``settings.style_requested`` and ``settings.style_fallback``
             with an ``action_cam_no_telemetry`` warning (#939). False (``360 analyze``): the
             style runs as given.
         reranked: The ``settings.reranked`` record of a project re-ranked to another style
-            (:mod:`cutpoint.rerank`, :func:`reanalyze`): recorded again, with
+            (:mod:`cutpoint.rerank`, :func:`~cutpoint.reanalyze.reanalyze`): recorded again, with
             ``settings.style_requested`` the style's name, the user's choice. ``detection``
             is then the earlier auto analysis's block, kept as it is but not acted on: the
             layers follow ``style``.
-        rerank_backup: ``settings.rerank_backup`` (:func:`backup_digest` of the backup a
-            re-rank kept, :func:`reanalyze`): recorded again, so the backup still gives ids
-            back. None: not recorded, unless the earlier ``out_dir/highlights.json`` is linked
-            to the backup file next to it (:func:`project_backup_link`, #1009): that link is
-            carried on. Otherwise a fresh analysis is not linked to a backup.
-        ids: For a re-analysis (:func:`reanalyze`, ``cutpoint rerank --analyze``): the ids of
-            the earlier candidates by :func:`span_key` (:func:`earlier_ids`). A candidate with
-            the span of one keeps its id, the others get the next ids after
-            ``last_candidate_id``. None: the ids of an earlier ``out_dir/highlights.json`` that is
-            an analysis are taken the same way (:func:`project_ids`, #1009), so a fresh run
-            into a project (``analyze``, ``edit``, ``360 analyze``) keeps the ids of the spans
-            it finds again; without one every candidate is numbered from ``h001``.
+        rerank_backup: ``settings.rerank_backup`` (:func:`~cutpoint.reanalyze.backup_digest` of
+            the backup a re-rank kept, :func:`~cutpoint.reanalyze.reanalyze`): recorded again, so
+            the backup
+            still gives ids back. None: not recorded, unless the earlier ``out_dir/highlights.json``
+            is linked to the backup file next to it
+            (:func:`~cutpoint.reanalyze.project_backup_link`, #1009): that link is carried on.
+            Otherwise a fresh analysis is not linked to a backup.
+        ids: For a re-analysis (:func:`~cutpoint.reanalyze.reanalyze`, ``cutpoint rerank
+            --analyze``): the ids of the earlier candidates by
+            :func:`~cutpoint.reanalyze.span_key`
+            (:func:`~cutpoint.reanalyze.earlier_ids`). A candidate with the span of one keeps its
+            id, the others get the next ids after ``last_candidate_id``. None: the ids of an earlier
+            ``out_dir/highlights.json`` that is an analysis are taken the same way
+            (:func:`~cutpoint.reanalyze.project_ids`, #1009), so a fresh run into a project
+            (``analyze``, ``edit``, ``360 analyze``) keeps the ids of the spans it finds again;
+            without one every candidate is numbered from ``h001``.
         last_candidate_id: The highest id the earlier analysis gave (with ``ids`` only).
         context: ``--context``, the user's words about the footage (#1068), recorded as
             ``settings.context``: a hint in the footage question of ``--style auto`` (not
@@ -4068,8 +2663,8 @@ def analyze(
             profile as ``crashes --context`` does, and it goes into the vision rating and
             dialogue prompts. No scoring weight reads it. None or blank: as without it.
         context_recorded: ``context`` is the recorded ``settings.context`` of a re-analysis
-            (:func:`reanalyze`), not words the user gave now: the crash step keeps the
-            project's activity.json then, as ``crashes`` without ``--context`` does.
+            (:func:`~cutpoint.reanalyze.reanalyze`), not words the user gave now: the crash step
+            keeps the project's activity.json then, as ``crashes`` without ``--context`` does.
         vision_detect_all: ``--vision-detect-all`` (#1069; the caller has turned it off for
             ``--no-vision``): ``--style auto`` shows every source to the vision model; it only
             settles sources (:func:`cutpoint.category.decide`), recorded as
@@ -4080,9 +2675,9 @@ def analyze(
         Path of the written highlights.json.
     """
     if ids is None:
-        ids, last_candidate_id = project_ids(out_dir)
+        ids, last_candidate_id = reanalyze.project_ids(out_dir)
         if rerank_backup is None:
-            rerank_backup = project_backup_link(out_dir)
+            rerank_backup = reanalyze.project_backup_link(out_dir)
     with progress.run(ANALYZE_STEPS, use=layers) as steps:
         opts = AnalyzeOptions(
             vision=vision,
@@ -4830,100 +3425,6 @@ def _records(parts: Sequence[CrashPart], style: Style) -> list[dict[str, Any]]:
     return [_candidate_record(c, i, style) for c, i in found]
 
 
-def span_key(c: dict[str, Any]) -> tuple[str, float, float]:
-    """What names a candidate's span across runs: its source and its start and end to the
-    hundredth of a second (as :func:`~cutpoint.events.scoring.nominate` matches nominees)."""
-    return (str(c["source"]), round(float(c["start"]), 2), round(float(c["end"]), 2))
-
-
-def _h_ids(hl: dict[str, Any]) -> tuple[dict[tuple[str, float, float], str], int]:
-    """The ``h`` ids of the candidates of ``hl`` by :func:`span_key`, and the highest id it
-    ever gave (``settings.last_candidate_id``, at least its highest ``h`` id)."""
-    ids = {
-        span_key(c): str(c["id"])
-        for c in hl.get("candidates") or []
-        if re.fullmatch(r"h\d+", str(c.get("id", "")))
-    }
-    last = (hl.get("settings") or {}).get("last_candidate_id")
-    return ids, max([int(last or 0), *(int(i[1:]) for i in ids.values())])
-
-
-def backup_digest(raw: bytes) -> str:
-    """What names a re-rank's backup file by its bytes (``settings.rerank_backup``, #1005)."""
-    return hashlib.sha256(raw).hexdigest()[:16]
-
-
-def earlier_ids(
-    hl: dict[str, Any], backup: bytes | None = None
-) -> tuple[dict[tuple[str, float, float], str], int]:
-    """What a re-rank of the analysis ``hl`` keeps (#902): the ``h`` ids of its candidates by
-    :func:`span_key` (``ids`` of :func:`rank_parts`), and the highest id it ever gave
-    (``settings.last_candidate_id``, at least its highest ``h`` id).
-
-    ``backup``: the bytes of ``highlights.before-rerank.json`` (#1005), used only when they are
-    the backup ``hl`` is linked to (:func:`backup_digest` equal to ``settings.rerank_backup``,
-    which a re-rank records; a re-analysis and a fresh analysis keep it while it still names the
-    backup, :func:`project_backup_link`). A span ``hl``
-    lacks gets its id there, unless ``hl`` gives that id to a span (``hl``'s ids come first,
-    so no id names another span); its highest id counts too. A backup that is not an analysis,
-    whose candidates cannot be read, or that gives a span both have another id than ``hl``
-    (edited by hand) is ignored."""
-    ids, last = _h_ids(hl)
-    link = (hl.get("settings") or {}).get("rerank_backup")
-    if backup is None or not link or backup_digest(backup) != link:
-        return ids, last  # none, or not the one hl was re-ranked from: stale
-    try:
-        old, old_last = _h_ids(json.loads(backup.decode("utf-8-sig")))
-    except (AttributeError, KeyError, TypeError, ValueError):  # not an analysis: ignored
-        logger.debug("the backup's ids cannot be read; ignored", exc_info=True)
-        return ids, last
-    if any(ids.get(k, i) != i for k, i in old.items()):  # edited since: stale
-        logger.debug("the backup's ids differ from highlights.json's; ignored")
-        return ids, last
-    taken = set(ids.values())
-    for key, i in old.items():
-        if key not in ids and i not in taken:
-            ids[key] = i
-            taken.add(i)
-    return ids, max(last, old_last)
-
-
-def project_ids(
-    project: Path,
-) -> tuple[dict[tuple[str, float, float], str] | None, int]:
-    """The ids a fresh analysis into ``project`` keeps (#1009): :func:`earlier_ids` of its
-    highlights.json and of its re-rank backup, or ``(None, 0)`` (number from ``h001``) when
-    there is no highlights.json or it is not a readable analysis."""
-    raw = cache.load_bytes(project / HIGHLIGHTS)
-    if raw is None:
-        return None, 0
-    try:
-        hl = json.loads(raw.decode("utf-8-sig"))
-        if not isinstance(hl, dict) or not isinstance(hl.get("candidates"), list):
-            return None, 0
-        return earlier_ids(hl, cache.load_bytes(project / RERANK_BACKUP))
-    except (AttributeError, KeyError, TypeError, ValueError):  # not an analysis
-        logger.debug(
-            "the earlier highlights.json's ids cannot be read; numbering anew", exc_info=True
-        )
-        return None, 0
-
-
-def project_backup_link(project: Path) -> str | None:
-    """The ``settings.rerank_backup`` of ``project``'s highlights.json when it still names the
-    re-rank backup file next to it (:func:`backup_digest` equal), else None (#1009): a fresh
-    analysis records it again, so the backup keeps giving ids back after it."""
-    raw = cache.load_bytes(project / HIGHLIGHTS)
-    backup = cache.load_bytes(project / RERANK_BACKUP)
-    if raw is None or backup is None:
-        return None
-    try:
-        link = (json.loads(raw.decode("utf-8-sig")).get("settings") or {}).get("rerank_backup")
-    except (AttributeError, TypeError, ValueError):
-        return None
-    return link if isinstance(link, str) and backup_digest(backup) == link else None
-
-
 def rank_parts(
     hl: dict[str, Any],
     parts: Sequence[CrashPart],
@@ -4958,12 +3459,12 @@ def rank_parts(
     ``source_index`` is its part's position); a part without ``signals`` keeps its candidates
     but gives no grid. ``hl["timings"]`` gets ``vision_s``.
 
-    For a re-rank (:mod:`cutpoint.rerank`, :func:`reanalyze`): ``ids`` maps the
-    :func:`span_key` of the earlier candidates to their ids; a candidate with the span of one
-    keeps its id and the others get the next ids after ``settings.last_candidate_id``
-    (:func:`number_candidates`). None: every candidate is numbered from ``h001``.
-    ``vision_cache_only``: the vision step takes the cached ratings only and asks no model
-    (the moments without one stay unrated).
+    For a re-rank (:mod:`cutpoint.rerank`, :func:`~cutpoint.reanalyze.reanalyze`): ``ids`` maps the
+    :func:`~cutpoint.reanalyze.span_key` of the earlier candidates to their ids; a candidate with
+    the span of one keeps its id and the others get the next ids after
+    ``settings.last_candidate_id`` (:func:`number_candidates`). None: every candidate is numbered
+    from ``h001``. ``vision_cache_only``: the vision step takes the cached ratings only and asks no
+    model (the moments without one stay unrated).
 
     Returns:
         The events.json object the candidates were ranked with, or a falsy value without one.
@@ -4988,7 +3489,7 @@ def rank_parts(
 
     # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
     # their scores
-    _vision_step(
+    vision_step._vision_step(
         hl,
         ev,
         grids,
@@ -5018,7 +3519,7 @@ def rank_parts(
         given: set[str] = set()
         out = []
         for c in cands:
-            was = ids.get(span_key(c))
+            was = ids.get(reanalyze.span_key(c))
             if was is not None and was not in given:
                 given.add(was)
                 c = {"id": was, **c}
@@ -5032,188 +3533,6 @@ def rank_parts(
         # visual pool moments: after the scored ones, outside suggested_top
         hl["candidates"] += _visual_pool(project, parts, style, hl)
     return ev
-
-
-def _vision_step(
-    hl: dict[str, Any],
-    ev: Any,
-    grids: list[GridPart],
-    style: Style,
-    project: Path,
-    steps: progress.Run,
-    *,
-    t_start: float,
-    vision: bool | None,
-    vision_top: int | None,
-    ollama_url: str | None,
-    ollama_model: str | None,
-    batch_size: int,
-    vision_time_share: float | None,
-    earlier_total_s: float | None,
-    vision_cache_only: bool,
-) -> None:
-    """:func:`rank_parts`'s vision step, in place: the rating of the default edit and the band
-    below its cut (:func:`vision_band`), blended in and clamped; ``hl["timings"]`` gets
-    ``vision_s`` and ``hl["settings"]`` the ``vision`` record."""
-    timings = hl["timings"]
-    cands = hl["candidates"]
-    rater: VisionRater | None = None
-    bad_url: ValueError | None = None
-    if vision and cands:
-        try:
-            rater = VisionRater(
-                **{k: v for k, v in {"url": ollama_url, "model": ollama_model}.items() if v}
-            )
-        except ValueError as err:  # a bad port in OLLAMA_HOST / ollama_url
-            bad_url = err
-    if not vision:
-        steps.skip("vision", "vision is off (Settings, config.json or --vision)")
-    elif not cands:
-        steps.skip("vision", "no candidates to rate")
-    elif rater is None:
-        message = f"vision model not usable ({bad_url}); the vision step is skipped"
-        logger.warning("%s", message)
-        jsonout.warn("vision_unavailable", message)
-        steps.skip("vision", message)
-    elif rater.consent_needed:
-        # a provider the user did not agree to (a hosted one, or an Ollama on another
-        # machine): no request, no cached ratings either
-        steps.skip("vision", rater.warn_consent())
-    else:
-        from cutpoint.visual_pool import is_pool  # noqa: PLC0415
-
-        # the default edit and the band below its cut, from the ranking before vision
-        ranked = sorted(
-            (c for c in cands if not c.get("must_include") and not is_pool(c)),
-            key=scorer.edit_rank_key,
-        )
-        picks = default_fit.fit_target(
-            sorted((c for c in cands if not is_pool(c)), key=scorer.edit_rank_key),
-            style.target_total,
-        )
-        order, cut, k = vision_band(ranked, picks, vision_top)
-        in_edit = {id(c) for c in picks}
-        # the moments above the cut the edit skipped (too long or overlapping a pick): no
-        # one's neighbours in the clamp, as long as they keep this span
-        for c in ranked[:cut]:
-            if id(c) not in in_edit:
-                c["vision_skipped"] = [c["start"], c["end"]]
-        # the user's --context words (#1068) go into the prompts, so into the cache keys. An
-        # analysis records the words it rated with as settings.vision_context (null: rated
-        # without words); a re-rank keeps them, so its cached ratings are found after `crashes`
-        # or `profile --context` changed settings.context (a file without the key, from before
-        # it: settings.context)
-        settings = hl["settings"]
-        recorded = settings.get("context")
-        if vision_cache_only and "vision_context" in settings:
-            recorded = settings["vision_context"]
-        rater.context = footage_context(recorded)
-        if not vision_cache_only:
-            settings["vision_context"] = rater.context
-        # action-cam: worded for the project's activity.json (the default without one)
-        wording = None
-        if style.base == ACTION_CAM:
-            from cutpoint import activity  # noqa: PLC0415
-
-            wording = activity.project_prompts(project)
-        # available() first: it resolves a hosted provider's unset model, the cache key.
-        # Offline, that model stays the placeholder and its cached ratings are not found.
-        online, n_cached = (not vision_cache_only and rater.available()), 0
-        if vision_cache_only and rater.via is not None:
-            from cutpoint.assistant.providers import AUTO_SERVER_MODEL  # noqa: PLC0415
-
-            # a re-rank asks no model, but a hosted server's unset model is the cache key: its
-            # check resolves it (a model list, no frames)
-            if rater.model == AUTO_SERVER_MODEL and rater.via.available():
-                rater.model = rater.via.model
-        if not online:  # Ollama down: the ratings already cached, no requests (#413)
-            rater.cache_only = True
-            n_cached = sum(_ask_rater(rater.cached, c, style, wording) is not None for c in order)
-        if online or n_cached:
-            if not online and not vision_cache_only:
-                n_none = len(order) - n_cached
-                message = (
-                    "vision rating requested but Ollama/model unavailable; using "
-                    f"{n_cached} cached rating{'s' if n_cached != 1 else ''}, "
-                    f"{n_none} candidate{'s' if n_none != 1 else ''} had no cached rating"
-                )
-                logger.warning("%s", message)
-                jsonout.warn("vision_unavailable", message)
-            with steps.step("vision"):
-                t0 = time.perf_counter()
-                pre_vision_s = t0 - t_start
-                share = (
-                    config.vision_time_share() if vision_time_share is None else vision_time_share
-                )
-                budget_s, budget_base = vision_budget(share, pre_vision_s, earlier_total_s)
-                n_edit = sum(id(c) in in_edit for c in order)
-                logger.info(
-                    "Vision: rating %d moments (%d of the default edit, %d below the cut at "
-                    "%d) of %d candidates",
-                    len(order),
-                    n_edit,
-                    len(order) - n_edit,
-                    cut,
-                    len(cands),
-                )
-                outcome = _rate_vision(
-                    order, rater, style, wording, batch_size, deadline=t0 + budget_s
-                )
-                if ev:  # the blended analysis scores plus the event boosts again
-                    hl["settings"]["vision"] = {}  # rescore_events records the clamp here
-                    rescore(hl, ev, project, grids)
-                    n_clamped = hl["settings"]["vision"].get("clamped", 0)
-                else:  # a rated moment stays between its unrated neighbours
-                    n_clamped = scorer.apply_vision_clamp(
-                        cands,
-                        [c["vision_rated"]["base"] if "vision_rated" in c else None for c in cands],
-                    )
-                timings["vision_s"] = round(time.perf_counter() - t0, 2)
-                if outcome.capped:
-                    logger.info(
-                        "Vision: time cap reached after %d calls (%.0f s, budget %.0f s = "
-                        "%d%% of %.0f s); %d moments near the cut not rated",
-                        int(rater.stats["calls"]),
-                        timings["vision_s"],
-                        budget_s,
-                        round(100 * share),
-                        pre_vision_s if earlier_total_s is None else earlier_total_s,
-                        outcome.skipped_by_cap,
-                    )
-                hl["settings"]["vision_used"] = outcome.used
-                hl["settings"]["vision"] = {
-                    "requested": len(order),
-                    "failed": outcome.failed - rater.missed,
-                    **({} if online else {"uncached": rater.missed}),
-                    **_vision_stats(
-                        rater,
-                        rated=len(order) - outcome.failed - outcome.skipped_by_cap,
-                        vision_s=timings["vision_s"],
-                        pre_vision_s=pre_vision_s,
-                        rerank=earlier_total_s is not None,
-                    ),
-                    "cut": cut,
-                    "band_k": k,
-                    "rated_by_kind": outcome.by_kind,
-                    "centre": {
-                        kind: (round(outcome.centres[kind], 2) if kind in outcome.centres else None)
-                        for kind in ("speech", "frames")
-                    },
-                    "share": share,
-                    "budget_s": round(budget_s, 2),
-                    "budget_base": budget_base,
-                    "capped": outcome.capped,
-                    "skipped_by_cap": outcome.skipped_by_cap,
-                    "clamped": n_clamped,
-                }
-        elif vision_cache_only:
-            logger.info("Vision: no cached rating for these moments; they stay unrated")
-            steps.skip("vision", "no cached ratings (re-rank)")
-        else:
-            message = "vision rating requested but Ollama/model unavailable; continuing without it"
-            logger.warning("%s", message)
-            jsonout.warn("vision_unavailable", message)
-            steps.skip("vision", "Ollama or its vision model is not reachable")
 
 
 def report_highlights(out_dir: Path, highlights: Path) -> None:
@@ -5236,214 +3555,3 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
     jsonout.output("style", saved.get("style"))
     if isinstance(saved.get("detection"), dict):  # --style auto
         jsonout.output("detection", saved["detection"])
-
-
-def _recorded_style(hl: dict[str, Any]) -> Style:
-    """The style of the analysis ``hl``, with the ``--must-include-crash`` it recorded.
-
-    A style no longer in the library (a deleted user style) degrades to its recorded built-in
-    base; ``hl`` without ``style`` has the built-in style :func:`cutpoint.styles.style_name`
-    falls back to (:func:`cutpoint.styles.analysis_style`).
-
-    Raises:
-        ValueError: If the style is not in the library and ``hl`` records no built-in base.
-    """
-    style = analysis_style(hl)
-    at = (hl.get("settings") or {}).get("must_include_crash")
-    if at is not None:  # an `analyze --must-include-crash`
-        style = replace(style, must_include_crash=float(at))
-    return style
-
-
-def restyled(hl: dict[str, Any], style: Style) -> Style:
-    """``style`` for a re-rank of the analysis ``hl``, with the ``--must-include-crash`` it
-    recorded when that was not its own style's (an override of ``analyze``). A file without
-    ``style`` has the fallback style of :func:`cutpoint.styles.analysis_style`."""
-    at = (hl.get("settings") or {}).get("must_include_crash")
-    if not isinstance(at, int | float) or isinstance(at, bool):
-        return style
-    try:
-        own = analysis_style(hl, logging.DEBUG).must_include_crash
-    except ValueError:  # a deleted style without a recorded base: no override to tell
-        return style
-    return style if float(at) == own else replace(style, must_include_crash=float(at))
-
-
-def rerank_record(hl: dict[str, Any], style: Style) -> dict[str, Any] | None:
-    """The ``settings.reranked`` record of the analysis ``hl`` re-ranked to ``style``: ``from``
-    the style it had and ``requested`` the style asked for then (``auto``, an action-cam style
-    that fell back, or the style of an earlier re-rank; None for a plain one). The same style:
-    the record ``hl`` has (None without one)."""
-    st = hl.get("settings") or {}
-    if style.name == style_name(hl):
-        kept = st.get("reranked")
-        return kept if isinstance(kept, dict) else None
-    requested = st.get("style_requested")
-    return {"from": style_name(hl), "requested": requested if isinstance(requested, str) else None}
-
-
-def reanalyze(
-    project: Path,
-    style: Style | None = None,
-    *,
-    backup: bytes | None = None,
-    rerank_backup: str | None = None,
-) -> Path:
-    """Re-run ``analyze`` with the inputs and style recorded in highlights.json.
-
-    Everything expensive is cached (audio, transcript, telemetry), so this is
-    quick. ``cutpoint events`` calls it for action-cam projects, whose events feed the
-    feature grid itself rather than a score boost. ``timings.total_s`` stays the earlier
-    analysis's; the re-rank's own time is ``timings.rerank_s``.
-
-    ``style``: analyze with this style instead (``cutpoint rerank --analyze``), with the
-    event layers it plans (made where their caches miss) and the dialogue step; another
-    style than the recorded one is the user's choice (:func:`rerank_record`, an auto
-    analysis's ``detection`` block kept). None: the recorded style, the layers as they are. A
-    project re-ranked before keeps its style and record either way.
-
-    Either way the candidates whose span is unchanged keep their ids and the new spans get ids
-    above ``settings.last_candidate_id``, which never goes down (:func:`earlier_ids`, #1006);
-    ``backup`` (``cutpoint rerank --analyze``: the bytes of the backup before its own) gives a
-    span the current analysis lacks its id there (#1005). ``rerank_backup``: the
-    ``settings.rerank_backup`` to record (``rerank --analyze``: its own backup's); None keeps
-    the recorded one.
-
-    Raises:
-        FileNotFoundError: If the project has no highlights.json.
-        ValueError: If highlights.json is unreadable, not valid JSON or records
-            no analysis, or its style is not in the library and it records no built-in
-            base (:func:`_recorded_style`).
-    """
-    from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
-
-    # e.g. an empty {} or a list: a clear error, not a KeyError or AttributeError traceback
-    hl = projectfiles.load_highlights(
-        project, strict=True, invalid="{path} records no analysis; run 'cutpoint analyze' again"
-    )
-    st = hl.get("settings") or {}
-    inputs = st.get("inputs") or [
-        s["path"] for s in hl["sources"] if isinstance(s, dict) and isinstance(s.get("path"), str)
-    ]
-    pano = (project / PANO_FILE).is_file()
-    given = style
-    reranked = None if given is None else rerank_record(hl, given)
-    if reranked is None and isinstance(st.get("reranked"), dict):
-        reranked = st["reranked"]  # re-ranked before: the user's style stays
-    style = _recorded_style(hl) if given is None else restyled(hl, given)
-    requested = st.get("style_requested")
-    if given is None and isinstance(st.get("style_fallback"), dict) and isinstance(requested, str):
-        # an action-cam style that fell back to action (#939): asked for again, so the
-        # telemetry probe decides as it did (or picks it up once the sources have it)
-        from cutpoint.styles import get_style, learned_styles  # noqa: PLC0415
-
-        try:
-            style = replace(get_style(requested), must_include_crash=style.must_include_crash)
-        except ValueError:  # a deleted user style: the recorded one, without the probe
-            if requested in learned_styles():  # there but unusable (broken file): its error
-                raise
-            logger.info(
-                "Style %r is not in the style library (deleted?); using %r", requested, style.name
-            )
-    total = (hl.get("timings") or {}).get("total_s")
-    # --style auto: the style it chose, and its decision kept (never detected again); for a
-    # re-ranked project the block only, as recorded
-    auto = st.get("style_requested") == AUTO
-    detection = hl.get("detection") if auto or reranked is not None else None
-    ids, last_id = earlier_ids(hl, backup)
-    link = st.get("rerank_backup")
-    if rerank_backup is None and isinstance(link, str):
-        rerank_backup = link  # the backup still gives ids back after this re-analysis
-    return analyze(
-        [Path(p) for p in inputs],
-        style,
-        project,
-        # opt-in: only if the earlier run asked (older projects record no request: off)
-        vision=st.get("vision_requested") is True,
-        vision_top=st.get("vision_top"),
-        ollama_url=st.get("ollama_url"),
-        ollama_model=st.get("ollama_model"),
-        model=st.get("whisper_model"),
-        language=st.get("language"),
-        use_scenes=bool(st.get("scenes", True)),
-        max_candidates=st.get("max_candidates"),
-        exclude=st.get("exclude") or [],
-        recursive=bool(st.get("recursive")),
-        recover=bool(st.get("recover")),
-        # the analysis time stays the first run's; this re-rank's is timings.rerank_s
-        earlier_total_s=float(total) if isinstance(total, int | float) else None,
-        detection=detection if isinstance(detection, dict) else None,
-        ocr_det_skip=st.get("ocr_det_skip") is True,
-        # off for 360 projects (pano.json: also one analysed before crash_moments was recorded)
-        crash_moments=st.get("crash_moments") is not False and not pano,
-        telemetry_fallback=not pano,  # 360 projects stay action-cam
-        # another style: its own event layers (360 analyze runs its layers itself)
-        layers=given is not None and not pano,
-        reranked=reranked,
-        rerank_backup=rerank_backup,
-        ids=ids,
-        last_candidate_id=last_id,
-        context=st.get("context"),  # #1068: as the analysis was told (footage_context checks it)
-        context_recorded=True,
-        # #1069: recorded again (nothing is detected again; cutpoint ui reads it back)
-        vision_detect_all=st.get("vision_detect_all") is True,
-    )
-
-
-def reanalyze_if_reachable(project: Path) -> Path | None:
-    """:func:`reanalyze`, unless a source of the project is offline.
-
-    ``analyze`` refuses a missing input, and without it the source would drop out
-    of highlights.json; ``crashes`` and ``events`` already skipped it, so they
-    leave highlights.json unchanged instead of failing. Likewise when analyze would
-    not find an input, or a recorded source under its recorded path, even through
-    ``source_remap``: re-analysing would fail, or drop or re-key the source.
-
-    Returns:
-        Path of highlights.json, or None if skipped.
-    """
-    hl = projectfiles.load_highlights(project)
-    if not isinstance(hl, dict):  # missing or not an object: reanalyze below reports it
-        hl = {}
-    offline = 0
-    recorded = [
-        s["path"]
-        for s in hl.get("sources") or []
-        if isinstance(s, dict) and isinstance(s.get("path"), str)
-    ]
-    for path in dict.fromkeys(recorded):
-        try:
-            cache.source_dir(Path(path))
-        except OSError:
-            offline += 1
-    if offline:
-        logger.warning(
-            "%d source(s) not reachable; highlights.json left unchanged, "
-            "rerun once the footage is back",
-            offline,
-        )
-        return None
-    # Run analyze's own input search (through ``source_remap`` for a moved input): an
-    # input it cannot find would fail it, and a recorded source it does not find under
-    # the same spelling would drop out (e.g. moved out of a folder input that still
-    # exists) or be re-keyed (an older project that recorded the remapped copy).
-    st = hl.get("settings") or {}
-    srcs = recorded
-    found: set[str] = set()
-    missing = 0
-    for p in dict.fromkeys(st.get("inputs") or srcs):
-        try:
-            batch = _find_input(Path(p), st.get("exclude") or [], bool(st.get("recursive")))
-        except FileNotFoundError:
-            missing += 1
-            continue
-        found.update(os.path.normcase(str(f)) for f in batch)
-    missing += sum(os.path.normcase(str(Path(p))) not in found for p in dict.fromkeys(srcs))
-    if missing:
-        logger.warning(
-            "%d path(s) not found where analyze recorded them, even through source_remap; "
-            "highlights.json left unchanged, rerun once the footage is back",
-            missing,
-        )
-        return None
-    return reanalyze(project)

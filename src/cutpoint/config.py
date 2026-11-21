@@ -267,7 +267,7 @@ def _memory_guard(path: Path, data: dict) -> float:
 
 def _vision_time_share(path: Path, data: dict) -> float:
     """``vision_time_share``: the vision rating's time cap, a share of the analysis before it
-    (:func:`cutpoint.analyze.vision_budget`), 0 or more; 0 allows one model call. Default
+    (:func:`cutpoint.vision_step.vision_budget`), 0 or more; 0 allows one model call. Default
     :data:`VISION_TIME_SHARE`."""
     value = data.get("vision_time_share")
     if value is None:

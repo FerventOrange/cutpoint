@@ -38,11 +38,14 @@ from cutpoint import (
     jsonout,
     paths,
     progress,
+    reanalyze,
+    scenes,
     scorer,
     telemetry,
     transcribe,
     vision,
     vision_record,
+    vision_step,
 )
 from cutpoint.errors import FFmpegError
 from cutpoint.events import cli as events_cli
@@ -138,7 +141,9 @@ def test_vision_is_skipped_when_ollama_is_unreachable(run, capsys):
 
 def test_vision_is_skipped_on_a_bad_ollama_port(run, capsys, monkeypatch):
     """#825: a bad port in OLLAMA_HOST skips the vision step with a warning, not a failure."""
-    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)  # the real one parses the URL
+    monkeypatch.setattr(
+        vision_step, "VisionRater", vision.VisionRater
+    )  # the real one parses the URL
     monkeypatch.setenv("OLLAMA_HOST", "myhost:99999")
     with jsonout.run("analyze") as result:
         run.go(vision=True)
@@ -207,7 +212,7 @@ def test_vision_counts_the_candidates_without_a_cached_rating(run, monkeypatch):
             pass
 
     monkeypatch.setattr(analyze, "analyze_source", two)
-    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    monkeypatch.setattr(vision_step, "VisionRater", Rater)
     run.vision_ok = False
     run.go(vision=True, vision_top=2)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
@@ -277,7 +282,7 @@ def test_the_vision_settings_carry_the_run_stats(run, monkeypatch):
     """#909: settings.vision has every stat key, the cached ratings are counted apart from the
     calls."""
     monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
-    monkeypatch.setattr(analyze, "VisionRater", _timed_rater(True))
+    monkeypatch.setattr(vision_step, "VisionRater", _timed_rater(True))
     run.go(vision=True, vision_top=2)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     v = hl["settings"]["vision"]
@@ -308,7 +313,7 @@ def test_a_rerank_is_marked_in_the_vision_settings(run, monkeypatch):
     """#909: on a re-rank (earlier_total_s given) settings.vision says so; a first run is not
     marked."""
     monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
-    monkeypatch.setattr(analyze, "VisionRater", _timed_rater(True))
+    monkeypatch.setattr(vision_step, "VisionRater", _timed_rater(True))
 
     def vision_run(**kw):
         run.go(vision=True, vision_top=2, **kw)
@@ -326,7 +331,7 @@ def test_the_vision_stats_do_not_change_the_ranking(run, monkeypatch):
     monkeypatch.setattr(analyze, "analyze_source", _two_candidates)
     out = {}
     for timed in (False, True):
-        monkeypatch.setattr(analyze, "VisionRater", _timed_rater(timed))
+        monkeypatch.setattr(vision_step, "VisionRater", _timed_rater(timed))
         run.go(vision=True, vision_top=2)
         hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
         out[timed] = [(c["id"], c["start"], c["score"], c["label"]) for c in hl["candidates"]]
@@ -799,7 +804,8 @@ def test_the_grids_of_the_run_reach_both_rescores_and_the_nominees_keep_their_ra
         seen.append(parts)
         return real(hl, ev, project, parts)
 
-    monkeypatch.setattr(analyze, "rescore", rescore)
+    monkeypatch.setattr(analyze, "rescore", rescore)  # the ranking's
+    monkeypatch.setattr(vision_step, "rescore", rescore)  # the one after the vision step
     run.go("gaming")  # no events.json yet: the rescore does not run
     kills = [
         {"source": str(run.video), "start": t, "end": t + 3, "kind": "ocr", "type": "kill",
@@ -1743,7 +1749,7 @@ def test_the_rerank_of_one_json_run_warns_once(run, monkeypatch, caplog):
     _cam_run(run, monkeypatch, {"a.mp4": True}, {"a.mp4": False})
     with caplog.at_level(logging.WARNING), jsonout.run("analyze") as res:
         run.go("action-cam")
-        analyze.reanalyze(run.proj)
+        reanalyze.reanalyze(run.proj)
     [warning] = _no_telemetry_warnings(res)
     assert [r.getMessage() for r in caplog.records].count(warning["message"]) == 1
 
@@ -1779,7 +1785,7 @@ def test_a_fallen_back_project_re_runs_with_its_request(run, monkeypatch):
     request stays recorded."""
     _cam_run(run, monkeypatch, {"a.mp4": False}, {})
     run.go("action-cam")
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["style"] == "action"
     assert (hl["settings"]["style_requested"], hl["settings"]["style_fallback"]) == (
@@ -2444,7 +2450,7 @@ def test_reanalyze_keeps_the_detection_and_never_probes_again(probed, monkeypatc
     monkeypatch.setattr(
         category, "probe_source", lambda src, vision=None: pytest.fail("probed again")
     )
-    analyze.reanalyze(probed.proj)
+    reanalyze.reanalyze(probed.proj)
     after = _hl(probed)
     assert after["style"] == "gaming" and after["detection"] == before["detection"]
     assert after["settings"]["style_requested"] == "auto"
@@ -2510,7 +2516,7 @@ def test_reanalyze_keeps_vision_detect_all_and_never_probes_again(probed, monkey
     monkeypatch.setattr(
         category, "probe_source", lambda src, vision=None: pytest.fail("probed again")
     )
-    analyze.reanalyze(probed.proj)
+    reanalyze.reanalyze(probed.proj)
     after = _hl(probed)
     assert after["settings"]["vision_detect_all"] is True
     assert after["detection"] == before["detection"]
@@ -2518,7 +2524,7 @@ def test_reanalyze_keeps_vision_detect_all_and_never_probes_again(probed, monkey
 
 def test_reanalyze_without_vision_detect_all_records_none(probed):
     probed.go(analyze.AutoRequest("hype"), vision=None)
-    analyze.reanalyze(probed.proj)
+    reanalyze.reanalyze(probed.proj)
     assert "vision_detect_all" not in _hl(probed)["settings"]
 
 
@@ -2538,7 +2544,7 @@ def test_analyze_source_times_each_stage_and_flags_a_cached_source(tmp_path, mon
     monkeypatch.setattr(analyze, "extract_audio", lambda *a, **k: write(a[1]))
     monkeypatch.setattr(analyze, "check_read", lambda *a: None)
     monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (np.zeros(1), np.zeros(1)))
-    monkeypatch.setattr(analyze, "scene_cuts", lambda *a, **k: [])
+    monkeypatch.setattr(scenes, "scene_cuts", lambda *a, **k: [])
 
     class Tr:
         model_name = "m"
@@ -2630,7 +2636,7 @@ def _speech_run(run, monkeypatch, transcript, rating=8.0):
             pass
 
     monkeypatch.setattr(analyze, "analyze_source", one)
-    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    monkeypatch.setattr(vision_step, "VisionRater", Rater)
     return calls
 
 
@@ -2717,7 +2723,9 @@ def test_the_prompt_kind_is_speech_only_when_there_are_words(
         def unload(self):
             pass
 
-    out = analyze._rate_vision([cand], Rater(), get_style(style), None, 0, deadline=float("inf"))
+    out = vision_step._rate_vision(
+        [cand], Rater(), get_style(style), None, 0, deadline=float("inf")
+    )
     assert out.used is True and out.by_kind == {kind: 1}
     assert out.centres == {kind: pytest.approx(centre)}
     assert cand["vision_rated"]["kind"] == kind and cand["vision_rated"]["centre"] == centre
@@ -2767,7 +2775,7 @@ def test_events_reads_ocr_as_the_analysis_did(home, run, monkeypatch) -> None:
     assert _events_det_skip(run.proj, monkeypatch) is True
     assert _events_det_skip(run.proj, monkeypatch, "--no-ocr-det-skip") is False
     # a re-rank keeps it
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     hl = json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
     assert hl["settings"]["ocr_det_skip"] is True
 
@@ -2865,7 +2873,7 @@ def band_run(run, monkeypatch):
         def unload(self):
             pass
 
-    real = analyze._rate_vision
+    real = vision_step._rate_vision
 
     def rate_vision(order, rater, style, activity, batch_size, *, deadline, clock=None):
         if state.deadline is None:  # the real clock and the real deadline
@@ -2876,8 +2884,8 @@ def band_run(run, monkeypatch):
         )  # fmt: skip
 
     monkeypatch.setattr(analyze, "analyze_source", _twelve)
-    monkeypatch.setattr(analyze, "VisionRater", Rater)
-    monkeypatch.setattr(analyze, "_rate_vision", rate_vision)
+    monkeypatch.setattr(vision_step, "VisionRater", Rater)
+    monkeypatch.setattr(vision_step, "_rate_vision", rate_vision)
 
     def load() -> dict:
         return json.loads((run.proj / "highlights.json").read_text(encoding="utf-8"))
@@ -3226,7 +3234,7 @@ def test_a_deleted_user_style_degrades_to_its_recorded_base(run, capsys, monkeyp
     hl = _hl(run)
     assert (hl["style"], hl["style_base"]) == ("mine", "gaming")  # the file is not rewritten
     assert all("score_pre_events" in c for c in hl["candidates"])  # the rescore ran
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     hl = _hl(run)
     gaming = get_style("gaming")
     assert (hl["style"], hl["style_base"], hl["style_kind"]) == ("gaming", "gaming", gaming.kind)
@@ -3246,7 +3254,7 @@ def test_a_deleted_user_style_without_a_recorded_base_is_a_clear_error(
     cache.save_json(run.proj / "highlights.json", hl)
     stylefiles.delete("mine")
     with pytest.raises(ValueError, match=r"'mine' .* not in the style library \(deleted\?\)"):
-        analyze.reanalyze(run.proj)
+        reanalyze.reanalyze(run.proj)
 
     def run_events(project, **kw):
         lines = common.load_transcript_lines(project)
@@ -3276,7 +3284,7 @@ def test_reanalyze_of_a_fallback_from_a_deleted_style_keeps_the_recorded_style(r
     recorded style (action), and no fallback any more."""
     run.go("action")
     _fell_back(run, "mycam")
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     hl = _hl(run)
     assert (hl["style"], hl["style_base"]) == ("action", "action")
     assert "style_fallback" not in hl["settings"]
@@ -3288,7 +3296,7 @@ def test_reanalyze_of_a_fallback_from_a_broken_style_file_raises_its_error(run):
     _fell_back(run, "mycam")
     write(paths.styles_dir() / "mycam.json", "{not json")
     with pytest.raises(ValueError, match="Cannot read learned style"):
-        analyze.reanalyze(run.proj)
+        reanalyze.reanalyze(run.proj)
     assert _hl(run)["settings"]["style_requested"] == "mycam"  # the project is left as it was
 
 
@@ -3351,21 +3359,21 @@ def test_the_dialogue_reader_hands_the_context_to_read_all(monkeypatch):
 def test_a_reanalysis_keeps_the_recorded_context(run):
     run.go(context="chest mount")
     run.old = None
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     assert _hl(run)["settings"]["context"] == "chest mount"
 
 
 def test_the_rating_prompts_get_the_recorded_context(run, monkeypatch):
     """rank_parts sets the rater's context from settings, so ratings are keyed by it."""
     raters: list[Any] = []
-    base = analyze.VisionRater
+    base = vision_step.VisionRater
 
     class Rater(base):
         def __init__(self, **kw):
             super().__init__(**kw)
             raters.append(self)
 
-    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    monkeypatch.setattr(vision_step, "VisionRater", Rater)
     run.go(vision=True, context="chest mount")
     run.go(vision=True)
     assert [r.context for r in raters] == ["chest mount", None]
@@ -3393,7 +3401,7 @@ def test_a_reanalysis_keeps_the_projects_activity_json_over_the_recorded_context
     assert (run.proj / "activity.json").is_file()
     run.events_calls.clear()
     run.old = (run.proj / "highlights.json").read_bytes()
-    analyze.reanalyze(run.proj, get_style("funny"))  # a style given: the event layers run
+    reanalyze.reanalyze(run.proj, get_style("funny"))  # a style given: the event layers run
     ((_project, _layers, kw),) = run.events_calls
     assert kw["context"] is None
     assert _hl(run)["settings"]["context"] == "chest mount"

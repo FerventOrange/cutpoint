@@ -15,7 +15,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import envelope, needs_ffmpeg
-from cutpoint import cli, edit
+from cutpoint import cli, edit, vision_step
 from cutpoint.analyze import report_highlights
 from cutpoint.events import cli as events_cli
 from cutpoint.events import pipeline
@@ -328,7 +328,7 @@ class _NoOllama:
 def test_analyze_json_warns_when_vision_was_wanted_but_unavailable(
     video, home, capsys, caplog, monkeypatch, flags, message
 ):
-    monkeypatch.setattr(cutpoint.analyze, "VisionRater", _NoOllama)
+    monkeypatch.setattr(vision_step, "VisionRater", _NoOllama)
     argv = _analyze_argv(video, *NO_EVENT_STEPS, *flags)
     code, doc, _ = _json(capsys, argv)
     assert code == 0 and doc["ok"] is True and doc["outputs"]["candidates"] > 0

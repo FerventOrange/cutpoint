@@ -20,7 +20,7 @@ import pytest
 
 import pano_helpers as helpers
 from conftest import HOP, set_config
-from cutpoint import activity, cache, jsonout
+from cutpoint import activity, cache, jsonout, reanalyze
 from cutpoint import analyze as analyze_mod
 from cutpoint.events import pipeline
 from cutpoint.pano import candidates as C
@@ -384,7 +384,7 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
     monkeypatch.setattr(
         analyze_mod, "analyze", lambda *a, **k: order.append("analyze") or given.append(k)
     )
-    monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda project: None)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda project: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     stats = {"candidates": 2, "computed": 2, "flags": {"sky": 1}, "dir": None, "seconds": 1.5}
@@ -441,7 +441,7 @@ def _timing_run(monkeypatch, tmp_path: Path) -> list[dict | None]:
     monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda sources: False)
     monkeypatch.setattr(VW, "run_layer", lambda clips, force=False, handoff=None: {"computed": 1})
     monkeypatch.setattr(analyze_mod, "analyze", _rewrite_highlights)
-    monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda project: None)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda project: None)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
     monkeypatch.setattr(C, "cache_candidate_paths", lambda project: {"seconds": 1.5})

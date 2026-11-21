@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from cutpoint import analyze as analyze_mod
-from cutpoint import crash, insta360, styles
+from cutpoint import crash, insta360, reanalyze, styles
 from cutpoint.events import common, pipeline
 from cutpoint.events import visual as V
 from cutpoint.pano import cli, project, views
@@ -97,7 +97,7 @@ def pano(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(views, "save_views", lambda src, data, p: None)
     monkeypatch.setattr(crash, "dense_needs_run", lambda srcs: rec.dense)
     monkeypatch.setattr(analyze_mod, "analyze", lambda *a, **k: rec.analyze_hook())
-    monkeypatch.setattr(analyze_mod, "reanalyze_if_reachable", lambda p: {})
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda p: {})
     monkeypatch.setattr(analyze_mod, "report_highlights", lambda p, hl: None)
     monkeypatch.setattr(project, "default_style", lambda: "action-cam")
     monkeypatch.setattr(styles, "get_style", lambda name: None)

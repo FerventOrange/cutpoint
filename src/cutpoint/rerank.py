@@ -8,7 +8,7 @@ ratings only, the final order). It takes seconds, where analyze takes minutes to
 
 :func:`readiness` says whether the caches hold what the style needs; when they do not, the
 re-rank is refused (:class:`~cutpoint.errors.NeedsAnalyzeError`, ``needs_analyze``) and
-``--analyze`` runs :func:`cutpoint.analyze.reanalyze` with the style instead.
+``--analyze`` runs :func:`cutpoint.reanalyze.reanalyze` with the style instead.
 
 The preview (``--dry-run``) is the re-rank itself, written nowhere: the save writes the same
 ranking. Saving replaces ``highlights.json`` and keeps the one before as
@@ -34,11 +34,22 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cutpoint import analyze, cache, features, folders, progress, runstate, selfcheck
+from cutpoint import (
+    analyze,
+    cache,
+    crash_moments,
+    features,
+    folders,
+    progress,
+    reanalyze,
+    runstate,
+    selfcheck,
+)
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP, check_candidates
+from cutpoint.scenes import scores_scenes
 from cutpoint.styles import ACTION_CAM, Style, style_hash
 from cutpoint.utils import command_line
 
@@ -97,7 +108,7 @@ class Result:
 
 def _backup(project: Path) -> bytes | None:
     """The bytes of the project's :data:`RERANK_BACKUP` (the ranking before the last
-    re-rank), or None without one: :func:`cutpoint.analyze.earlier_ids` uses it only when
+    re-rank), or None without one: :func:`cutpoint.reanalyze.earlier_ids` uses it only when
     highlights.json is linked to it (``settings.rerank_backup``)."""
     return cache.load_bytes(project / RERANK_BACKUP)
 
@@ -149,7 +160,7 @@ def seal(hl: dict[str, Any]) -> str:
     if isinstance(st, dict):
         st.pop(UNDO, None)
     text = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
-    return analyze.backup_digest(text.encode("utf-8"))
+    return reanalyze.backup_digest(text.encode("utf-8"))
 
 
 def sealed(hl: dict[str, Any], *, undone: bool = False) -> dict[str, Any]:
@@ -193,7 +204,11 @@ def undo_target(project: Path, hl: dict[str, Any]) -> tuple[dict[str, Any], bool
     ):
         return None
     back_raw = cache.load_bytes(project / RERANK_BACKUP)
-    if back_raw is None or analyze.backup_digest(back_raw) != link or mark.get("seal") != seal(hl):
+    if (
+        back_raw is None
+        or reanalyze.backup_digest(back_raw) != link
+        or mark.get("seal") != seal(hl)
+    ):
         return None
     try:
         back = json.loads(back_raw.decode("utf-8-sig"))
@@ -267,7 +282,7 @@ def swap(project: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool
 
     with folders.swap_lock(project / runstate.LOCK_NAME, project):
         raw, hl = load(project)
-        if analyze.backup_digest(raw) != base:
+        if reanalyze.backup_digest(raw) != base:
             raise StaleRankingError(f"{project / HIGHLIGHTS} changed since the page loaded")
         found = undo_target(project, hl)
         if found is None:
@@ -278,7 +293,7 @@ def swap(project: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool
         backends.saved_settings(back)
         kept = backup_bytes(raw)
         st = back.setdefault("settings", {})
-        st["rerank_backup"] = analyze.backup_digest(kept)
+        st["rerank_backup"] = reanalyze.backup_digest(kept)
         last = [(x.get("settings") or {}).get("last_candidate_id") for x in (hl, back)]
         if ints := [n for n in last if isinstance(n, int) and not isinstance(n, bool)]:
             st["last_candidate_id"] = max(ints)
@@ -342,9 +357,9 @@ def readiness(
     Refused (each a :class:`Missing`): a 360 project; an action-cam ``style`` (its feature grid
     is built by analyze) or another style kind than the project's; a source read in parts
     (``offset``, ``read_errors``) or not reachable; a source with audio but no cached loudness
-    or transcript; a source without a full scene pass (:data:`~cutpoint.analyze.SCENES_FILE`)
+    or transcript; a source without a full scene pass (:data:`~cutpoint.scenes.SCENES_FILE`)
     when scene detection is on and ``style`` weighs scenes, or the source is too long for
-    edge windows (:func:`~cutpoint.analyze.edge_windows`); a source with nothing cached to
+    edge windows (:func:`~cutpoint.scenes.edge_windows`); a source with nothing cached to
     build its grid from (no audio and no scene cuts); an event layer ``style``'s category
     plans that events.json lacks. Dialogue never read (``style`` reads it, the project's did
     not) is a note only. Reads only: no cache folder is made. ``cuda``: whether a CUDA GPU is
@@ -383,7 +398,7 @@ def readiness(
         if c.gap == "length":
             miss(Missing(c.gap, _gap_detail(c.gap, name), path))
             continue
-        if scenes and not c.scenes and (analyze.scores_scenes(style) or not c.windowed):
+        if scenes and not c.scenes and (scores_scenes(style) or not c.windowed):
             miss(Missing("scenes", f"{name} has no full scene pass", path))
             continue
         if c.gap is not None:
@@ -464,21 +479,21 @@ def ranked(
     :func:`readiness`), as a new highlights.json object; writes nothing to the project.
 
     The style's fields and settings replace the earlier style's (its ``--must-include-crash``
-    override kept, :func:`~cutpoint.analyze.restyled`); another style is the user's choice
+    override kept, :func:`~cutpoint.reanalyze.restyled`); another style is the user's choice
     (``settings.style_requested``, ``settings.reranked``; an auto analysis's ``detection``
     stays). Vision takes cached ratings only. ``timings`` keep the analysis's, with this
     re-rank's ``rerank_s``. ``settings.rerank_backup`` links it to the backup a save keeps:
-    :func:`~cutpoint.analyze.backup_digest` of ``raw``, the bytes of the project's
+    :func:`~cutpoint.reanalyze.backup_digest` of ``raw``, the bytes of the project's
     highlights.json (read when None); ``settings.rerank_undo`` seals it (:func:`sealed`).
     ``check``: run the analysis self-checks (:mod:`cutpoint.selfcheck`; they warn and record
     ``settings.self_checks``).
     """
     t0 = time.perf_counter()
-    style = analyze.restyled(hl, style)
+    style = reanalyze.restyled(hl, style)
     new = copy.deepcopy({k: v for k, v in hl.items() if k != "candidates"})
     new.update(style=style.name, style_kind=style.kind, style_base=style.base)
     st = new.setdefault("settings", {})
-    reranked = analyze.rerank_record(hl, style)
+    reranked = reanalyze.rerank_record(hl, style)
     if reranked is not None:
         st["style_requested"] = style.name
         st["reranked"] = reranked
@@ -493,14 +508,14 @@ def ranked(
         vision=None,
     )
     # read before a save replaces the backup: a span only it has gets its id back (#1005)
-    ids, st["last_candidate_id"] = analyze.earlier_ids(hl, _backup(project))
+    ids, st["last_candidate_id"] = reanalyze.earlier_ids(hl, _backup(project))
     if raw is None:
         raw = (project / HIGHLIGHTS).read_bytes()
-    st["rerank_backup"] = analyze.backup_digest(raw)  # the backup a save writes
+    st["rerank_backup"] = reanalyze.backup_digest(raw)  # the backup a save writes
     timings = new.setdefault("timings", {})
     timings.pop("vision_s", None)
     grids = {p.index: p for p in analyze.cached_grid_parts(new, style)}
-    parts: list[analyze.HighlightsPart] = []
+    parts: list[crash_moments.HighlightsPart] = []
     by_source: dict[str, list[str]] = {}
     for i, e in enumerate(new.get("sources") or []):
         g = grids.get(i)
@@ -510,7 +525,9 @@ def ranked(
             gap = analyze.cached_sources(new, style, create=False)[i].gap or "caches"
             raise _refused(project, style, [Missing(gap, _gap_detail(gap, Path(path).name), path)])
         picked = analyze.pick_candidates(g, style, st.get("max_candidates"), {})
-        parts.append(analyze.HighlightsPart(g.source, g.offset, g.duration, picked, g.signals))
+        parts.append(
+            crash_moments.HighlightsPart(g.source, g.offset, g.duration, picked, g.signals)
+        )
         by_source[str(g.source)] = sorted(features.available() if g.avail is None else g.avail)
     st["features_by_source"] = by_source
     total = (hl.get("timings") or {}).get("total_s")
@@ -558,11 +575,11 @@ def rerank(
     under the project's run lock (``folder_busy`` while another run holds it).
 
     When :func:`readiness` refuses the fast path: with ``analyze_missing`` (not with
-    ``dry_run``, not for a 360 project), :func:`cutpoint.analyze.reanalyze` with ``style``
+    ``dry_run``, not for a 360 project), :func:`cutpoint.reanalyze.reanalyze` with ``style``
     instead (the backup written before it; unchanged spans keep their ids there too); else
     :class:`~cutpoint.errors.NeedsAnalyzeError`, naming :func:`analyze_command`.
 
-    ``expect``: the :func:`~cutpoint.analyze.backup_digest` of the highlights.json the caller
+    ``expect``: the :func:`~cutpoint.reanalyze.backup_digest` of the highlights.json the caller
     previewed (``cutpoint ui``'s apply); when the file under the lock has another, nothing is
     written. ``cuda``: as :func:`readiness` takes it.
 
@@ -581,7 +598,7 @@ def rerank(
     )
     with lock:
         raw, hl = load(project)
-        if expect is not None and analyze.backup_digest(raw) != expect:
+        if expect is not None and reanalyze.backup_digest(raw) != expect:
             raise StaleRankingError(
                 f"{project / HIGHLIGHTS} changed since the ranking was previewed; preview it again"
             )
@@ -603,8 +620,8 @@ def rerank(
             kept = backup_bytes(raw)
             cache.save_bytes(project / RERANK_BACKUP, kept, durable=True)
             try:
-                analyze.reanalyze(
-                    project, style, backup=earlier, rerank_backup=analyze.backup_digest(kept)
+                reanalyze.reanalyze(
+                    project, style, backup=earlier, rerank_backup=reanalyze.backup_digest(kept)
                 )
             except BaseException:
                 # a failed or interrupted analysis keeps the earlier Undo, unless it already

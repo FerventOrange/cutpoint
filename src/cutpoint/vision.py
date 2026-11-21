@@ -137,10 +137,10 @@ _SPEECH_BLOCK = (
 # analyze.SNIPPET_CHARS (240) from the window's start, so this limit is not reached.
 MAX_TRANSCRIPT_CHARS = 600
 # The speech prompt and the frames-only one rate on different scales, so each prompt kind's
-# ratings are centred on their own mean (analyze.rating_centres, #909). With fewer than
+# ratings are centred on their own mean (vision_step.rating_centres, #909). With fewer than
 # PRIOR_N ratings of a kind the mean is shrunk toward this prior, per (style group, prompt
 # kind): group "action" for styles over analyze.ACTION_STYLES (action, sport, action-cam),
-# "other" for the rest (analyze.prior_group). Every model uses the same numbers. The first fit
+# "other" for the rest (vision_step.prior_group). Every model uses the same numbers. The first fit
 # (2026-11-10, qwen3.5:9b, top 60 moments of 8 footage: frames n=30, bimodal, speech n=205)
 # gave 5.6 and 4.1. The per-group values were measured 2026-11-11 with
 # a since-removed script (#1085) on 25 #900 projects (qwen3.5:9b, default --vision-top, about 2

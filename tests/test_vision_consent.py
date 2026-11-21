@@ -17,7 +17,7 @@ import requests
 
 from analyze_steps_helpers import last_states, progress_lines
 from conftest import set_config
-from cutpoint import activity, analyze, jsonout, ui, vision
+from cutpoint import activity, jsonout, ui, vision, vision_step
 from cutpoint.assistant import cliproxy, providers
 from cutpoint.events import pipeline
 from cutpoint.pano import vlcheck
@@ -433,7 +433,7 @@ def test_an_unconsented_backend_warns_once_and_is_not_contacted(unconsented, cap
 def test_analyze_vision_skips_an_unconsented_backend(
     run, unconsented, capsys, caplog, monkeypatch
 ) -> None:
-    monkeypatch.setattr(analyze, "VisionRater", vision.VisionRater)  # the run fixture fakes it
+    monkeypatch.setattr(vision_step, "VisionRater", vision.VisionRater)  # the run fixture fakes it
     with caplog.at_level(logging.WARNING), jsonout.run("analyze") as res:
         run.go(vision=True, **unconsented.analyze)
     state = last_states(progress_lines(capsys))["vision"]

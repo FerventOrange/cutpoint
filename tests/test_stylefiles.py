@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from conftest import run_json, warning_codes, write
-from cutpoint import analyze, cache, cli, stylefiles
+from cutpoint import analyze, cache, cli, reanalyze, stylefiles
 from cutpoint.styles import (
     STYLES,
     content_hash,
@@ -199,7 +199,7 @@ def test_analyze_records_style_hash_and_rerank_works_without_it(home, tmp_path, 
     assert hl["settings"]["style_hash"] == style_hash(style)
     del hl["settings"]["style_hash"]  # a project analysed before the field existed
     cache.save_json(proj / "highlights.json", hl)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     assert cache.load_json(proj / "highlights.json")["settings"]["style_hash"] == style_hash(style)
 
 

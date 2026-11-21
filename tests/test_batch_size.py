@@ -21,7 +21,18 @@ import requests
 import cutpoint.analyze
 from batch_size_helpers import _Whisper, _without
 from conftest import envelope, write
-from cutpoint import cache, cli, config, memguard, progress, runstate, vision
+from cutpoint import (
+    cache,
+    cli,
+    config,
+    memguard,
+    progress,
+    reanalyze,
+    runstate,
+    scenes,
+    vision,
+    vision_step,
+)
 from cutpoint.assistant import providers
 from cutpoint.events import pipeline
 from cutpoint.events.common import AudioPart, Source
@@ -178,7 +189,7 @@ def test_a_first_analyze_stopped_in_scene_detection_can_be_resumed(home, tmp_pat
     monkeypatch.setattr(analyze, "extract_audio", lambda *a, **k: write(a[1]))
     monkeypatch.setattr(analyze, "check_read", lambda *a: None)
     monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (np.zeros(1), np.zeros(1)))
-    monkeypatch.setattr(analyze, "scene_cuts", scene_cuts)
+    monkeypatch.setattr(scenes, "scene_cuts", scene_cuts)
     monkeypatch.setattr(analyze, "Transcriber", _Whisper)
     monkeypatch.setattr(analyze, "plan_layers", lambda *a: analyze.LayerPlan())
     _Whisper.calls, _Whisper.stop = [], None
@@ -398,7 +409,7 @@ def test_the_write_step_ends_before_the_rerank(layers_run, monkeypatch):
         progress.update(50)
         return project / "highlights.json"
 
-    monkeypatch.setattr(cutpoint.analyze, "reanalyze_if_reachable", rerank)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", rerank)
     assert cli.main(["events", "p", "--layers", "audio"]) == 0
     write = _read(s.project)["steps"]["write"]
     assert write["state"] == "done" and write["done"] is None and write["total"] is None
@@ -508,7 +519,7 @@ def test_360_analyze_runs_the_views_per_batch_and_passes_the_size_on(monkeypatch
     monkeypatch.setattr(
         analyze_mod, "analyze", lambda *a, **k: passed.__setitem__("analyze", k["batch_size"])
     )
-    monkeypatch.setattr(analyze_mod, "reanalyze", lambda project: None)
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda project: None)
     monkeypatch.setattr("cutpoint.crash.dense_needs_run", lambda paths: True)
     monkeypatch.setattr("cutpoint.pano.project.default_style", lambda: "action-cam")
     monkeypatch.setattr("cutpoint.styles.get_style", lambda name: name)
@@ -784,7 +795,7 @@ def vision_run(analyze_run, monkeypatch):
     target keeps all 15 moments in the edit, nothing is below the cut) and ``--vision-top 5``
     keeps the five closest to the cut: the five lowest."""
     _Rater.calls, _Rater.store, _Rater.stop = [], {}, None
-    monkeypatch.setattr(cutpoint.analyze, "VisionRater", _Rater)
+    monkeypatch.setattr(vision_step, "VisionRater", _Rater)
     monkeypatch.setattr(config, "vision_time_share", lambda: 1000.0)  # no run is capped
     base = cutpoint.analyze.analyze_source
 
@@ -807,11 +818,11 @@ def vision_run(analyze_run, monkeypatch):
 
 def test_vision_batches_group_n_sources_and_keep_rank_order_in_one_batch():
     cands = [{"source": s, "start": float(i)} for i, s in enumerate("abacbd")]
-    starts = [[c["start"] for c in part] for part in cutpoint.analyze._vision_batches(cands, 2)]
+    starts = [[c["start"] for c in part] for part in vision_step._vision_batches(cands, 2)]
     assert starts == [[0.0, 2.0, 1.0, 4.0], [3.0, 5.0]]  # a and b, then c and d
     for size in (0, 4, 9):  # off, or every source in one batch: rank order as before
-        assert cutpoint.analyze._vision_batches(cands, size) == [cands]
-    assert cutpoint.analyze._vision_batches([], 2) == [[]]
+        assert vision_step._vision_batches(cands, size) == [cands]
+    assert vision_step._vision_batches([], 2) == [[]]
 
 
 def test_analyze_vision_unloads_every_n_sources_with_the_same_outputs(vision_run, caplog):

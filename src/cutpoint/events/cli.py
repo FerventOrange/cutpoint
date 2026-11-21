@@ -318,7 +318,7 @@ def run_args(
         had_backup = backup.exists()
         if project_kind(load_highlights(args.project)) == ACTION_CAM:
             # Action-cam: events are features of the scorer, so re-run the (cached) analysis.
-            from cutpoint.analyze import reanalyze_if_reachable  # noqa: PLC0415
+            from cutpoint.reanalyze import reanalyze_if_reachable  # noqa: PLC0415
 
             if reanalyze_if_reachable(args.project) is None:
                 jsonout.warn(
@@ -330,7 +330,7 @@ def run_args(
             else:
                 jsonout.output("highlights", highlights)
         else:
-            from cutpoint.analyze import rebuild_crash_moments  # noqa: PLC0415
+            from cutpoint.crash_moments import rebuild_crash_moments  # noqa: PLC0415
             from cutpoint.events.scoring import rescore_highlights  # noqa: PLC0415
 
             rebuild_crash_moments(args.project)  # crashes.json may have changed since analyze

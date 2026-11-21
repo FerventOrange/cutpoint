@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from conftest import envelope, run_json, warned_about, warning_codes, write
-from cutpoint import activity, analyze, cache, cli, crash, jsonout
+from cutpoint import activity, cache, cli, crash, jsonout, reanalyze
 
 N = 600  # 60 s on the 0.1 s grid
 
@@ -113,7 +113,7 @@ def test_crashes_json_warnings(ski, tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         crash, "load_inputs", lambda s, dur, p, tmp, lang: _inputs(s, imu=False, visual=False)
     )
-    monkeypatch.setattr(analyze, "reanalyze_if_reachable", lambda project: None)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", lambda project: None)
     code, doc = run_json(capsys, [*CRASHES[:-1], "--reanalyze"])
     assert code == 0 and doc["ok"] is True
     assert warning_codes(doc) == [
@@ -157,7 +157,7 @@ def test_crashes_json_reanalyze_failure_keeps_outputs(ski, monkeypatch, capsys):
     def boom(project):
         raise RuntimeError("reanalyze broke")
 
-    monkeypatch.setattr(analyze, "reanalyze_if_reachable", boom)
+    monkeypatch.setattr(reanalyze, "reanalyze_if_reachable", boom)
     code, doc = run_json(capsys, [*CRASHES[:-1], "--reanalyze"])
     assert code == 1 and doc["ok"] is False and doc["error"]["message"] == "reanalyze broke"
     # crashes.json was written before reanalyze ran; the envelope still names it.
@@ -308,7 +308,7 @@ def test_crashes_context_is_recorded_before_the_reanalysis_reads_it(ski, crash_a
     _hl_context(project, "old words")
     seen: list[str | None] = []
     monkeypatch.setattr(
-        analyze,
+        reanalyze,
         "reanalyze_if_reachable",
         lambda p: seen.append(_settings(p).get("context")) or p / "highlights.json",
     )
