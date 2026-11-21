@@ -100,6 +100,32 @@ def test_detect_project_skips_offline_source_and_processes_the_rest(tmp_path, mo
     assert json.loads(out.read_text(encoding="utf-8"))["crashes"] == []
 
 
+def test_detect_project_reads_the_forced_language_of_the_analysis_in_progress(
+    tmp_path, monkeypatch
+):
+    """Inside ``cutpoint analyze`` there is no highlights.json yet: the sources and the forced
+    transcription language both come from the analysis in progress."""
+    from cutpoint.events.common import pending_highlights  # noqa: PLC0415
+
+    here = tmp_path / "here.mp4"
+    here.write_bytes(b"x")
+    project = tmp_path / "proj"
+    project.mkdir()
+    hl = {"sources": [{"path": str(here), "duration": 60.0}], "settings": {"language": "de"}}
+    langs = []
+    monkeypatch.setattr(
+        crash,
+        "load_inputs",
+        lambda src, dur, p, tmp, lang: langs.append(lang) or _inputs(spike=False),
+    )
+    monkeypatch.setattr(crash, "candidate_events", lambda inp, p: [])
+    own_words = replace(crash.CrashParams(), pos=("a",), neg=("b",), words=())  # no profile
+    with pending_highlights(project, hl):
+        crash.detect_project(project, params=own_words, dense=False, sheets=0)
+    assert langs == ["de"]
+    assert not (project / "highlights.json").exists()
+
+
 def test_one_source_whose_telemetry_fails_is_skipped_and_the_others_get_crashes(
     tmp_path, monkeypatch, caplog
 ):

@@ -12,12 +12,7 @@ import pytest
 
 from cutpoint import progress
 from cutpoint.events import discover, pipeline
-from cutpoint.events.killfeed import OcrParams
-from ocr_helpers import progress_lines, stub_ocr_run
-
-
-class _Stop(Exception):
-    pass
+from ocr_helpers import progress_lines, run_ocr_layer, stub_ocr_layer
 
 
 @pytest.fixture
@@ -29,7 +24,7 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         for n in ("a", "b")
     ]
     state = SimpleNamespace(found=None)
-    stub_ocr_run(monkeypatch, srcs)
+    stub_ocr_layer(monkeypatch, srcs)
     monkeypatch.setattr(pipeline, "load_preset", lambda *a: state.found)
     monkeypatch.setattr(pipeline, "detect_ocr_events", lambda *a, **k: ([], {}))
 
@@ -38,19 +33,12 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             on_frame(n, 8)
         return {"regions": []}
 
-    def stop(*a, **k):
-        raise _Stop
-
     monkeypatch.setattr(discover, "discover_regions", fake_discover)
-    monkeypatch.setattr(pipeline, "game_prompt", stop)  # the VLM layer's first call
 
     def run() -> None:
         with progress.run(("keyframes",)) as steps:
             steps.start("keyframes")
-            with pytest.raises(_Stop):
-                pipeline.run_events(
-                    tmp_path / "proj", layers=("ocr",), ocr=OcrParams(game="zonewar")
-                )
+            run_ocr_layer(tmp_path / "proj")
 
     state.run = run
     return state

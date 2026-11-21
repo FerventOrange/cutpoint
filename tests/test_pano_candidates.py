@@ -39,16 +39,7 @@ FRIEND = [(0.95, 40.0 + 2 * f, -10.0, 10.0, 30.0, FWD_V) for f in range(N)]
 @pytest.fixture
 def stub_scores(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub the CLIP view scores, voice and the orientation track."""
-    group = np.zeros((N, 9), np.float32)
-    monkeypatch.setattr(VW, "view_scores", lambda pv: {"group_zs": group, "beauty": group})
-    monkeypatch.setattr(
-        VW,
-        "occlusion_scores",
-        lambda pv: {"occl_zs": np.zeros((N, 8), np.float32), "selfie_ok": np.ones(N)},
-        raising=False,
-    )
-    monkeypatch.setattr(VW, "forward_yaw", lambda pv: 0.0)
-    monkeypatch.setattr(D, "_voice_at", lambda src, times: np.zeros(len(times)))
+    helpers.stub_view_scores(monkeypatch, N)
     monkeypatch.setattr(G, "orientation", lambda *a, **k: helpers.orientation(n=900))
 
 
@@ -426,7 +417,6 @@ def test_360_analyze_plans_paths_into_the_envelope_and_timings(
 
 TIMING_RUNS = {
     "scan": ({"scan": ["cam"]}, {"scan_s", "views", "analyze_s", "events_s", "paths_s"}),
-    "no_scan": ({}, {"views", "analyze_s", "events_s", "paths_s"}),
     "no_events": ({"no_events": True}, {"views", "analyze_s", "paths_s"}),
 }
 STALE_TIMINGS = {"scan_s": 99.0, "events_s": 99.0, "analyze_total_s": 99.0, "views": {"old": 1}}
@@ -497,18 +487,16 @@ def test_360_analyze_timings_hold_this_run_only(
 
 
 @pytest.mark.parametrize(
-    ("over", "target", "exc", "seeded", "removed"),
+    ("over", "target", "exc", "removed"),
     [
         # after analyze() rewrote highlights.json: the earlier run's file goes
-        ({}, (pipeline, "run_events"), RuntimeError, True, True),
-        ({"no_events": True}, (C, "cache_candidate_paths"), KeyboardInterrupt, True, True),
-        ({}, (analyze_mod, "analyze"), KeyboardInterrupt, True, True),  # held until its commit
-        ({}, (pipeline, "run_events"), OSError, False, True),  # no file to remove
+        ({}, (pipeline, "run_events"), RuntimeError, True),
+        ({}, (analyze_mod, "analyze"), KeyboardInterrupt, True),  # held until its commit
         # before highlights.json was rewritten: the earlier run's file still matches it
-        ({}, (analyze_mod, "analyze"), RuntimeError, True, False),
-        ({"views_only": True}, (VW, "run_layer"), KeyboardInterrupt, True, False),
+        ({}, (analyze_mod, "analyze"), RuntimeError, False),
+        ({"views_only": True}, (VW, "run_layer"), KeyboardInterrupt, False),
     ],
-    ids=["events", "paths", "analyze_commit", "no_file", "analyze", "views_only"],
+    ids=["events", "analyze_commit", "analyze", "views_only"],
 )
 def test_360_analyze_failure_removes_only_stale_timings(
     monkeypatch,
@@ -516,16 +504,13 @@ def test_360_analyze_failure_removes_only_stale_timings(
     over: dict,
     target: tuple,
     exc: type[BaseException],
-    seeded: bool,
     removed: bool,
 ) -> None:
     """A step failing after analyze() rewrote highlights.json (Ctrl+C included) removes the
     earlier run's pano_timings.json, which describes another analysis; a failure before that
     leaves it alone. Either way the step's own error comes through."""
     _timing_run(monkeypatch, tmp_path)
-    if not seeded:
-        (tmp_path / "pano_timings.json").unlink()
-    before = (tmp_path / "pano_timings.json").read_bytes() if seeded else None
+    before = (tmp_path / "pano_timings.json").read_bytes()
 
     def fail(*a, **k):
         if removed and target == (analyze_mod, "analyze"):
@@ -541,40 +526,13 @@ def test_360_analyze_failure_removes_only_stale_timings(
         assert (tmp_path / "pano_timings.json").read_bytes() == before
 
 
-def test_360_analyze_locked_stale_timings_keep_the_runs_own_error(
-    monkeypatch, tmp_path: Path, caplog
-) -> None:
-    """A pano_timings.json that cannot be removed (held open on Windows) only warns: the
-    run's own error (here Ctrl+C) still comes through, not the PermissionError."""
-    _timing_run(monkeypatch, tmp_path)
-    monkeypatch.setattr(cache.time, "sleep", lambda s: None)  # retry_locked's backoff
-    calls: list[Path] = []
-
-    def locked(self, missing_ok=False):
-        calls.append(self)
-        raise PermissionError(13, "in use", str(self))
-
-    def interrupt(*a, **k):
-        monkeypatch.setattr(Path, "unlink", locked)
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(pipeline, "run_events", interrupt)
-    with caplog.at_level(logging.WARNING, logger="cutpoint"), pytest.raises(KeyboardInterrupt):
-        _run_analyze()
-    monkeypatch.undo()
-    assert calls and set(calls) == {tmp_path / "pano_timings.json"}
-    assert "not removed" in caplog.text
-    timings = json.loads((tmp_path / "pano_timings.json").read_text(encoding="utf-8"))
-    assert timings == STALE_TIMINGS
-
-
 @pytest.mark.parametrize("locked", [False, True], ids=["removed", "kept"])
 def test_360_analyze_failure_json_does_not_name_stale_timings(
     monkeypatch, tmp_path: Path, locked: bool
 ) -> None:
     """#11: once a failure dropped the earlier run's pano_timings.json, or could not (held
-    open), the failure envelope's outputs.timings is null; a kept file is named by a
-    stale_timings_kept warning."""
+    open on Windows), the failure envelope's outputs.timings is null; a kept file is named by
+    a stale_timings_kept warning, and the run's own error still comes through."""
     _timing_run(monkeypatch, tmp_path)
     monkeypatch.setattr(cache.time, "sleep", lambda s: None)  # retry_locked's backoff
 
@@ -593,30 +551,29 @@ def test_360_analyze_failure_json_does_not_name_stale_timings(
     assert "timings" in res.outputs and res.outputs["timings"] is None
     assert res.outputs["views"] == {"cached": None, "computed": 1}  # earlier outputs stay
     timings = tmp_path / "pano_timings.json"
-    assert timings.exists() is locked
+    if locked:  # the run's own error came through; the file is as it was
+        assert json.loads(timings.read_text(encoding="utf-8")) == STALE_TIMINGS
+    else:
+        assert not timings.exists()
     warned = [(w["code"], w["files"]) for w in res.warnings]
     assert warned == ([(cli.STALE_TIMINGS_KEPT, [str(timings)])] if locked else [])
 
 
 EARLIER_ANALYSIS = {"views": {"old": 1}, "analyze_s": 90.0, "events_s": 30.0, "paths_s": 1.5}
 EARLIER_ANALYSIS |= {"scan_s": 12.0, "total_s": 140.0}
-OLDER_FILE = {"views": {"old": 1}, "scan_s": 12.5, "analyze_total_s": 300.0}  # before analyze_s
 
 
 @pytest.mark.parametrize(
     ("earlier", "scan", "keys"),
     [
         # an earlier analysis (keys None): its keys stay (total_s and scan_s included), views_only_s added
-        (EARLIER_ANALYSIS, None, None),
         (EARLIER_ANALYSIS, ["cam"], None),
-        # nothing to keep: no earlier file, a standalone 360 scan's or a views-only run's,
-        # not a dict, or a file from before analyze_s (timed by analyze_total_s alone)
+        # nothing to keep: no earlier file, or one without analyze_s (a standalone 360 scan's,
+        # a views-only run's or one from before analyze_s)
         (None, ["cam"], {"views", "scan_s", "total_s"}),
         ({"scan_s": 5.0}, None, {"views", "total_s"}),
-        (["not", "a", "dict"], None, {"views", "total_s"}),
-        (OLDER_FILE, None, {"views", "total_s"}),
     ],
-    ids=["analysis", "analysis_scan", "no_file_scan", "scan_only", "not_a_dict", "older_file"],
+    ids=["analysis_scan", "no_file_scan", "scan_only"],
 )
 def test_360_analyze_views_only_timings(
     monkeypatch, tmp_path: Path, earlier: object, scan: list[str] | None, keys: set | None

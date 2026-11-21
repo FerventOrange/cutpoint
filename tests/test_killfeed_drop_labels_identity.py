@@ -12,8 +12,8 @@ import pytest
 
 from cutpoint.events.killfeed import (
     LABEL_REPEATS,
+    MENU,
     ROW_NOTICE_MAX_S,
-    STATIC_FEED_GUARD_S,
     Interpreter,
     OcrParams,
     _runs,
@@ -33,7 +33,7 @@ def _old_drop_labels(interp: Interpreter) -> None:
     def label(e: dict[str, Any]) -> bool:
         if _two_hues(e):
             return False
-        runs = _runs(e["_times"], STATIC_FEED_GUARD_S)
+        runs = _runs(e["_times"], MENU.static_feed_guard_s)
         if max(run[-1] - run[0] for run in runs) > ROW_NOTICE_MAX_S:
             return True
         repeats = [o for o in lines if tracker._same_line(e, o)]

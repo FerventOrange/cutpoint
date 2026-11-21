@@ -29,10 +29,10 @@ from cutpoint import (
     ffmpeg_utils,
     insta360,
     procs,
-    projectdelete,
     stage,
     telemetry,
     transcribe,
+    winvol,
 )
 from cutpoint.pano import stitch
 
@@ -191,7 +191,7 @@ def test_mount_without_proc_mounts_is_local(monkeypatch):
 )
 def test_is_remote_windows_uses_the_drive_type(plat, monkeypatch, path, kind, remote):
     plat("win32")
-    monkeypatch.setattr(projectdelete, "_drive_type", lambda root: kind)
+    monkeypatch.setattr(winvol, "drive_type", lambda root: kind)
     assert stage.is_remote(PureWindowsPath(path)) is remote  # type: ignore[arg-type]
 
 
@@ -200,7 +200,7 @@ def test_is_remote_windows_falls_back_to_the_letter_when_the_query_fails(plat, m
         raise OSError("no drive type")
 
     plat("win32")
-    monkeypatch.setattr(projectdelete, "_drive_type", broken)
+    monkeypatch.setattr(winvol, "drive_type", broken)
     assert stage.is_remote(PureWindowsPath("F:/v.mp4")) is True  # type: ignore[arg-type]
     assert stage.is_remote(PureWindowsPath("d:/v.mp4")) is False  # type: ignore[arg-type]
 

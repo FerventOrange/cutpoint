@@ -41,13 +41,13 @@ from cutpoint.events.killfeed import (
 )
 from cutpoint.events.regions import Region, preset_from_dict
 from hud_fixtures import verbfeed, write_preset
-from ocr_helpers import box, text_frame
+from ocr_helpers import box, quad, text_frame
 
 REF = (100.0, 0.0, 1.0, 1.0)  # a crop at x 100 of a 1920x1080 frame
 
 
 def _box(x: float, w: float = 30.0) -> list[list[float]]:
-    return [[x, 10.0], [x + w, 10.0], [x + w, 50.0], [x, 50.0]]
+    return quad(x, 10.0, w, 40.0)
 
 
 def _reads(*parts: tuple[float, float, str], conf: float = 0.95, x: float = 20.0) -> list:
