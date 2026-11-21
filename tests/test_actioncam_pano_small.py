@@ -98,9 +98,9 @@ def test_clip_encoder_embeds_as_the_visual_layer_does():
 
 
 def test_no_reachable_footage_is_an_error(tmp_path, monkeypatch):
-    monkeypatch.setattr(crash, "_project_sources", lambda project: [(tmp_path / "gone.mp4", 9.0)])
+    monkeypatch.setattr(crash, "_project_sources", lambda hl: [(tmp_path / "gone.mp4", 9.0)])
     with pytest.raises(ValueError, match="reachable"):
-        crash._reachable_sources(tmp_path, warn_unreachable=False)
+        crash._reachable_sources(tmp_path, {}, warn_unreachable=False)
 
 
 def test_rank_keeps_a_bypass_candidate_confidence_and_numbers_the_best_first(monkeypatch):

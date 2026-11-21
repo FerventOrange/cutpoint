@@ -1216,18 +1216,8 @@ def write_sheet(
 
 
 # --------------------------------------------------------------------------- project
-def _project_language(project: Path) -> str | None:
-    """Transcription language the analysis of ``project`` (or the one in progress) forced."""
-    from cutpoint.events.common import load_highlights  # noqa: PLC0415
-    from cutpoint.sources import settings_language  # noqa: PLC0415
-
-    return settings_language(load_highlights(project))
-
-
-def _project_sources(project: Path) -> list[tuple[Path, float]]:
-    from cutpoint.events.common import load_highlights  # noqa: PLC0415
-
-    hl = load_highlights(project)
+def _project_sources(hl: dict[str, Any]) -> list[tuple[Path, float]]:
+    """The sources of the highlights ``hl`` with their durations, each path once."""
     seen: dict[str, float] = {}
     for s in hl["sources"]:  # recovered parts share the path
         seen.setdefault(s["path"], float(s["duration"]))
@@ -1562,7 +1552,11 @@ def detect_project(
     Returns:
         Path of crashes.json.
     """
-    sources = _reachable_sources(project, warn_unreachable)
+    from cutpoint.events.common import load_highlights  # noqa: PLC0415
+    from cutpoint.sources import settings_language  # noqa: PLC0415
+
+    hl = load_highlights(project)  # the analysis in progress when analyze runs this step
+    sources = _reachable_sources(project, hl, warn_unreachable)
     p = params or CrashParams()
     prof = full_prof = None
     t_profile = time.perf_counter()
@@ -1584,7 +1578,7 @@ def detect_project(
     t_start = time.perf_counter()
     # the profile (a discovery asks the local models: often the slowest part of a run)
     timings: dict[str, float] = {"profile_s": round(t_start - t_profile, 1)}
-    language = _project_language(project)
+    language = settings_language(hl)
     t0 = time.perf_counter()
     # The 360 lift rides of load_inputs are found with this profile's lift captions.
     prompts = activity.prompts(full_prof) if full_prof else None
@@ -1617,8 +1611,11 @@ def detect_project(
     return out
 
 
-def _reachable_sources(project: Path, warn_unreachable: bool) -> list[tuple[Path, float]]:
-    """``(source, duration)`` of the project's footage that can be read; an unreachable
+def _reachable_sources(
+    project: Path, hl: dict[str, Any], warn_unreachable: bool
+) -> list[tuple[Path, float]]:
+    """``(source, duration)`` of the project's footage (``hl``, its highlights) that can be
+    read; an unreachable
     source is skipped with a WARNING and a ``footage_unreachable`` JSON warning (DEBUG only
     without ``warn_unreachable``: the caller did both).
 
@@ -1626,7 +1623,7 @@ def _reachable_sources(project: Path, warn_unreachable: bool) -> list[tuple[Path
         ValueError: No source is reachable.
     """
     sources = []
-    for src, dur in _project_sources(project):
+    for src, dur in _project_sources(hl):
         try:
             cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
         except OSError as err:

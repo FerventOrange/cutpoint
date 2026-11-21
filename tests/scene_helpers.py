@@ -5,12 +5,13 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from conftest import media_info, write
-from cutpoint import analyze, ffmpeg_utils
+from cutpoint import analyze, cache, ffmpeg_utils
 
 CUDA = ffmpeg_utils.HwDecoder("cuda")
 
@@ -36,6 +37,22 @@ def fake_source_io(
     else:
         lufs = np.full(len(times), flat_lufs)
     monkeypatch.setattr(analyze, "_loudness", lambda wav, cdir: (times, lufs))
+
+
+def scene_world(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    duration: float = 60.0,
+    *,
+    flat_lufs: float | None = None,
+) -> SimpleNamespace:
+    """The base of an ``analyze_source`` test world: the scene overlap switch unset, a source
+    ``videos/a.mp4`` (``src``, its cache folder ``cdir``) and its reads faked
+    (:func:`fake_source_io`); the test adds its own scene fake."""
+    monkeypatch.delenv("CUTPOINT_ANALYZE_SCENE_OVERLAP", raising=False)
+    src = write(tmp_path / "videos" / "a.mp4")
+    fake_source_io(monkeypatch, duration, flat_lufs=flat_lufs)
+    return SimpleNamespace(src=src, cdir=cache.source_dir(src, 0.0))
 
 
 def near(got: list[float], want: list[float]) -> bool:

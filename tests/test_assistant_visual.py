@@ -264,16 +264,18 @@ def test_the_rules_name_only_the_cues_the_project_has() -> None:
     """#634 F6: a gaming or funny project gets no action-cam cue names or searches."""
     funny = [{**CANDS[0], "signals": {"laughter": 0.8, "events": {"laughter": 0.3}}}]
     rules = context.rules(context.MomentTable(funny, []))
-    assert "Cues: laughter (said)." in rules and "heard (" in rules
+    assert f"laughter ({context.CUE_HELP['laughter']})" in rules and "heard (" in rules
     for word in ("beauty", "transit", "airtime", "bloopers", "steady action", "seen (", "kind ("):
         assert word not in rules, word
     bare = context.rules(context.MomentTable([{**CANDS[0], "signals": {}}], []))
-    assert "What analysis saw" not in bare
-    assert "Look moments up with find_moments before asking the user for moment ids." in bare
+    for field in ("kind (", "seen (", "heard (", "laughter ("):
+        assert field not in bare, field
+    assert "find_moments" in bare  # the search is still offered
     crash = [{**CANDS[0], "signals": {"crash": 0.9, "events": {"laughter": 0.2}}}]
-    assert "bloopers = high crash with laughter heard" in context.rules(
-        context.MomentTable(crash, [])
-    )
+    crash_rules = context.rules(context.MomentTable(crash, []))
+    assert "bloopers" in crash_rules and "laughter heard" in crash_rules
+    quiet = context.rules(context.MomentTable([{**CANDS[0], "signals": {"crash": 0.9}}], []))
+    assert "bloopers" in quiet and "laughter heard" not in quiet
 
 
 def test_a_turn_searches_the_windows_of_its_project() -> None:

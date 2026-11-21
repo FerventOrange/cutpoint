@@ -21,6 +21,7 @@ from cutpoint import sources
 from cutpoint.intervals import overlap
 from cutpoint.styles import Style, analysis_style
 from cutpoint.utils import slugify
+from cutpoint.vision_record import sync_vision
 
 logger = logging.getLogger(__name__)
 
@@ -142,11 +143,10 @@ def drop_menu_time(hl: dict[str, Any], ev: dict[str, Any]) -> None:
     one to its start, each only when at least the style's ``min_len`` is left; its
     ``duration``, transcript snippet (from the analysis's ``whisper_model``), keywords
     and a label named after a cut-off keyword follow (:func:`_retranscribe`), and a vision
-    rating of the old span goes stale (:func:`cutpoint.analyze.sync_vision`). Menu time
+    rating of the old span goes stale (:func:`cutpoint.vision_record.sync_vision`). Menu time
     only in the middle stays. A ``must_include`` candidate (a forced crash) is left as it is.
     One INFO line per source with menu time in its candidates (counts and seconds).
     """
-    from cutpoint.analyze import sync_vision  # noqa: PLC0415 - imports this module
 
     by_src = source_menu_spans(ev)
     if not by_src:

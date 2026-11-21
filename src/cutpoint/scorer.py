@@ -35,6 +35,7 @@ import numpy as np
 from cutpoint import default_fit, features
 from cutpoint.sources import settings_language
 from cutpoint.styles import analysis_names
+from cutpoint.vision_record import sync_vision, vision_skipped
 
 if TYPE_CHECKING:
     from cutpoint.analyze import GridPart
@@ -147,7 +148,7 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
     score is then its own. The ranking before vision orders them by that score
     (:func:`rank_key`, then :func:`tie_key`). ``must_include`` moments, visual
     pool moments and unrated moments the default edit skipped above its cut when vision ran
-    (:func:`cutpoint.analyze.vision_skipped`; the edit cannot use them) are left out: they are
+    (:func:`cutpoint.vision_record.vision_skipped`; the edit cannot use them) are left out: they are
     no one's neighbours; a skipped moment stops counting as skipped once its span changes, or
     once a re-rank (:func:`rescore_events`) finds the default edit of the ranking without the
     ratings takes it (#949).
@@ -160,7 +161,6 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
     the final sort places it by its ``grid_score`` and :func:`tie_key`. A tie that would not
     reorder stays a tie. The result depends only on the records, not on their order in
     ``cands``, so a rescore gives the same scores."""
-    from cutpoint.analyze import vision_skipped  # noqa: PLC0415 - imports this module
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
     def pre(i: int) -> float:
@@ -231,9 +231,9 @@ def rescore_events(
     Each candidate keeps its analysis score as ``score_pre_events`` (so re-running is
     idempotent) and records the evidence in ``signals.events``. A vision rating blended into
     it counts only while the candidate keeps the span it was rated over
-    (:func:`cutpoint.analyze.sync_vision`), and a rated candidate's score stays between those of
-    its unrated neighbours in the ranking without the ratings, the moments the default edit
-    skipped above its cut excepted (:func:`apply_vision_clamp`; the
+    (:func:`cutpoint.vision_record.sync_vision`), and a rated candidate's score stays between
+    those of its unrated neighbours in the ranking without the ratings, the moments the default
+    edit skipped above its cut excepted (:func:`apply_vision_clamp`; the
     count goes to ``settings.vision.clamped`` when there is a ``settings.vision``). A moment
     marked ``vision_skipped`` that the default edit of the ranking without the ratings
     (:func:`cutpoint.default_fit.fit_target` over ``settings.target_total``, in
@@ -246,7 +246,6 @@ def rescore_events(
     (:mod:`cutpoint.visual_pool`) are left as they are, last, in their order, and outside
     ``suggested_top``.
     """
-    from cutpoint import analyze  # noqa: PLC0415 - imports this module
     from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module
     from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
     from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
@@ -270,7 +269,7 @@ def rescore_events(
     unrated: list[float | None] = []  # the score without the vision rating, for the clamp
     for c in cands:
         base = c.get("score_pre_events", c["score"])
-        rated = analyze.sync_vision(c)  # the vision blend only while the span is the one rated
+        rated = sync_vision(c)  # the vision blend only while the span is the one rated
         if rated is not None:
             base = rated
         nominated = c["signals"]["events"]["nominated"] if scoring.is_nominated(c) else None
@@ -278,7 +277,7 @@ def rescore_events(
         src_types = types.get(src, DEFAULT_EVENT_TYPES)
         if src not in segments:
             reacts = any(t.reaction is not None and t.applies(*style) for t in src_types)
-            segments[src] = scoring._segments(src, language) if reacts else None
+            segments[src] = scoring.segments(src, language) if reacts else None
         if src not in repeat:
             repeat[src] = scoring.repeat_weights(by_src.get(src, []), src_types, spans.get(src))
         boost, evidence = scoring.event_boost(
