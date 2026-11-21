@@ -30,6 +30,7 @@ This module collects the evidence; the points are combined by the scorer's bonus
 
 from __future__ import annotations
 
+import bisect
 import copy
 import logging
 import math
@@ -122,7 +123,10 @@ WIDEN_SILENCE_S = 8.0
 
 
 def has_reaction(
-    t: float, events: list[dict[str, Any]], segments: list[dict[str, Any]] | None = None
+    t: float,
+    events: list[dict[str, Any]],
+    segments: list[dict[str, Any]] | None = None,
+    index: SpanIndex | None = None,
 ) -> bool:
     """Whether a reaction follows an event at ``t`` (seconds, source time).
 
@@ -131,10 +135,11 @@ def has_reaction(
     (``[laughter]``) there, or a transcript segment with text starting in that window while
     none (a marker holder is no speech) overlaps ``[t - REACTION_PAUSE_S, t]``:
     a pause, then speech, so ongoing banter does not count. Without
-    ``segments`` only the sounds count.
+    ``segments`` only the sounds count. ``index`` (a :class:`SpanIndex` of ``events``) lets it
+    visit only the events starting in the window; the result is the same.
     """
     end = t + REACTION_WINDOW_S
-    for e in events:
+    for e in events if index is None else index.starting(t, end):
         if (
             e.get("kind") == "audio"
             and e.get("label") in AFTER_EVENT_SOUNDS
@@ -242,6 +247,7 @@ def event_boost(
     style: str | tuple[str, ...] | None = None,
     segments: list[dict[str, Any]] | None = None,
     repeat: Mapping[int, float] | None = None,
+    index: SpanIndex | None = None,
 ) -> tuple[float, dict[str, Any]]:
     """Additive boost (points on the 0-100 scale) and the evidence behind it.
 
@@ -267,6 +273,9 @@ def event_boost(
     (:func:`repeat_weights` of ``events``, by index; None: worked out from ``events``)
     to ``n`` instead of 1: a caption shown all through the source counts less each time. The
     evidence still counts it as one.
+
+    ``index`` (a :class:`SpanIndex` of ``events``) lets it visit only the events near the
+    candidate, in the same order, so the result is the same.
     """
     a, b = cand["start"], cand["end"] + LOOKAHEAD_S
     laugh = scream = dialogue = 0.0
@@ -280,7 +289,8 @@ def event_boost(
     if repeat is None and any(scored[n].damp_repeats for n in scored):
         repeat = repeat_weights(events, types)
     reactions = dict.fromkeys(reacting, 0)
-    for i, e in enumerate(events):
+    near = enumerate(events) if index is None else ((i, events[i]) for i in index.near(a, b))
+    for i, e in near:
         if e["end"] < a or e["start"] > b:
             continue
         if e["kind"] == "audio":
@@ -304,7 +314,7 @@ def event_boost(
                 t
                 and t.name in reacting
                 and not reactions[t.name]
-                and has_reaction(e["start"], events, segments)
+                and has_reaction(e["start"], events, segments, index)
             ):
                 reactions[t.name] = 1
     laugh_points = min(12.0, 60 * laugh)
@@ -351,10 +361,56 @@ def _open_list(names: tuple[str, ...]) -> bool:
     return False
 
 
-def best_window(cand: dict[str, Any], windows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The VLM window overlapping the candidate the most (None if none)."""
+class SpanIndex:
+    """Items with ``start`` and ``end`` (one source's events or VLM windows) sorted by start, so
+    :meth:`near` visits only the ones that can touch a time range, in the items' own order."""
+
+    def __init__(self, items: list[dict[str, Any]]) -> None:
+        self.items = items
+        self._order = sorted(range(len(items)), key=lambda i: items[i]["start"])
+        self._starts = [items[i]["start"] for i in self._order]
+        self._longest = max((e["end"] - e["start"] for e in items), default=0.0)
+
+    def starting(self, after: float, upto: float) -> list[dict[str, Any]]:
+        """The items with ``after < start <= upto``."""
+        lo = bisect.bisect_right(self._starts, after)
+        hi = bisect.bisect_right(self._starts, upto)
+        return [self.items[i] for i in self._order[lo:hi]]
+
+    def near(self, a: float, b: float) -> list[int]:
+        """The indices, ascending, of the items with ``start <= b`` and ``end >= a``."""
+        lo = bisect.bisect_left(self._starts, a - max(self._longest, 0.0) - 1e-6)
+        hi = bisect.bisect_right(self._starts, b)
+        return sorted(i for i in self._order[lo:hi] if self.items[i]["end"] >= a)
+
+
+def span_index_by_source(items: list[dict[str, Any]]) -> dict[str, SpanIndex]:
+    """A :class:`SpanIndex` of each source's ``items`` (events or windows, with a ``source``)."""
+    by_src: dict[str, list[dict[str, Any]]] = {}
+    for e in items:
+        by_src.setdefault(e["source"], []).append(e)
+    return {src: SpanIndex(evs) for src, evs in by_src.items()}
+
+
+def best_window(
+    cand: dict[str, Any],
+    windows: list[dict[str, Any]],
+    index: Mapping[str, SpanIndex] | None = None,
+) -> dict[str, Any] | None:
+    """The VLM window overlapping the candidate the most (None if none). ``index``
+    (:func:`span_index_by_source` of ``windows``) lets it visit only the windows near the
+    candidate; the result is the same."""
     best, best_ov = None, 0.0
-    for w in windows:
+    if index is not None:
+        found = index.get(cand["source"])
+        near = (
+            [found.items[i] for i in found.near(cand["start"], cand["end"] + LOOKAHEAD_S / 2)]
+            if found
+            else []
+        )
+    else:
+        near = windows
+    for w in near:
         if w["source"] != cand["source"]:
             continue
         ov = min(w["end"], cand["end"] + LOOKAHEAD_S / 2) - max(w["start"], cand["start"])
@@ -968,9 +1024,12 @@ def nominate(
             if len(recs) > cap:
                 src_types = types.get(src, DEFAULT_EVENT_TYPES)
                 weights = repeat_weights(by_src[src], src_types, source_spans(hl).get(src))
+                span_index = SpanIndex(by_src[src])
                 worth = [
                     r["score"]
-                    + event_boost(r, by_src[src], src_types, style=names, repeat=weights)[0]
+                    + event_boost(
+                        r, by_src[src], src_types, style=names, repeat=weights, index=span_index
+                    )[0]
                     for r in recs
                 ]
                 order = sorted(range(len(recs)), key=lambda i: (-worth[i], -recs[i]["grid_score"]))

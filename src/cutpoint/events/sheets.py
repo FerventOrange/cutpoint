@@ -169,9 +169,10 @@ def _source_frames(s: Any) -> tuple[list[_Frame], list[_Frame], list[_Frame], _B
             continue
         kept = not me and y2 - y1 >= rules.min_height
         boxes_of.setdefault((str(s.path), int(fi)), []).append((x1, y1, x2, y2, kept))
+    beauty_all = V.beauty_score(sc)
     for i, t in enumerate(d.t):
         extra = (i, sc["beauty_zs"][i], sc["aesthetic"][i], fr[i], int(sc["count"][i]))
-        beauty.append((float(V.beauty_score(sc)[i]), str(s.path), float(t), extra))
+        beauty.append((float(beauty_all[i]), str(s.path), float(t), extra))
         friends.append((float(fr[i]), str(s.path), float(t), extra))
         if masked[i] and boxes_of.get((str(s.path), i)):
             lift.append((float(np.random.default_rng(i).random()), str(s.path), float(t), extra))
