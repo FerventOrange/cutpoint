@@ -13,8 +13,8 @@ import numpy as np
 import pytest
 
 from cutpoint import cache, category
+from cutpoint.events import discover, regions
 from cutpoint.events import killfeed as kf
-from cutpoint.events import regions
 from cutpoint.events.killfeed import MENU
 from cutpoint.events.text import notice_letters
 
@@ -198,3 +198,66 @@ def test_probe_sources_shares_one_text_engine(monkeypatch, tmp_path) -> None:
     assert category.probe_sources(srcs) == srcs
     assert len(made) == 1 and all(s is made[0] for s in seen)
     assert category._TEXT_OCR.get() is None  # freed after the detection
+
+
+def test_text_engine_is_released_before_the_vision_question(monkeypatch, tmp_path) -> None:
+    events: list[str] = []
+
+    class Shared:
+        def release(self):
+            events.append("release")
+
+    class Vision:
+        every_source = True
+
+        def key(self):
+            return "m"
+
+        def ready(self):
+            return True
+
+        def ask(self, *_a):
+            events.append("ask")
+            return None
+
+    monkeypatch.setattr(category, "needs_vision", lambda *_a: True)
+    monkeypatch.setattr(category, "remap_source", lambda p: p)
+    found = category.SourceProbe(str(tmp_path / "a.mp4"), 10.0, False)
+    token = category._TEXT_OCR.set(Shared())
+    try:
+        category._with_vision(found, tmp_path, Vision())
+    finally:
+        category._TEXT_OCR.reset(token)
+    assert events == ["release", "ask"]
+
+
+def test_discovery_engine_is_released_before_the_vision_calls(monkeypatch, tmp_path) -> None:
+    events: list[str] = []
+
+    class Engine:
+        def release(self):
+            events.append("release")
+
+    class Mapper:
+        def __call__(self, *_a):
+            events.append("map")
+            return None
+
+        def release(self):
+            events.append("mapper release")
+
+    def labeler(*_a):
+        events.append("label")
+        return {}
+
+    monkeypatch.setattr(discover, "_ocr_frames", lambda *_a, **_k: [])
+    monkeypatch.setattr(discover, "probe", lambda _p: None)
+    discover.discover_regions(
+        [],
+        tmp_path / "disc",
+        "zonewar",
+        hud_mapper=Mapper(),
+        labeler=labeler,
+        make_engine=Engine(),
+    )
+    assert events[:3] == ["release", "map", "label"]

@@ -1905,6 +1905,8 @@ def discover_regions(
     settled: dict[str, dict[str, str]] = {}
     vision: list[Region] = []
     excl: list[tuple[int, int, int, int]] = []
+    if (hud_mapper is not None or labeler) and make_engine is not None:
+        getattr(make_engine, "release", lambda: None)()  # not loaded during the vision calls
     try:
         if hud_mapper is not None:
             hud = hud_mapper(proposals, game_frames, out_dir / "frames")

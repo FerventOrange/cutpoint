@@ -1083,6 +1083,8 @@ def _with_vision(
             key = vision.key() or key
         if answers.get(key) in VISION_ANSWERS:
             return replace(found, vision=answers[key])
+        if (shared := _TEXT_OCR.get()) is not None:
+            shared.release()  # rebuilt at the next text check; not loaded during the question
         t0 = time.perf_counter()
         answer = vision.ask(io or remap_source(Path(found.path)), found.duration)
         if answer is None:
