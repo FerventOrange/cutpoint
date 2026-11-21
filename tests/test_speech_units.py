@@ -334,7 +334,7 @@ def test_a_marker_only_holder_is_no_speech_and_no_line_or_subtitle():
     assert analyze.transcript_text("clip.mp4", [seg]) == []
     assert lines_from_segments([seg]) == []
     assert flat_words([seg]) == []
-    (hit,) = analyze.laughter_hits(flat_words([seg]), flat_markers([seg]))
+    (hit,) = transcribe.laughter_hits(flat_words([seg]), flat_markers([seg]))
     assert hit[2] == "laughter"
 
 
@@ -374,7 +374,7 @@ def test_split_markers_leaves_speech_alone(pieces):
 def test_a_laughter_marker_still_counts_after_it_left_the_words():
     out = split_markers([_marked("no", "way", "[Laughter]", "(applause)")])
 
-    (hit,) = analyze.laughter_hits(flat_words(out), flat_markers(out))
+    (hit,) = transcribe.laughter_hits(flat_words(out), flat_markers(out))
     assert hit == (2.0, 1.0, "laughter")  # "(applause)" is a marker, not laughter
     assert [w["word"].strip() for w in flat_words(out)] == ["no", "way"]
 

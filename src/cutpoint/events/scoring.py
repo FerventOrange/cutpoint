@@ -48,7 +48,7 @@ from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
 from cutpoint.sources import settings_language
 from cutpoint.styles import analysis_style, get_style, style_and_base
-from cutpoint.transcribe import flat_markers
+from cutpoint.transcribe import flat_markers, flat_words, laughter_hits
 from cutpoint.utils import slugify, title_slug
 
 if TYPE_CHECKING:
@@ -183,13 +183,11 @@ def _reaction_cues(
 
 
 def _laugh_markers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """The laughing markers (``[laughter]``) of ``segments``, as :func:`analyze.laughter_hits`
-    takes them."""
-    from cutpoint import analyze  # noqa: PLC0415 - analyze imports this module
-
+    """The laughing markers (``[laughter]``) of ``segments``, as
+    :func:`cutpoint.transcribe.laughter_hits` takes them."""
     return [
         {"start": t, "end": t, "text": phrase}
-        for t, _, phrase in analyze.laughter_hits([], flat_markers(segments))
+        for t, _, phrase in laughter_hits([], flat_markers(segments))
     ]
 
 
@@ -590,7 +588,8 @@ def laugh_backed(
 
 def heard_laughter(c: dict[str, Any]) -> bool:
     """Whether laughter was heard in the candidate ``c``: its audio laughter evidence
-    (``signals.events.laughter``) is at least :data:`LAUGH_STRONG`."""
+    (``signals.events.laughter``) is at least :data:`LAUGH_STRONG`. Audio evidence only; the
+    transcript's laughter is :func:`cutpoint.transcribe.laughter_hits`."""
     laughter = ((c.get("signals") or {}).get("events") or {}).get("laughter") or 0
     return laughter >= LAUGH_STRONG
 
@@ -891,7 +890,7 @@ def nominate(
         """The transcript snippet of ``[a, b]`` as a candidate record has it (None: no transcript)."""
         if not segs(src):
             return None
-        said = [w for w in analyze.flat_words(segs(src)) if a <= w["start"] <= b]
+        said = [w for w in flat_words(segs(src)) if a <= w["start"] <= b]
         return analyze._transcript_snippet(said)
 
     grids = parts
@@ -911,10 +910,7 @@ def nominate(
             nonlocal words
             if words is None:
                 words = [
-                    t
-                    for t, _, _ in analyze.laughter_hits(
-                        analyze.flat_words(segs(src)), flat_markers(segs(src))
-                    )
+                    t for t, _, _ in laughter_hits(flat_words(segs(src)), flat_markers(segs(src)))
                 ]
             if any(e["start"] - BACKUP_S <= t <= e["end"] + BACKUP_S for t in words):
                 return True
@@ -936,8 +932,7 @@ def nominate(
         """The ``(start, end)`` of the words of ``src``'s transcript."""
         if src not in said:
             said[src] = [
-                (float(w["start"]), float(w.get("end", w["start"])))
-                for w in analyze.flat_words(segs(src))
+                (float(w["start"]), float(w.get("end", w["start"]))) for w in flat_words(segs(src))
             ]
         return said[src]
 

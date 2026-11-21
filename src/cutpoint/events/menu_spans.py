@@ -108,11 +108,9 @@ def _retranscribe(c: dict[str, Any], segments: list[dict[str, Any]] | None, st: 
     from cutpoint.analyze import (  # noqa: PLC0415
         PROFANE,
         _transcript_snippet,
-        keyword_hits,
         label_for,
-        laughter_hits,
     )
-    from cutpoint.transcribe import flat_markers  # noqa: PLC0415
+    from cutpoint.transcribe import flat_markers, keyword_hits, laughter_hits  # noqa: PLC0415
 
     said = [w for s in segments for w in s.get("words", []) if c["start"] <= w["start"] <= c["end"]]
     c["transcript"], unsure = _transcript_snippet(said)

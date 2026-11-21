@@ -58,7 +58,7 @@ import numpy as np
 
 from cutpoint.dsp import clean_mask, mask_runs
 from cutpoint.styles import Style
-from cutpoint.tail import is_laugh
+from cutpoint.transcribe import is_laugh
 from cutpoint.utils import seconds_keys
 
 logger = logging.getLogger(__name__)
