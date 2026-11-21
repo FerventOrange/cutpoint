@@ -112,6 +112,13 @@ def _receipt_with(source: str) -> str:
 _RERUN = f"{extras.INSTALL_SH} (Linux, macOS) or {extras.INSTALL_PS1} (Windows PowerShell)"
 
 
+def test_installer_hints_use_the_release_installers_not_main():
+    """A hint installs the newest release's installer (a release asset), never `main`'s."""
+    base = "https://github.com/FerventOrange/cutpoint/releases/latest/download"
+    assert f"curl -LsSf {base}/install.sh | sh" == extras.INSTALL_SH
+    assert f"irm {base}/install.ps1 | iex" == extras.INSTALL_PS1
+
+
 _NO_LITE = " without --lite / -Lite and with CUTPOINT_LITE unset"
 
 

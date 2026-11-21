@@ -23,7 +23,8 @@ jobs:
       - run: uvx ruff@0.17.1 check src tests
       - run: uvx ruff@0.17.1 format --check src tests
       # The uv pin must match in the Dockerfile, install.sh and install.ps1 (Dependabot bumps only
-      # the Dockerfile), and the pinned installer URLs must resolve (#613).
+      # the Dockerfile), and the pinned installer scripts must resolve and match the SHA256 the
+      # installers check (#613, #1085).
       - run: python3 scripts/check_uv_pin.py --urls
 
   js:
@@ -249,26 +250,30 @@ jobs:
           rc=0; sh install.sh --dry-run --lite --cuda > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--lite --cuda must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --source --dry-run > /dev/null 2>&1 || rc=$?; [ "$rc" = 2 ] || { echo "::error::--source --dry-run must exit 2, got $rc"; exit 1; }
           rc=0; sh install.sh --dry-run --no-ffmpeg --source /does/not/exist > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] || { echo "::error::missing --source path must exit 1, got $rc"; exit 1; }
-          # Ollama: asked in full mode when missing (PATH without it); the remote script only runs
-          # on a yes. Lite has no Ollama. Nothing is installed in a dry run.
+          # Ollama on Linux: never asked or run; the command is printed (its script has no published
+          # checksum). --no-ollama / CUTPOINT_OLLAMA=0 print nothing. Lite has no Ollama.
           mkdir -p "$RUNNER_TEMP/no-ollama-bin"
           for t in sh cat uname sed awk grep id curl env dirname basename mktemp rm sleep uv; do p=$(command -v "$t") && ln -sf "$p" "$RUNNER_TEMP/no-ollama-bin/$t"; done
+          ollama_printed() {
+            expect "$1" 'Ollama: not found. Install Ollama yourself'
+            expect "$1" 'curl -fsSL https://ollama.com/install.sh | sh'
+            if printf '%s\n' "$1" | grep -q '^+ curl -fsSL https://ollama.com\|nohup ollama serve\|Install Ollama (local AI models'; then echo "::error::Linux must print the Ollama command, not ask or run it ($2)"; printf '%s\n' "$1"; exit 1; fi
+          }
           out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
-          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
-          expect "$out" 'nohup ollama serve'
+          ollama_printed "$out" '--ollama'
           out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg < /dev/null)
-          expect "$out" 'Install Ollama (local AI models'
-          if printf '%s\n' "$out" | grep -q 'ollama.com/install.sh | sh'; then echo "::error::Ollama script planned without a yes"; exit 1; fi
-          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama --yes < /dev/null)
-          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must not ask or install"; exit 1; fi
+          ollama_printed "$out" 'default'
           out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg < /dev/null)
-          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          ollama_printed "$out" 'CUTPOINT_OLLAMA=1'
           out=$(CUTPOINT_OLLAMA=0 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --ollama < /dev/null)
-          expect "$out" 'curl -fsSL https://ollama.com/install.sh | sh'
+          ollama_printed "$out" 'CUTPOINT_OLLAMA=0 --ollama'
+          # --no-ollama and CUTPOINT_OLLAMA=0 neither ask, run nor print the Ollama command.
+          out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama --yes < /dev/null)
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must not ask, install or print Ollama"; exit 1; fi
           out=$(CUTPOINT_OLLAMA=1 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --no-ollama < /dev/null)
           if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::--no-ollama must beat CUTPOINT_OLLAMA=1"; exit 1; fi
           out=$(CUTPOINT_OLLAMA=0 PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --no-ffmpeg --yes < /dev/null)
-          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::CUTPOINT_OLLAMA=0 --yes must not install Ollama"; exit 1; fi
+          if printf '%s\n' "$out" | grep -qi 'install Ollama\|ollama.com/install.sh'; then echo "::error::CUTPOINT_OLLAMA=0 --yes must not install or print Ollama"; exit 1; fi
           # Lite: no prompt, no install, no pull; --ollama / CUTPOINT_OLLAMA=1 warns once and exits 0.
           out=$(PATH="$RUNNER_TEMP/no-ollama-bin" sh install.sh --dry-run --lite --no-ffmpeg --yes < /dev/null 2>&1)
           if printf '%s\n' "$out" | grep -qi 'ollama'; then echo "::error::lite must not mention or run Ollama without --ollama"; exit 1; fi

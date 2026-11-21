@@ -88,9 +88,9 @@ combined with `--cpu` or `--cuda`. `cutpoint capabilities` shows the edition.
 In full mode the installer asks up to three optional questions. The default answer is No. They
 read from the terminal, so they also work under `curl | sh`; with no terminal the answer is No.
 
-1. Install Ollama, when it is not found (`winget` on Windows, `brew` on macOS, Ollama's own
-   script on Linux, which needs sudo). A declined or failed Ollama install never fails the
-   Cutpoint install.
+1. Install Ollama, when it is not found (`winget` on Windows, `brew` on macOS; on Linux the
+   installer does not ask and prints Ollama's install command). A declined or failed Ollama
+   install never fails the Cutpoint install.
 2. Run `cutpoint setup` (model weights, about 2.5 GB, 3.5 GB with an NVIDIA GPU).
 3. Pull the `qwen3.5:9b` model (about 6.6 GB), when Ollama is running.
 
@@ -399,12 +399,14 @@ Ollama runs local models. Cutpoint works without it. Only these features use it:
 
 **Install Ollama.**
 
-The one-step installers (`install.sh` on Linux and macOS, `install.ps1` on Windows) ask whether to
+The one-step installers (`install.sh` on macOS, `install.ps1` on Windows) ask whether to
 install Ollama in full mode (default No): `--ollama` / `-Ollama` installs without asking,
 `--no-ollama` / `-NoOllama` never asks, `CUTPOINT_OLLAMA=1|0` does the same, and `--yes` / `-Yes`
-answers yes. They install it with the official script (with sudo) on Linux, `brew` on macOS and
+answers yes. They install it with `brew` on macOS and
 `winget install --id Ollama.Ollama -e` on Windows (with the download link when winget is missing
-or fails), make sure the server is running and then offer the `qwen3.5:9b` pull. Lite mode
+or fails), make sure the server is running and then offer the `qwen3.5:9b` pull. On Linux
+`install.sh` does not install Ollama: Ollama's script needs sudo and has no published checksum, so
+the installer prints its command (below) for you to run instead. Lite mode
 (`--lite` / `-Lite`) has no Ollama: it skips this step, and `--lite --ollama` / `-Lite -Ollama`
 prints a warning and installs nothing. To do it by hand:
 
