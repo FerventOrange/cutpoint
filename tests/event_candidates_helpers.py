@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint import analyze, cache
+from cutpoint import analyze, cache, scenes
 from cutpoint.events import scoring
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.telemetry import DT
@@ -91,7 +91,7 @@ def write_caches(src: Path, span: float, cuts: list[float]) -> None:
     ]
     seg = {"start": 40.0, "end": 41.6, "text": "no way that worked", "words": words}
     cache.save_json(cdir / transcript_name(TRANSCRIPT_MODELS[0]), [seg])
-    cache.save_json(cdir / analyze.SCENES_FILE, cuts)
+    cache.save_json(cdir / scenes.SCENES_FILE, cuts)
 
 
 def analysis_of(src: Path, span: float, **entry: Any) -> dict[str, Any]:

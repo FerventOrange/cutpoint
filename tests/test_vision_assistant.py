@@ -11,7 +11,7 @@ import pytest
 
 from assistant_helpers import Wire, _Resp, an_reply, oa_reply, rs_reply, rs_text
 from conftest import set_config
-from cutpoint import analyze, jsonout, vision
+from cutpoint import jsonout, vision, vision_step
 from cutpoint.assistant import providers
 from cutpoint.assistant.providers import AnthropicProvider, OpenAIProvider, Reply, XAIProvider
 from cutpoint.pano import vlcheck
@@ -469,7 +469,7 @@ def test_three_moments_of_empty_replies_stop_the_rating_with_one_warning(
     assert rater.available()
     cands = moments(6)
     with caplog.at_level(logging.WARNING, logger="cutpoint.vision"), jsonout.run("x") as res:
-        out = analyze._rate_vision(
+        out = vision_step._rate_vision(
             cands, rater, get_style("gaming"), None, 0, deadline=float("inf")
         )
     assert len(provider.sent) == 7 and provider.texts == []

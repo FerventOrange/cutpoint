@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import analyze, scorer, vision_record
+from cutpoint import scorer, vision_record, vision_step
 from cutpoint.events import scoring
 from event_candidates_helpers import events_of, feed, grid, highlights, own
 from test_vision_stale import STYLE, _Rater, talk
@@ -265,7 +265,7 @@ def test_the_tie_key_is_the_position_of_the_moment():
 
 
 def _rate(c: dict, rating: float = 10.0) -> None:
-    analyze._rate_vision([c], _Rater(rating), STYLE, None, 0, deadline=float("inf"))  # type: ignore[arg-type]
+    vision_step._rate_vision([c], _Rater(rating), STYLE, None, 0, deadline=float("inf"))  # type: ignore[arg-type]
 
 
 def test_a_rated_moment_with_a_bonus_stays_under_the_unrated_one_above_it(tmp_path):

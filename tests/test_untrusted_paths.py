@@ -10,7 +10,17 @@ from typing import Any, ClassVar
 import pytest
 
 from conftest import media_info, write
-from cutpoint import activity, cache, config, extend, folders, planning, projectfiles, rerank
+from cutpoint import (
+    activity,
+    cache,
+    config,
+    extend,
+    folders,
+    planning,
+    projectfiles,
+    reanalyze,
+    rerank,
+)
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 from cutpoint.styles import get_style
@@ -150,9 +160,7 @@ def test_a_rerank_that_analyzes_again_flushes_its_backup(home, tmp_path, fsyncs,
         flushed.append(flushed_before_replace(fsyncs, projectfiles.RERANK_BACKUP))
         return p / "highlights.json"
 
-    from cutpoint import analyze  # noqa: PLC0415
-
-    monkeypatch.setattr(analyze, "reanalyze", fake_reanalyze)
+    monkeypatch.setattr(reanalyze, "reanalyze", fake_reanalyze)
     fsyncs.clear()
     assert rerank.rerank(project, get_style("action-cam"), analyze_missing=True).analyzed
     assert flushed == [True]
@@ -170,9 +178,7 @@ def test_a_failed_rerank_analyze_flushes_the_backup_it_puts_back(
         fsyncs.clear()  # only the writes that put the backup back from here on
         raise RuntimeError("analysis failed")
 
-    from cutpoint import analyze  # noqa: PLC0415
-
-    monkeypatch.setattr(analyze, "reanalyze", failing)
+    monkeypatch.setattr(reanalyze, "reanalyze", failing)
     with pytest.raises(RuntimeError, match="analysis failed"):
         rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
     assert (project / projectfiles.RERANK_BACKUP).read_bytes() == earlier

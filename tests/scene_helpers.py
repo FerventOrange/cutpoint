@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from conftest import media_info, write
-from cutpoint import analyze, cache, ffmpeg_utils
+from cutpoint import analyze, cache, ffmpeg_utils, scenes
 
 CUDA = ffmpeg_utils.HwDecoder("cuda")
 
@@ -19,7 +19,8 @@ CUDA = ffmpeg_utils.HwDecoder("cuda")
 def nvdec_source(monkeypatch: pytest.MonkeyPatch, duration: float) -> None:
     """Every source probes as ``duration`` seconds of H.264 and NVDEC decodes it."""
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, duration))
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: CUDA)
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, duration))
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: CUDA)
 
 
 def fake_source_io(
@@ -29,6 +30,7 @@ def fake_source_io(
     audio stream), the audio extraction, the read check and the loudness curve (every 0.5 s:
     one loud burst at 20 s, or ``flat_lufs`` throughout)."""
     monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, duration, audio_streams=1))
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, duration, audio_streams=1))
     monkeypatch.setattr(analyze, "extract_audio", lambda io, wav, *a, **k: write(wav, "wav"))
     monkeypatch.setattr(analyze, "check_read", lambda *a, **k: None)
     times = np.arange(0.0, duration, 0.5)
@@ -58,7 +60,7 @@ def scene_world(
 def near(got: list[float], want: list[float]) -> bool:
     """``got`` and ``want`` hold the same cuts within one 0.1 s proxy frame."""
     return len(got) == len(want) and all(
-        abs(a - b) <= analyze.SCENE_GRID_S + 1e-6 for a, b in zip(got, want, strict=True)
+        abs(a - b) <= scenes.SCENE_GRID_S + 1e-6 for a, b in zip(got, want, strict=True)
     )
 
 

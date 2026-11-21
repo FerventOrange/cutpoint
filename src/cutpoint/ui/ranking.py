@@ -105,15 +105,15 @@ class RankingRefused(Exception):
 
 
 def ranking_key(p: Path) -> str | None:
-    """The ranking key (:func:`cutpoint.analyze.backup_digest`) of the project's
+    """The ranking key (:func:`cutpoint.reanalyze.backup_digest`) of the project's
     ``highlights.json``, which a preview is applied against; None without a readable file of
     its own."""
-    from cutpoint import analyze  # noqa: PLC0415
+    from cutpoint import reanalyze  # noqa: PLC0415
 
     if not _inside(p, HIGHLIGHTS):
         return None
     try:
-        return analyze.backup_digest((p / HIGHLIGHTS).read_bytes())
+        return reanalyze.backup_digest((p / HIGHLIGHTS).read_bytes())
     except OSError:
         return None
 
@@ -221,7 +221,7 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
             one without an analysis.
         RankingRefused: ``folder_busy`` while a run holds the project.
     """
-    from cutpoint import analyze, rerank  # noqa: PLC0415
+    from cutpoint import reanalyze, rerank  # noqa: PLC0415
     from cutpoint.errors import NeedsAnalyzeError  # noqa: PLC0415
 
     style = _ranking_style(style_name)
@@ -230,7 +230,7 @@ def ranking_preview(p: Path, style_name: object) -> dict[str, Any]:
     head = {
         "style": style.name,
         "from": fallback_style_name(hl),
-        "base": analyze.backup_digest(raw),
+        "base": reanalyze.backup_digest(raw),
     }
     ready = rerank.readiness(p, hl, style, cuda_probe)
     missing = [m.record() for m in ready.missing]
@@ -263,7 +263,7 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
     """What the page's Undo ranking offers (:func:`cutpoint.rerank.undo_target`): ``action``
     ``undo`` or ``redo`` and ``style``, the style of the ranking it swaps in; None when there is
     none to swap in, and for 360 projects. Remembered per project until either file changes."""
-    from cutpoint import analyze, rerank  # noqa: PLC0415
+    from cutpoint import reanalyze, rerank  # noqa: PLC0415
 
     if meta.get("kind") == "360" or (p / pano_project.PANO_FILE).is_file():
         return None
@@ -274,7 +274,7 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
         raw = (p / HIGHLIGHTS).read_bytes()
     except OSError:
         return None
-    seen = (analyze.backup_digest(raw), st.st_size, st.st_mtime_ns)
+    seen = (reanalyze.backup_digest(raw), st.st_size, st.st_mtime_ns)
     if (got := _UNDO_SEEN.get(p)) is not None and got[0] == seen:
         return got[1]
     try:

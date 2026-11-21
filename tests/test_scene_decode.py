@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import StubTranscriber, media_info, needs_ffmpeg, write
-from cutpoint import analyze, cache, ffmpeg_utils
+from cutpoint import analyze, cache, ffmpeg_utils, scenes
 from cutpoint.errors import FFmpegError
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.ffmpeg_utils import RunCancelled
@@ -43,7 +43,7 @@ def plain(monkeypatch):
 
 
 def plan(cpu_free=True, duration=600.0, offset=0.0, limit=None):
-    return analyze._hybrid_plan(Path("a.mp4"), duration, offset, limit, cpu_free)
+    return scenes._hybrid_plan(Path("a.mp4"), duration, offset, limit, cpu_free)
 
 
 # ----------------------------------------------------------------- the switch and the gate
@@ -54,22 +54,22 @@ def plan(cpu_free=True, duration=600.0, offset=0.0, limit=None):
 def test_the_env_mode(monkeypatch, value, mode):
     if value is not None:
         monkeypatch.setenv(ENV, value)
-    assert analyze.scene_decode_mode() == mode
+    assert scenes.scene_decode_mode() == mode
 
 
 def test_auto_splits_a_long_enough_source_on_nvdec_with_the_cpu_free():
     hw, split, threads = plan()
     assert hw == CUDA and threads == 6  # 8 logical CPUs, 2 left as headroom
-    assert split == analyze._hybrid_split(600.0, 6) == 380.7
+    assert split == scenes._hybrid_split(600.0, 6) == 380.7
 
 
 @pytest.mark.parametrize(
     ("setup", "splits"),
     [
         ({"cpu_free": False}, False),  # the background OCR or Whisper on the CPU runs meanwhile
-        ({"duration": analyze.HYBRID_MIN_S - 0.1}, False),  # too short to pay
-        ({"duration": analyze.HYBRID_MIN_S}, True),
-        ({"duration": analyze.LONG_FILE_S + 1}, False),  # keyframes only: already fast
+        ({"duration": scenes.HYBRID_MIN_S - 0.1}, False),  # too short to pay
+        ({"duration": scenes.HYBRID_MIN_S}, True),
+        ({"duration": scenes.LONG_FILE_S + 1}, False),  # keyframes only: already fast
         ({"offset": 300.0}, False),  # a recovered part
         ({"limit": 200.0}, False),  # a source with a read error
         ({"cpus": 5}, False),  # fewer than HYBRID_MIN_THREADS left after the headroom
@@ -99,19 +99,17 @@ def test_the_split_gate(monkeypatch, setup, splits):
         monkeypatch.setattr(analyze.os, "cpu_count", lambda: cpus)
     if "probe" in setup:
         over = setup.pop("probe")
-        monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, **over))
+        monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 600.0, **over))
     name = setup.pop("name", "a.mp4")
     kw = {"cpu_free": True, "duration": 600.0, "offset": 0.0, "limit": None} | setup
-    got = analyze._hybrid_plan(
-        Path(name), kw["duration"], kw["offset"], kw["limit"], kw["cpu_free"]
-    )
+    got = scenes._hybrid_plan(Path(name), kw["duration"], kw["offset"], kw["limit"], kw["cpu_free"])
     assert (got is not None) is splits
 
 
 def test_a_ts_on_cuda_is_decoded_by_ffmpeg_alone(monkeypatch):
     """A non-exact container on CUDA: -hwaccel cuda alone and the plain chain (NVDEC
     reinitialises at a join, so no hwdownload in the chain)."""
-    args, chain = analyze._scene_decode(CUDA, "fps=2,scale=256:-2", Path("clip.ts"))
+    args, chain = scenes._scene_decode(CUDA, "fps=2,scale=256:-2", Path("clip.ts"))
     assert args == ["-hwaccel", "cuda"] and "hwdownload" not in chain
 
 
@@ -119,13 +117,13 @@ def test_auto_splits_with_just_enough_cpus(monkeypatch):
     """6 logical CPUs leave the minimum 4 decode threads after the headroom of 2."""
     monkeypatch.setattr(analyze.os, "cpu_count", lambda: 6)
     hw, split, threads = plan()
-    assert hw == CUDA and threads == analyze.HYBRID_MIN_THREADS == 4
-    assert split == analyze._hybrid_split(600.0, 4)
+    assert hw == CUDA and threads == scenes.HYBRID_MIN_THREADS == 4
+    assert split == scenes._hybrid_split(600.0, 4)
 
 
 @pytest.mark.parametrize("hw", [None, ffmpeg_utils.HwDecoder("vaapi", "/dev/dri/renderD128")])
 def test_no_split_without_nvdec(monkeypatch, hw):
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: hw)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: hw)
     assert plan() is None
     monkeypatch.setenv(ENV, "hybrid")
     assert plan() is None  # forced: still needs NVDEC
@@ -142,16 +140,16 @@ def test_hybrid_splits_without_the_length_cpu_and_thread_gates(monkeypatch):
     monkeypatch.setattr(analyze.os, "cpu_count", lambda: 2)
     hw, _split, threads = plan(cpu_free=False, duration=30.0)
     assert hw == CUDA and threads == 1
-    assert plan(offset=10.0) is None and plan(duration=analyze.LONG_FILE_S + 1) is None
+    assert plan(offset=10.0) is None and plan(duration=scenes.LONG_FILE_S + 1) is None
 
 
 def test_the_split_balances_nvdec_against_the_cpu_threads():
     """On 8 threads (the measured machine) NVDEC takes about 57%; fewer threads, more; always
     on the 0.1 s proxy grid."""
-    assert analyze._hybrid_split(1000.0, 8) == 565.6
-    assert analyze._hybrid_split(1000.0, 6) == 634.5
+    assert scenes._hybrid_split(1000.0, 8) == 565.6
+    assert scenes._hybrid_split(1000.0, 6) == 634.5
     for d in (120.0, 218.3, 599.97):
-        s = analyze._hybrid_split(d, 6)
+        s = scenes._hybrid_split(d, 6)
         assert abs(s * 10 - round(s * 10)) < 1e-6
 
 
@@ -172,7 +170,7 @@ SPLIT, CSTART = 100.0, 97.0
     ],
 )
 def test_the_seam_merge(gpu, cpu, want):
-    assert analyze._merge_seam(gpu, cpu, SPLIT, CSTART) == want
+    assert scenes._merge_seam(gpu, cpu, SPLIT, CSTART) == want
 
 
 # ----------------------------------------------------------------- the split decode, faked
@@ -182,8 +180,8 @@ def ff(tmp_path, monkeypatch):
     f = type("FF", (), {})()
     f.calls, f.fail, f.seen = [], None, []
     f.cuts = {"gpu": [10.0, 99.95, 101.0], "cpu": [3.0, 50.0]}
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 200.0))
-    monkeypatch.setattr(analyze, "STOP_GRACE_S", 0.01)
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 200.0))
+    monkeypatch.setattr(scenes, "STOP_GRACE_S", 0.01)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
 
     def run_progress(args, total, label, cancel=None):
@@ -199,8 +197,8 @@ def ff(tmp_path, monkeypatch):
     def scan(proxy, cancel):
         return list(f.cuts["gpu" if "proxy-gpu" in proxy.name else "cpu"])
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
-    monkeypatch.setattr(analyze, "_scan", scan)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "_scan", scan)
     f.cdir = tmp_path / "cdir"
     f.cdir.mkdir()
     f.src = tmp_path / "a.mp4"
@@ -212,7 +210,7 @@ def leftovers(cdir: Path) -> list[str]:
 
 
 def test_the_halves_decode_their_ranges_and_their_cuts_merge(ff):
-    cuts = analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
+    cuts = scenes._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
     assert cuts == [10.0, 99.95, 147.0]  # the CPU's 100.0 is the NVDEC 99.95 a frame off
     by = {half: (args, total) for half, args, total in ff.calls}
     gpu, gsecs = by["gpu"]
@@ -236,8 +234,8 @@ def test_the_halves_decode_their_ranges_and_their_cuts_merge(ff):
 
 
 def test_a_format_nvdec_does_not_download_keeps_the_plain_cpu_chain(ff, monkeypatch):
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 200.0, pix_fmt="yuv444p"))
-    analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 200.0, pix_fmt="yuv444p"))
+    scenes._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
     cpu = next(args for half, args, _t in ff.calls if half == "cpu")
     assert cpu[cpu.index("-vf") + 1] == "fps=10:start_time=0,scale=320:180"
 
@@ -246,8 +244,8 @@ def test_both_halves_of_a_late_video_count_from_the_container_start(ff, monkeypa
     """#976: in a container that seeks exactly ffmpeg counts both halves from the container
     start; ``fps`` start_time pads the NVDEC half's late video, the CPU half seeks the split
     point as clips are cut. No ``-copyts``, and downloads stay after ``fps``."""
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 200.0, vstart=0.25))
-    assert analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6) == [10.0, 99.95, 147.0]
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 200.0, vstart=0.25))
+    assert scenes._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6) == [10.0, 99.95, 147.0]
     by = {half: args for half, args, _t in ff.calls}
     gpu, cpu = by["gpu"], by["cpu"]
     assert gpu[gpu.index("-vf") + 1] == "fps=10:start_time=0,hwdownload,format=nv12,scale=320:180"
@@ -257,7 +255,7 @@ def test_both_halves_of_a_late_video_count_from_the_container_start(ff, monkeypa
 
 
 def test_a_split_near_the_start_starts_the_cpu_half_at_0(ff):
-    analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, 2.0, 6)
+    scenes._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, 2.0, 6)
     cpu = next(args for half, args, _t in ff.calls if half == "cpu")
     assert cpu[cpu.index("-ss") + 1] == "0.000"
 
@@ -265,8 +263,8 @@ def test_a_split_near_the_start_starts_the_cpu_half_at_0(ff):
 @pytest.mark.parametrize("half", ["gpu", "cpu"])
 def test_a_failing_half_gives_none_with_a_warning_and_no_proxies(ff, caplog, half):
     ff.fail = half
-    with caplog.at_level("WARNING", logger="cutpoint.analyze"):
-        assert analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6) is None
+    with caplog.at_level("WARNING", logger="cutpoint.scenes"):
+        assert scenes._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6) is None
     assert [r.levelname for r in caplog.records] == ["WARNING"]
     assert leftovers(ff.cdir) == []
 
@@ -280,11 +278,11 @@ def test_scene_cuts_falls_back_to_one_decode_when_a_half_fails(ff, monkeypatch, 
         single.append(gpu)
         write(proxy, "proxy")
 
-    monkeypatch.setattr(analyze, "_make_proxy", make_proxy)
-    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [42.0])
-    cuts = analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
+    monkeypatch.setattr(scenes, "_make_proxy", make_proxy)
+    monkeypatch.setattr(scenes, "_scan", lambda proxy, cancel: [42.0])
+    cuts = scenes.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
     assert cuts == [42.0] and single == [True]
-    assert cache.load_json(ff.cdir / analyze.SCENES_FILE) == [42.0] and leftovers(ff.cdir) == []
+    assert cache.load_json(ff.cdir / scenes.SCENES_FILE) == [42.0] and leftovers(ff.cdir) == []
 
 
 def test_the_one_decode_proxy_name_is_not_shared_with_other_runs(ff, monkeypatch):
@@ -295,9 +293,9 @@ def test_the_one_decode_proxy_name_is_not_shared_with_other_runs(ff, monkeypatch
         names.append(proxy.name)
         write(proxy, "proxy")
 
-    monkeypatch.setattr(analyze, "_make_proxy", make_proxy)
-    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [1.0])
-    analyze.scene_cuts(ff.src, ff.cdir, 200.0)
+    monkeypatch.setattr(scenes, "_make_proxy", make_proxy)
+    monkeypatch.setattr(scenes, "_scan", lambda proxy, cancel: [1.0])
+    scenes.scene_cuts(ff.src, ff.cdir, 200.0)
     assert names[0] != "proxy.mp4" and str(os.getpid()) in names[0]
     assert not list(ff.cdir.glob("proxy*"))  # removed after the scan
 
@@ -309,18 +307,18 @@ def test_the_one_decode_sweeps_old_proxies_and_keeps_a_live_run_s(ff, monkeypatc
     for f in (live, dead, old):
         write(f, "x")
     monkeypatch.setattr(ffmpeg_utils.procs, "pid_alive", lambda pid, mtime=None: pid == os.getpid())
-    monkeypatch.setattr(analyze, "_make_proxy", lambda src, proxy, *a, **k: write(proxy, "p"))
-    monkeypatch.setattr(analyze, "_scan", lambda proxy, cancel: [1.0])
-    analyze.scene_cuts(ff.src, ff.cdir, 200.0)
+    monkeypatch.setattr(scenes, "_make_proxy", lambda src, proxy, *a, **k: write(proxy, "p"))
+    monkeypatch.setattr(scenes, "_scan", lambda proxy, cancel: [1.0])
+    scenes.scene_cuts(ff.src, ff.cdir, 200.0)
     assert live.exists() and not dead.exists() and not old.exists()
 
 
 def test_scene_cuts_saves_the_merged_cuts_as_one_pass_would(ff, monkeypatch):
-    monkeypatch.setattr(analyze, "_make_proxy", lambda *a, **k: pytest.fail("one decode"))
-    cuts = analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
-    assert cache.load_json(ff.cdir / analyze.SCENES_FILE) == cuts
+    monkeypatch.setattr(scenes, "_make_proxy", lambda *a, **k: pytest.fail("one decode"))
+    cuts = scenes.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
+    assert cache.load_json(ff.cdir / scenes.SCENES_FILE) == cuts
     assert all(isinstance(c, float) for c in cuts) and cuts == sorted(cuts)
-    assert analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True) == cuts  # cached
+    assert scenes.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True) == cuts  # cached
     assert len(ff.calls) == 2
 
 
@@ -333,8 +331,8 @@ def test_one_decode_without_cpu_free_or_with_the_switch(ff, monkeypatch, mode, g
         single.append(gpu)
         write(proxy, "proxy")
 
-    monkeypatch.setattr(analyze, "_make_proxy", make_proxy)
-    analyze.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=mode != "auto")
+    monkeypatch.setattr(scenes, "_make_proxy", make_proxy)
+    scenes.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=mode != "auto")
     assert single == [gpu] and ff.calls == []
 
 
@@ -348,10 +346,10 @@ def test_a_failed_proxy_encode_removes_the_partial_proxy(monkeypatch, tmp_path, 
         proxy.write_bytes(b"partial")
         raise FFmpegError("ffmpeg failed during scene proxy (exit 1):\n\nboom")
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: CUDA if gpu else None)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: CUDA if gpu else None)
     with pytest.raises(FFmpegError):
-        analyze._make_proxy(tmp_path / "a.mp4", proxy, analyze._proxy_args(10.0), 10.0, gpu=gpu)
+        scenes._make_proxy(tmp_path / "a.mp4", proxy, scenes._proxy_args(10.0), 10.0, gpu=gpu)
     assert not proxy.exists()
     assert seen == ([False, False] if gpu else [False])
 
@@ -366,9 +364,9 @@ def test_a_failed_gpu_proxy_encode_reruns_on_the_cpu(monkeypatch, tmp_path):
                 "ffmpeg failed during scene proxy (exit 1):\n\nCannot load libnvcuvid\nmore"
             )
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
     src = tmp_path / "a.mp4"
-    analyze._make_proxy(src, tmp_path / "p.mp4", analyze._proxy_args(10.0), 10.0)
+    scenes._make_proxy(src, tmp_path / "p.mp4", scenes._proxy_args(10.0), 10.0)
     assert len(runs) == 2
 
 
@@ -384,7 +382,7 @@ def test_ctrl_c_stops_both_halves_and_removes_the_proxies(ff, monkeypatch):
         stopped.append(label)
         raise RunCancelled(label)
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
     real_join = threading.Thread.join
 
     def join(self, timeout=None):
@@ -396,7 +394,7 @@ def test_ctrl_c_stops_both_halves_and_removes_the_proxies(ff, monkeypatch):
 
     monkeypatch.setattr(threading.Thread, "join", join)
     with pytest.raises(KeyboardInterrupt):
-        analyze._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
+        scenes._hybrid_cuts(ff.src, ff.cdir, 200.0, CUDA, SPLIT, 6)
     assert len(stopped) == 2 and leftovers(ff.cdir) == []
 
 
@@ -410,10 +408,10 @@ def test_a_set_cancel_stops_the_split_and_writes_nothing(ff, monkeypatch):
         assert cancel is not outer and cancel.wait(5)  # the split's own stop, set from outer
         raise RunCancelled(label)
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
     with pytest.raises(RunCancelled):
-        analyze.scene_cuts(ff.src, ff.cdir, 200.0, cancel=outer, cpu_free=True)
-    assert leftovers(ff.cdir) == [] and not (ff.cdir / analyze.SCENES_FILE).exists()
+        scenes.scene_cuts(ff.src, ff.cdir, 200.0, cancel=outer, cpu_free=True)
+    assert leftovers(ff.cdir) == [] and not (ff.cdir / scenes.SCENES_FILE).exists()
 
 
 # ----------------------------------------------------------------- the OCR busy gate
@@ -458,8 +456,8 @@ def world(home, tmp_path, monkeypatch):
         def result(self):
             return self.cuts
 
-    monkeypatch.setattr(analyze, "scene_cuts", scene)
-    monkeypatch.setattr(analyze, "_SceneJob", Job)
+    monkeypatch.setattr(scenes, "scene_cuts", scene)
+    monkeypatch.setattr(scenes, "_SceneJob", Job)
     w.source = lambda tr=None, **kw: analyze.analyze_source(
         src, get_style("action"), tr or StubTranscriber(), True, None, {}, **kw
     )
@@ -524,17 +522,17 @@ def cuts_clip(tmp_path) -> Path:
 def test_a_split_anywhere_gives_the_cuts_of_one_pass(cuts_clip, tmp_path, monkeypatch):
     """Both halves on the CPU (no GPU needed): with the split on a cut, a frame either side of
     one and inside the overlap of two close cuts, the merged cuts equal one pass's."""
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     cdir = tmp_path / "cdir"
     cdir.mkdir()
     duration = 24.0
     proxy = cdir / "one.mp4"
-    analyze._make_proxy(cuts_clip, proxy, analyze._proxy_args(duration), duration, gpu=False)
-    one = analyze._scan(proxy, None)
+    scenes._make_proxy(cuts_clip, proxy, scenes._proxy_args(duration), duration, gpu=False)
+    one = scenes._scan(proxy, None)
     proxy.unlink()
     assert one == [4.0, 8.0, 11.0, 11.6, 15.0, 19.0]
     for split in (11.0, 10.9, 11.1, 11.6, 11.3, 15.0, 15.2, 15.3, 15.4, 6.0):
-        got = analyze._hybrid_cuts(cuts_clip, cdir, duration, None, split, 2)
+        got = scenes._hybrid_cuts(cuts_clip, cdir, duration, None, split, 2)
         assert got == one, split
     assert leftovers(cdir) == []
 
@@ -555,12 +553,12 @@ def late_and_ts(cuts_clip, tmp_path) -> tuple[Path, Path]:
 @needs_ffmpeg
 def test_auto_splits_a_late_mp4_but_not_mpegts(cuts_clip, late_and_ts, monkeypatch):
     """A late MP4 splits (#1038: its halves match one pass); MPEG-TS stays one decode."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
     late, ts = late_and_ts
     assert ffmpeg_utils.probe(late).vstart > 0.2
-    assert analyze._hybrid_plan(cuts_clip, 600.0, 0.0, None, True) is not None  # the control
-    assert analyze._hybrid_plan(late, 600.0, 0.0, None, True) is not None
-    assert analyze._hybrid_plan(ts, 600.0, 0.0, None, True) is None
+    assert scenes._hybrid_plan(cuts_clip, 600.0, 0.0, None, True) is not None  # the control
+    assert scenes._hybrid_plan(late, 600.0, 0.0, None, True) is not None
+    assert scenes._hybrid_plan(ts, 600.0, 0.0, None, True) is None
 
 
 CLIP_CUTS = [4.0, 8.0, 11.0, 11.6, 15.0, 19.0]  # one pass of cuts_clip (15.3 dropped)
@@ -569,15 +567,15 @@ CLIP_CUTS = [4.0, 8.0, 11.0, 11.6, 15.0, 19.0]  # one pass of cuts_clip (15.3 dr
 def one_pass(src: Path, cdir: Path) -> list[float]:
     """The full pass of ``src`` as ``scene_cuts`` makes it (one CPU decode), cached in ``cdir``."""
     cdir.mkdir()
-    return analyze.scene_cuts(src, cdir, ffmpeg_utils.probe(src).duration)
+    return scenes.scene_cuts(src, cdir, ffmpeg_utils.probe(src).duration)
 
 
 @needs_ffmpeg
 def test_a_forced_split_of_a_late_video_matches_one_pass(late_and_ts, tmp_path, monkeypatch):
     """Both halves count from the container start, as the full pass does (#976): the split's
     cuts land where one pass's do (within one 0.1 s proxy frame), on any ffmpeg."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     late, _ts = late_and_ts
     duration = ffmpeg_utils.probe(late).duration
     one = one_pass(late, tmp_path / "one")
@@ -585,7 +583,7 @@ def test_a_forced_split_of_a_late_video_matches_one_pass(late_and_ts, tmp_path, 
     cdir = tmp_path / "late-cdir"
     cdir.mkdir()
     for split in (11.0, 10.9, 11.6, 15.2, 6.0):
-        got = analyze._hybrid_cuts(late, cdir, duration, None, split, 2)
+        got = scenes._hybrid_cuts(late, cdir, duration, None, split, 2)
         assert near(got, one), (split, got, one)
     assert leftovers(cdir) == []
 
@@ -595,8 +593,8 @@ def test_every_scene_pass_counts_from_the_container_start(late_and_ts, tmp_path,
     """#976 on a video 0.25 s late: the full pass, the edge windows (one at the part start, so
     without a seek) give the cuts 0.25 s after the clip's; the MPEG-TS copy gets its full pass
     instead of windows, on the same clock."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     late, ts = late_and_ts
     want = [c + 0.25 for c in CLIP_CUTS]
     full = one_pass(late, tmp_path / "full")
@@ -605,16 +603,16 @@ def test_every_scene_pass_counts_from_the_container_start(late_and_ts, tmp_path,
     wdir = tmp_path / "windows"
     wdir.mkdir()
     edges = [2.5, 8.0, 11.5, 15.0, 19.0]  # the first window starts at 0: no seek
-    got = analyze.EdgeCuts(late, wdir, span).around(edges)
-    assert (wdir / analyze.SCENE_WINDOWS_FILE).exists()
-    assert not (wdir / analyze.SCENES_FILE).exists()
+    got = scenes.EdgeCuts(late, wdir, span).around(edges)
+    assert (wdir / scenes.SCENE_WINDOWS_FILE).exists()
+    assert not (wdir / scenes.SCENES_FILE).exists()
     assert near(got, full), (got, full)
     tdir = tmp_path / "ts"
     tdir.mkdir()
-    got = analyze.EdgeCuts(ts, tdir, ffmpeg_utils.probe(ts).duration).around(edges)
+    got = scenes.EdgeCuts(ts, tdir, ffmpeg_utils.probe(ts).duration).around(edges)
     assert near(got, want), got
-    assert (tdir / analyze.SCENES_FILE).exists()
-    assert not (tdir / analyze.SCENE_WINDOWS_FILE).exists()
+    assert (tdir / scenes.SCENES_FILE).exists()
+    assert not (tdir / scenes.SCENE_WINDOWS_FILE).exists()
 
 
 @pytest.fixture
@@ -642,8 +640,8 @@ def test_an_mpegts_cut_mid_gop_keeps_its_cuts_on_the_container_clock(
 ):
     """#976 review: the full pass counts from the container start, not from the first frame
     it could decode (the dropped lead-in would move every cut early by about 1.7 s)."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     ts, zero = mid_gop_ts
     assert zero < 0  # the clip's start was cut off
     want = [round(c + zero, 3) for c in CLIP_CUTS if c + zero > 0.5]
@@ -679,8 +677,8 @@ def test_an_mpegts_with_a_timestamp_reset_keeps_the_cuts_after_it(joined_ts, tmp
     """#976 on Windows: ffmpeg runs a joined TS on past its timestamp reset, and so does the
     full pass (its own timestamps, the first frame moved to its container time): every cut of
     the clip, on the container clock, also the two after the join at 12 s."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     vstart = ffmpeg_utils.probe(joined_ts).vstart
     got = one_pass(joined_ts, tmp_path / "joined")
     assert near(got, [c + vstart for c in CLIP_CUTS]), got
@@ -692,7 +690,7 @@ def test_a_picture_that_widens_mid_file_reaches_the_encoder_in_one_size(tmp_path
     chain keeps one graph, so ``scale=320:-2`` alone would pass 320x180 frames on (ffmpeg 9
     then crashes in libx264 now and then). The probed size fixes the height: every raw frame
     of the pass has the one size."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
     halves = []
     for i, size in enumerate(("320x240", "640x360")):
         half = tmp_path / f"w{i}.ts"
@@ -705,8 +703,8 @@ def test_a_picture_that_widens_mid_file_reaches_the_encoder_in_one_size(tmp_path
         halves.append(half.read_bytes())
     joined = tmp_path / "widen.ts"
     joined.write_bytes(b"".join(halves))
-    pre, _post, vf, _enc = analyze._proxy_args(4.0)
-    vf = analyze._fixed_scale(vf, joined)
+    pre, _post, vf, _enc = scenes._proxy_args(4.0)
+    vf = scenes._fixed_scale(vf, joined)
     assert vf.endswith("scale=320:240")
     raw = subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", *pre, "-i", str(joined), "-an", "-vf", vf,
@@ -724,8 +722,8 @@ def test_a_joined_mpegts_keeps_its_cuts_after_the_join_on_the_gpu(joined_ts, tmp
     dec = ffmpeg_utils.gpu_decoder()
     if dec is None:
         pytest.skip("no GPU decoder works here")
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: dec)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: dec)
     vstart = ffmpeg_utils.probe(joined_ts).vstart
     got = one_pass(joined_ts, tmp_path / "joined")
     assert near(got, [c + vstart for c in CLIP_CUTS]), got
@@ -761,15 +759,15 @@ def test_a_picture_that_changes_size_mid_file_keeps_its_cuts_on_the_gpu(
     joined.write_bytes(b"".join(parts))
     mkv = tmp_path / f"ab{suffix}"
     subprocess.run([ff, "-v", "error", "-i", str(joined), "-c", "copy", str(mkv)], check=True)
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     cpu = one_pass(mkv, tmp_path / "cpu")
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: dec)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: dec)
     gpu = one_pass(mkv, tmp_path / "gpu")
     assert len(cpu) == 2, cpu  # the size change and the cut after it
     # half a proxy frame: without the re-run the second cut came a whole frame (0.1 s) late
     assert len(gpu) == len(cpu) and all(
-        abs(g - c) < analyze.SCENE_GRID_S / 2 for g, c in zip(gpu, cpu, strict=True)
+        abs(g - c) < scenes.SCENE_GRID_S / 2 for g, c in zip(gpu, cpu, strict=True)
     ), (gpu, cpu)
 
 
@@ -803,7 +801,7 @@ def test_a_high_timestamp_ts_puts_its_first_frame_at_the_video_start(
 ):
     """A DVR or broadcast capture with timestamps past 10000 s: the shift is the video start to
     the millisecond, not 0.05 s off as ffmpeg 6's pts_time would give."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
     ts = tmp_path / "high.ts"
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-i", str(cuts_clip), "-f", "lavfi", "-i",
@@ -814,7 +812,7 @@ def test_a_high_timestamp_ts_puts_its_first_frame_at_the_video_start(
     )  # fmt: skip
     info = ffmpeg_utils.probe(ts)
     assert info.fstart > 54000
-    shift = analyze._first_shift(ts, 0.0, info.duration)
+    shift = scenes._first_shift(ts, 0.0, info.duration)
     assert shift is not None and abs(shift - info.vstart) < 1e-3, (shift, info.vstart)
 
 
@@ -822,8 +820,8 @@ def test_a_high_timestamp_ts_puts_its_first_frame_at_the_video_start(
 def test_the_first_frame_is_of_the_video_stream_the_pass_decodes(cuts_clip, tmp_path, monkeypatch):
     """Two video streams: the pass decodes the largest (no ``-map``), which starts 2 s after a
     small one, so its cuts and its first frame come from that stream."""
-    monkeypatch.setattr(analyze, "probe", ffmpeg_utils.probe)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", ffmpeg_utils.probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     ts = tmp_path / "two.ts"
     subprocess.run(
         [shutil.which("ffmpeg"), "-v", "error", "-i", str(cuts_clip), "-itsoffset", "2",
@@ -842,7 +840,7 @@ def test_the_first_frame_is_of_the_video_stream_the_pass_decodes(cuts_clip, tmp_
 def test_the_scene_proxy_is_lossless():
     """A lossy proxy has a keyframe every 250 frames (25 s at 10 fps) that adds to the
     detector's content value: cuts appeared there and moved with a pass's start (#994)."""
-    _pre, _post, _vf, enc = analyze._proxy_args(60.0)
+    _pre, _post, _vf, enc = scenes._proxy_args(60.0)
     assert enc[enc.index("-qp") + 1] == "0"
     assert "-crf" not in enc
 
@@ -856,9 +854,9 @@ def test_the_scene_proxy_holds_the_filtered_frames_exactly(tmp_path):
          "testsrc2=size=320x180:rate=10:duration=4", "-pix_fmt", "yuv420p", str(src)],
         check=True,
     )  # fmt: skip
-    args = analyze._proxy_args(4.0)
+    args = scenes._proxy_args(4.0)
     proxy = tmp_path / "proxy.mp4"
-    analyze._make_proxy(src, proxy, args, 4.0, gpu=False)
+    scenes._make_proxy(src, proxy, args, 4.0, gpu=False)
 
     def md5(*cmd: str) -> list[str]:
         out = subprocess.run(

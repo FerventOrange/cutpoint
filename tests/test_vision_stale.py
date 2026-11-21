@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from cutpoint import analyze, scorer, vision, vision_record
+from cutpoint import scorer, vision, vision_record, vision_step
 from cutpoint.events import scoring
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.styles import get_style
@@ -51,7 +51,7 @@ def talk(start: float, end: float) -> dict[str, Any]:
 
 
 def rate(c: dict[str, Any]) -> None:
-    analyze._rate_vision([c], _Rater(), STYLE, None, 0, deadline=float("inf"))  # type: ignore[arg-type]
+    vision_step._rate_vision([c], _Rater(), STYLE, None, 0, deadline=float("inf"))  # type: ignore[arg-type]
 
 
 BLENDED = vision_record.vision_blend(40.0, 10.0, STYLE.vision_weight)

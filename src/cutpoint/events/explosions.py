@@ -184,7 +184,7 @@ def _loudness(parts: Parts) -> tuple[np.ndarray, np.ndarray] | None:
 
 
 def _cuts(parts: Parts) -> list[float]:
-    from cutpoint.analyze import SCENES_FILE  # noqa: PLC0415
+    from cutpoint.scenes import SCENES_FILE  # noqa: PLC0415
 
     out: list[float] = []
     for offset, cdir in parts:

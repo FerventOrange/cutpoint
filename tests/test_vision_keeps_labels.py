@@ -14,7 +14,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import needs_ffmpeg
-from cutpoint import analyze, cli, scorer, vision, vision_record
+from cutpoint import cli, scorer, vision, vision_record, vision_step
 from cutpoint.styles import get_style
 from cutpoint.utils import slugify
 from event_candidates_helpers import events_of, grid, highlights, own
@@ -70,7 +70,7 @@ def _argv(video: Path, out: str, *flags: str) -> list[str]:
 def test_analyze_with_vision_gives_the_labels_and_clip_names_of_a_run_without(
     video, home, monkeypatch
 ):
-    monkeypatch.setattr(cutpoint.analyze, "VisionRater", _HighRater)
+    monkeypatch.setattr(vision_step, "VisionRater", _HighRater)
     monkeypatch.setattr(cutpoint.config, "vision_time_share", lambda: 1000.0)  # never capped
     assert cli.main(_argv(video, "plain")) == 0
     assert cli.main(_argv(video, "seen", "--vision")) == 0
@@ -97,7 +97,7 @@ def test_analyze_with_vision_gives_the_labels_and_clip_names_of_a_run_without(
 def test_a_candidate_keeps_its_label_whatever_the_rating(rating):
     c = own("h001", 150.0, 40.0, end=158.0)
     c["transcript"] = "hello there"
-    analyze._rate_vision(
+    vision_step._rate_vision(
         [c],
         _RatingRater(rating),  # type: ignore[arg-type]
         get_style("action-cam"),

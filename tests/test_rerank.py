@@ -25,12 +25,15 @@ from cutpoint import (
     folders,
     jsonout,
     projectfiles,
+    reanalyze,
     rerank,
     runstate,
+    vision_step,
 )
 from cutpoint.assistant.providers import AUTO_SERVER_MODEL
 from cutpoint.errors import FolderBusyError, NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.scenes import LONG_FILE_S, SCENES_FILE, scores_scenes
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import get_style, style_name
 from cutpoint.transcribe import transcript_name
@@ -66,7 +69,7 @@ def write_caches(src: Path, *, loud: bool = True, said: bool = True, scenes: boo
             segs.append({"start": ws[0]["start"], "end": ws[-1]["end"], "text": text, "words": ws})
         cache.save_json(cdir / transcript_name(TRANSCRIPT_MODELS[0]), segs)
     if scenes:
-        cache.save_json(cdir / analyze.SCENES_FILE, [float(x) for x in np.arange(10.0, SPAN, 20)])
+        cache.save_json(cdir / SCENES_FILE, [float(x) for x in np.arange(10.0, SPAN, 20)])
 
 
 def make_project(
@@ -245,7 +248,7 @@ def test_a_source_with_nothing_cached_needs_analyze(home, tmp_path, monkeypatch,
     project = make_project(home, tmp_path, scenes=scenes)
     hl = read(project)
     if scenes:
-        hl["sources"][0]["duration"] = analyze.LONG_FILE_S + 60.0
+        hl["sources"][0]["duration"] = LONG_FILE_S + 60.0
         (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     src = Path(hl["sources"][0]["path"])
     for f in cache.source_dir(src).iterdir():
@@ -333,9 +336,9 @@ def test_ranked_refuses_a_source_whose_cache_files_cannot_be_read(home, tmp_path
 def test_scenes_are_needed_only_by_a_style_that_weighs_them(home, tmp_path):
     project = make_project(home, tmp_path)
     src = Path(read(project)["sources"][0]["path"])
-    (cache.source_dir(src) / analyze.SCENES_FILE).unlink()
-    assert analyze.scores_scenes(get_style("gaming"))
-    assert not analyze.scores_scenes(get_style("funny"))
+    (cache.source_dir(src) / SCENES_FILE).unlink()
+    assert scores_scenes(get_style("gaming"))
+    assert not scores_scenes(get_style("funny"))
     assert features_of(project, "gaming") == {"scenes"}  # weighs scenes: a full pass
     assert features_of(project, "funny") == set()  # edge windows, decoded when needed
 
@@ -343,16 +346,16 @@ def test_scenes_are_needed_only_by_a_style_that_weighs_them(home, tmp_path):
 def test_a_long_source_needs_its_full_scene_pass_for_any_style(home, tmp_path):
     project = make_project(home, tmp_path)
     hl = read(project)
-    hl["sources"][0]["duration"] = analyze.LONG_FILE_S + 60.0  # no edge windows that long
+    hl["sources"][0]["duration"] = LONG_FILE_S + 60.0  # no edge windows that long
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
-    (cache.source_dir(Path(hl["sources"][0]["path"])) / analyze.SCENES_FILE).unlink()
+    (cache.source_dir(Path(hl["sources"][0]["path"])) / SCENES_FILE).unlink()
     assert features_of(project, "funny") == {"scenes"}
 
 
 def test_scenes_off_needs_no_scene_pass(home, tmp_path):
     project = make_project(home, tmp_path, scenes=False)
     src = Path(read(project)["sources"][0]["path"])
-    (cache.source_dir(src) / analyze.SCENES_FILE).unlink()
+    (cache.source_dir(src) / SCENES_FILE).unlink()
     assert features_of(project, "gaming") == set()
 
 
@@ -448,7 +451,6 @@ def test_the_preview_equals_the_saved_ranking_and_writes_nothing(home, tmp_path)
 def test_the_backup_of_an_old_file_keeps_no_ollama_login(home, tmp_path):
     """A639 (F1): an older highlights.json with a login: neither the new file nor the backup
     (which Undo brings back) keeps it, and the backup is the one settings.rerank_backup names."""
-    from cutpoint import analyze  # noqa: PLC0415
 
     project = make_project(home, tmp_path, ollama_url="http://alice:s3c@ret@myhost:11434")
     res = rerank.rerank(project, get_style("commentary"))
@@ -456,7 +458,7 @@ def test_the_backup_of_an_old_file_keeps_no_ollama_login(home, tmp_path):
     for raw in (kept, (project / "highlights.json").read_bytes()):
         assert b"s3c" not in raw and b"alice" not in raw
     assert json.loads(kept)["settings"]["ollama_url"] == "http://myhost:11434"
-    assert res.after["settings"]["rerank_backup"] == analyze.backup_digest(kept)
+    assert res.after["settings"]["rerank_backup"] == reanalyze.backup_digest(kept)
 
 
 def test_a_save_over_a_file_with_an_ollama_login_is_sealed_as_saved(home, tmp_path):
@@ -487,7 +489,7 @@ def test_swap_round_trip_restores_each_ranking_and_writes_as_save_json(home, tmp
     second = rerank.rerank(project, get_style("funny")).after
     found = rerank.undo_target(project, read(project))
     assert found is not None and found[0]["style"] == "gaming" and found[1] is False
-    base = analyze.backup_digest((project / "highlights.json").read_bytes())
+    base = reanalyze.backup_digest((project / "highlights.json").read_bytes())
     before, now, undone = rerank.swap(project, base)
     assert undone is True and before["style"] == "funny" and now["style"] == "gaming"
     assert ids(read(project)) == ids(first) and read(project)["candidates"] == first["candidates"]
@@ -496,7 +498,7 @@ def test_swap_round_trip_restores_each_ranking_and_writes_as_save_json(home, tmp
     cache.save_json(tmp_path / "saved.json", read(project))
     assert raw == (tmp_path / "saved.json").read_bytes()
     assert rerank.undo_target(project, read(project))[1] is True  # the next swap is a Redo
-    _, now, undone = rerank.swap(project, analyze.backup_digest(raw))
+    _, now, undone = rerank.swap(project, reanalyze.backup_digest(raw))
     assert undone is False and ids(read(project)) == ids(second)
     assert read(project)["candidates"] == second["candidates"]
     assert not [f for f in project.iterdir() if f.suffix == ".tmp"]
@@ -505,7 +507,7 @@ def test_swap_round_trip_restores_each_ranking_and_writes_as_save_json(home, tmp
 def test_swap_refuses_a_stale_base_and_has_nothing_without_a_backup(home, tmp_path):
     project = make_project(home, tmp_path)
     raw = (project / "highlights.json").read_bytes()
-    assert rerank.swap(project, analyze.backup_digest(raw)) is None  # never re-ranked
+    assert rerank.swap(project, reanalyze.backup_digest(raw)) is None  # never re-ranked
     rerank.rerank(project, get_style("funny"))
     with pytest.raises(StaleRankingError):
         rerank.swap(project, "not-the-key")
@@ -540,8 +542,8 @@ def test_unchanged_spans_keep_their_id_and_new_ones_come_after_the_last(home, tm
     hl["settings"]["last_candidate_id"] = 500  # ids up to here were given once
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     after = rerank.rerank(project, get_style("funny")).after
-    by_span = {analyze.span_key(c): c["id"] for c in after["candidates"]}
-    assert by_span[analyze.span_key(target)] == "h007"
+    by_span = {reanalyze.span_key(c): c["id"] for c in after["candidates"]}
+    assert by_span[reanalyze.span_key(target)] == "h007"
     others = sorted(int(i[1:]) for i in ids(after) if i != "h007")
     assert others == list(range(501, 501 + len(after["candidates"]) - 1))
     assert after["settings"]["last_candidate_id"] == 500 + len(after["candidates"]) - 1
@@ -549,7 +551,7 @@ def test_unchanged_spans_keep_their_id_and_new_ones_come_after_the_last(home, tm
 
 
 def _by_span(hl: dict[str, Any]) -> dict[tuple[str, float, float], str]:
-    return {analyze.span_key(c): c["id"] for c in hl["candidates"]}
+    return {reanalyze.span_key(c): c["id"] for c in hl["candidates"]}
 
 
 def _a_to_b(home: Path, tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
@@ -572,7 +574,7 @@ def test_switching_style_and_back_restores_the_ids(home, tmp_path):
     assert back["candidates"] == preview["candidates"]  # the preview gives the ids back too
     assert back["settings"]["last_candidate_id"] == preview["settings"]["last_candidate_id"]
     assert back["settings"]["rerank_backup"] == preview["settings"]["rerank_backup"]
-    assert back["settings"]["rerank_backup"] == analyze.backup_digest(
+    assert back["settings"]["rerank_backup"] == reanalyze.backup_digest(
         (project / projectfiles.RERANK_BACKUP).read_bytes()
     )
     assert _by_span(back) == _by_span(a)
@@ -586,13 +588,13 @@ def test_a_backup_id_another_span_has_is_not_given_again(home, tmp_path):
     project, a, b = _a_to_b(home, tmp_path)
     dropped = next(k for k in _by_span(a) if k not in _by_span(b))
     taken = _by_span(a)[dropped]
-    other = next(c for c in a["candidates"] if analyze.span_key(c) != dropped)
+    other = next(c for c in a["candidates"] if reanalyze.span_key(c) != dropped)
     kept = b["candidates"][0]  # the funny ranking names another gaming span with that id
     kept.update(id=taken, source=other["source"], start=other["start"], end=other["end"])
     (project / "highlights.json").write_text(json.dumps(b), encoding="utf-8")
     back = rerank.rerank(project, get_style("gaming")).after
     got = _by_span(back)
-    assert got[analyze.span_key(kept)] == taken
+    assert got[reanalyze.span_key(kept)] == taken
     assert int(got[dropped][1:]) > b["settings"]["last_candidate_id"]
     assert len(set(got.values())) == len(back["candidates"])
 
@@ -619,7 +621,7 @@ def test_a_linked_backup_with_other_ids_for_a_shared_span_is_ignored(home, tmp_p
     )
     for n, c in enumerate(b["candidates"], 1):  # renumbered from h001, the shared span too
         c["id"] = f"h{n:03d}"
-    assert _by_span(b)[analyze.span_key(shared)] != shared["id"]
+    assert _by_span(b)[reanalyze.span_key(shared)] != shared["id"]
     (project / "highlights.json").write_text(json.dumps(b), encoding="utf-8")
     back = rerank.rerank(project, get_style("gaming")).after
     got, was = _by_span(back), _by_span(b)
@@ -665,14 +667,14 @@ def test_a_plain_reanalyze_keeps_the_link_to_the_backup(home, tmp_path, monkeypa
     link again, so the backup still gives ids back; rerank --analyze links its own backup."""
     project, _, b = _a_to_b(home, tmp_path)
     got = _captured_analyze(monkeypatch)
-    analyze.reanalyze(project)
+    reanalyze.reanalyze(project)
     assert got["rerank_backup"] == b["settings"]["rerank_backup"]
     monkeypatch.setattr(
         rerank, "readiness", lambda *x: rerank.Readiness([rerank.Missing("x", "y")])
     )
     raw = (project / "highlights.json").read_bytes()
     rerank.rerank(project, get_style("gaming"), analyze_missing=True)
-    assert got["rerank_backup"] == analyze.backup_digest(raw)
+    assert got["rerank_backup"] == reanalyze.backup_digest(raw)
     assert (project / projectfiles.RERANK_BACKUP).read_bytes() == raw
 
 
@@ -732,7 +734,7 @@ def test_an_analyze_override_of_must_include_crash_is_kept(home, tmp_path):
 
 def test_a_save_with_the_previewed_key_writes(home, tmp_path):
     project = make_project(home, tmp_path)
-    token = analyze.backup_digest((project / "highlights.json").read_bytes())
+    token = reanalyze.backup_digest((project / "highlights.json").read_bytes())
     res = rerank.rerank(project, get_style("funny"), expect=token)
     assert res.saved and read(project)["style"] == "funny"
     assert (project / projectfiles.RERANK_BACKUP).exists()
@@ -740,7 +742,7 @@ def test_a_save_with_the_previewed_key_writes(home, tmp_path):
 
 def test_a_save_with_a_stale_key_raises_before_any_write(home, tmp_path):
     project = make_project(home, tmp_path)
-    token = analyze.backup_digest((project / "highlights.json").read_bytes())
+    token = reanalyze.backup_digest((project / "highlights.json").read_bytes())
     rerank.rerank(project, get_style("commentary"))  # another ranking ran meanwhile
     files = {p.name: p.read_bytes() for p in project.iterdir()}
     with pytest.raises(StaleRankingError):
@@ -791,7 +793,7 @@ def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monk
         (p / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
         return p / "highlights.json"
 
-    monkeypatch.setattr(analyze, "reanalyze", fake_reanalyze)
+    monkeypatch.setattr(reanalyze, "reanalyze", fake_reanalyze)
     with pytest.raises(NeedsAnalyzeError):  # a preview never analyzes
         rerank.rerank(project, get_style("action-cam"), dry_run=True, analyze_missing=True)
     assert called == []
@@ -804,7 +806,7 @@ def test_analyze_runs_reanalyze_with_the_style_when_refused(home, tmp_path, monk
 def test_a_360_project_names_360_analyze_and_analyze_refuses_it(home, tmp_path, monkeypatch):
     project = make_project(home, tmp_path)
     (project / "pano.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(analyze, "reanalyze", lambda *a, **k: pytest.fail("analyzed"))
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda *a, **k: pytest.fail("analyzed"))
     with pytest.raises(NeedsAnalyzeError) as got:
         rerank.rerank(project, get_style("funny"), analyze_missing=True)
     assert got.value.command == "cutpoint 360 analyze p --style funny"
@@ -819,7 +821,7 @@ def test_a_360_project_names_360_analyze_and_analyze_refuses_it(home, tmp_path, 
 
 def test_analyze_is_not_run_when_the_fast_path_can(home, tmp_path, monkeypatch):
     project = make_project(home, tmp_path)
-    monkeypatch.setattr(analyze, "reanalyze", lambda *a, **k: pytest.fail("analyzed"))
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda *a, **k: pytest.fail("analyzed"))
     assert not rerank.rerank(project, get_style("funny"), analyze_missing=True).analyzed
 
 
@@ -841,7 +843,7 @@ def test_reanalyze_with_a_style_runs_its_layers_and_records_the_choice(home, tmp
     hl["detection"] = detection
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     got = _captured_analyze(monkeypatch)
-    analyze.reanalyze(project, get_style("funny"))
+    reanalyze.reanalyze(project, get_style("funny"))
     assert got["style"].name == "funny"
     assert got["layers"] is True
     assert got["reranked"] == {"from": "gaming", "requested": "auto"}
@@ -854,12 +856,12 @@ def test_reanalyze_with_a_style_passes_the_earlier_ids(home, tmp_path, monkeypat
     hl["settings"]["last_candidate_id"] = 300
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     got = _captured_analyze(monkeypatch)
-    analyze.reanalyze(project, get_style("funny"))
-    assert got["ids"] == {analyze.span_key(c): c["id"] for c in hl["candidates"]}
+    reanalyze.reanalyze(project, get_style("funny"))
+    assert got["ids"] == {reanalyze.span_key(c): c["id"] for c in hl["candidates"]}
     assert got["last_candidate_id"] == 300
     got.clear()
-    analyze.reanalyze(project)  # e.g. cutpoint events: the ids kept too (#1006)
-    assert got["ids"] == {analyze.span_key(c): c["id"] for c in hl["candidates"]}
+    reanalyze.reanalyze(project)  # e.g. cutpoint events: the ids kept too (#1006)
+    assert got["ids"] == {reanalyze.span_key(c): c["id"] for c in hl["candidates"]}
     assert got["last_candidate_id"] == 300
 
 
@@ -905,7 +907,7 @@ def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypa
     only["id"] = "h007"
     hl["settings"]["last_candidate_id"] = 40
     (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     after = read(run.proj)
     assert [c["id"] for c in after["candidates"]] == ["h007"]
     assert after["settings"]["last_candidate_id"] == 40
@@ -921,7 +923,7 @@ def test_a_plain_reanalyze_keeps_the_ids_and_never_lowers_the_last(run, monkeypa
         return analyze.SourceResult(src, info, 0.0, 60.0, cands, [], None)
 
     monkeypatch.setattr(analyze, "analyze_source", two)
-    analyze.reanalyze(run.proj)
+    reanalyze.reanalyze(run.proj)
     after = read(run.proj)
     assert {c["start"]: c["id"] for c in after["candidates"]} == {10.0: "h007", 30.0: "h041"}
     assert after["settings"]["last_candidate_id"] == 41
@@ -975,7 +977,7 @@ def test_a_fresh_analyze_gives_a_span_its_id_from_the_linked_backup(run, monkeyp
     }
     raw = json.dumps(backup).encode()
     (run.proj / projectfiles.RERANK_BACKUP).write_bytes(raw)
-    hl["settings"]["rerank_backup"] = analyze.backup_digest(raw)
+    hl["settings"]["rerank_backup"] = reanalyze.backup_digest(raw)
     (run.proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
 
     def two(src, style, tr, use_scenes, max_cand, timings, **kw):
@@ -1013,7 +1015,7 @@ def _link_backup(proj: Path, raw: bytes, *, link: bool = True) -> None:
     (proj / projectfiles.RERANK_BACKUP).write_bytes(raw)
     hl = read(proj)
     if link:
-        hl["settings"]["rerank_backup"] = analyze.backup_digest(raw)
+        hl["settings"]["rerank_backup"] = reanalyze.backup_digest(raw)
     (proj / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
 
 
@@ -1039,7 +1041,7 @@ def test_a_fresh_analyze_carries_the_link_so_a_second_one_still_gets_backup_ids(
     _spans(monkeypatch, (10.0, 20.0))
     run.go("funny", layers=False)  # the style the rerank went to, analysed fresh
     after = read(run.proj)
-    assert after["settings"]["rerank_backup"] == analyze.backup_digest(raw)
+    assert after["settings"]["rerank_backup"] == reanalyze.backup_digest(raw)
     _spans(monkeypatch, (10.0, 20.0), (30.0, 40.0))
     run.go("funny", layers=False)
     after = read(run.proj)
@@ -1104,7 +1106,7 @@ def test_reanalyze_of_a_reranked_project_keeps_the_users_style(home, tmp_path, m
     (project / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
     rerank.rerank(project, get_style("funny"))
     got = _captured_analyze(monkeypatch)
-    analyze.reanalyze(project)  # e.g. cutpoint events
+    reanalyze.reanalyze(project)  # e.g. cutpoint events
     assert got["style"].name == "funny"
     assert got["reranked"] == {"from": "gaming", "requested": "auto"}
     assert got["detection"] == {"category": "gameplay"}
@@ -1115,7 +1117,7 @@ def test_reanalyze_of_a_360_project_with_a_style_leaves_the_layers(home, tmp_pat
     project = make_project(home, tmp_path)
     (project / "pano.json").write_text("{}", encoding="utf-8")
     got = _captured_analyze(monkeypatch)
-    analyze.reanalyze(project, get_style("action-cam"))
+    reanalyze.reanalyze(project, get_style("action-cam"))
     assert got["layers"] is False and got["crash_moments"] is False
 
 
@@ -1126,14 +1128,14 @@ def test_reanalyze_refuses_a_candidate_that_is_not_an_object(home, tmp_path, mon
     path.write_text(json.dumps({**read(project), "candidates": ["x"]}), encoding="utf-8")
     got = _captured_analyze(monkeypatch)
     with pytest.raises(ValueError, match=r"candidate 1 is not an object; re-run `cutpoint anal"):
-        analyze.reanalyze(project)
+        reanalyze.reanalyze(project)
     assert got == {}  # stopped before analyzing
 
 
 def test_a_plain_reanalyze_is_unchanged(home, tmp_path, monkeypatch):
     project = make_project(home, tmp_path)
     got = _captured_analyze(monkeypatch)
-    analyze.reanalyze(project)
+    reanalyze.reanalyze(project)
     assert got["style"].name == "gaming"
     assert got["layers"] is False and got["reranked"] is None and got["detection"] is None
 
@@ -1242,9 +1244,9 @@ def test_rerank_record_uses_the_fallback_style(home, tmp_path):
     fallback = _strip_style(project)
     hl = read(project)
     assert "style" not in hl
-    assert analyze.rerank_record(hl, get_style("funny")) == {"from": fallback, "requested": None}
+    assert reanalyze.rerank_record(hl, get_style("funny")) == {"from": fallback, "requested": None}
     hl["settings"]["reranked"] = {"from": "x", "requested": None}
-    assert analyze.rerank_record(hl, get_style(fallback)) == {"from": "x", "requested": None}
+    assert reanalyze.rerank_record(hl, get_style(fallback)) == {"from": "x", "requested": None}
 
 
 def test_a_source_with_nothing_cached_says_what_is_missing(home, tmp_path, monkeypatch):
@@ -1325,7 +1327,7 @@ def test_a_hosted_unset_model_is_resolved_before_the_cached_ratings(home, tmp_pa
         def unload(self):
             pass
 
-    monkeypatch.setattr(analyze, "VisionRater", Rater)
+    monkeypatch.setattr(vision_step, "VisionRater", Rater)
     after = rerank.ranked(project, hl, get_style("funny"))
     assert checks == [1]
     assert looked_up and set(looked_up) == {"served-model"}
@@ -1357,7 +1359,7 @@ def test_a_rerank_rates_with_the_context_the_analysis_recorded(
     if vision_context is not ...:  # ...: no key (null: rated without words)
         hl["settings"]["vision_context"] = vision_context
     raters: list[Any] = []
-    monkeypatch.setattr(analyze, "VisionRater", _context_rater(raters))
+    monkeypatch.setattr(vision_step, "VisionRater", _context_rater(raters))
     new = rerank.ranked(project, hl, get_style("funny"))
     assert raters and all(r.context == want for r in raters)
     # a re-rank keeps the recorded words as they are
@@ -1385,7 +1387,7 @@ def test_recorded_words_keep_the_ratings_made_without_words(home, tmp_path, monk
     assert hl["settings"]["context"] == "Y"
     assert hl["settings"].get("vision_context", "Y") == want
     raters: list[Any] = []
-    monkeypatch.setattr(analyze, "VisionRater", _context_rater(raters))
+    monkeypatch.setattr(vision_step, "VisionRater", _context_rater(raters))
     rerank.ranked(project, hl, get_style("funny"))
     assert raters and all(r.context == want for r in raters)
 
@@ -1434,7 +1436,7 @@ def test_rerank_analyze_that_fails_keeps_the_earlier_undo(home, tmp_path, monkey
     def boom(*args, **kw):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(analyze, "reanalyze", boom)
+    monkeypatch.setattr(reanalyze, "reanalyze", boom)
     with pytest.raises(KeyboardInterrupt):
         rerank.rerank(project, get_style("gaming"), analyze_missing=True)
     assert (project / projectfiles.RERANK_BACKUP).read_bytes() == before
@@ -1450,7 +1452,7 @@ def test_a_failure_after_analyze_saved_highlights_keeps_the_new_backup(home, tmp
         (p / "highlights.json").write_text(json.dumps(hl), encoding="utf-8")
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(analyze, "reanalyze", saves_then_fails)
+    monkeypatch.setattr(reanalyze, "reanalyze", saves_then_fails)
     with pytest.raises(KeyboardInterrupt):
         rerank.rerank(project, get_style("action-cam"), analyze_missing=True)
     assert (project / projectfiles.RERANK_BACKUP).read_bytes() == raw

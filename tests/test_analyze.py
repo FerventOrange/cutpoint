@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, remap, set_config, write
-from cutpoint import analyze, config, extras, features, reset_state
+from cutpoint import analyze, config, extras, features, reanalyze, reset_state
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.styles import get_style
 
@@ -156,9 +156,9 @@ def test_reanalyze_if_reachable_leaves_highlights_when_a_source_is_offline(
         encoding="utf-8",
     )
     before = hl.read_bytes()
-    monkeypatch.setattr(analyze, "reanalyze", lambda project: pytest.fail("must not reanalyze"))
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda project: pytest.fail("must not reanalyze"))
     with caplog.at_level("WARNING"):
-        assert analyze.reanalyze_if_reachable(tmp_path) is None
+        assert reanalyze.reanalyze_if_reachable(tmp_path) is None
     assert "1 source(s) not reachable" in caplog.text
     assert hl.read_bytes() == before
 
@@ -166,7 +166,7 @@ def test_reanalyze_if_reachable_leaves_highlights_when_a_source_is_offline(
 def test_reanalyze_refuses_a_null_sources_list(tmp_path):
     write(tmp_path / "highlights.json", json.dumps({"sources": None}))
     with pytest.raises(ValueError, match="records no analysis"):
-        analyze.reanalyze(tmp_path)
+        reanalyze.reanalyze(tmp_path)
 
 
 def test_reanalyze_takes_a_file_without_style_and_uses_the_fallback_style(tmp_path, monkeypatch):
@@ -180,9 +180,9 @@ def test_reanalyze_takes_a_file_without_style_and_uses_the_fallback_style(tmp_pa
         return project / "highlights.json"
 
     monkeypatch.setattr(analyze, "analyze", fake_analyze)
-    assert analyze.reanalyze(tmp_path) == tmp_path / "highlights.json"
+    assert reanalyze.reanalyze(tmp_path) == tmp_path / "highlights.json"
     assert seen["inputs"] == [Path(src)]
-    assert seen["style"].name == analyze._recorded_style({"sources": []}).name
+    assert seen["style"].name == reanalyze._recorded_style({"sources": []}).name
 
 
 def _remapped_project(home, tmp_path, monkeypatch, recorded):
@@ -212,9 +212,9 @@ def test_reanalyze_if_reachable_reanalyzes_an_input_reachable_through_source_rem
 ):
     _remapped_project(home, tmp_path, monkeypatch, recorded)
     sentinel = tmp_path / "result.json"
-    monkeypatch.setattr(analyze, "reanalyze", lambda project: sentinel)
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda project: sentinel)
     with caplog.at_level("WARNING"):
-        assert analyze.reanalyze_if_reachable(tmp_path) is sentinel
+        assert reanalyze.reanalyze_if_reachable(tmp_path) is sentinel
     assert caplog.text == ""
 
 
@@ -224,9 +224,9 @@ def test_reanalyze_if_reachable_leaves_highlights_when_reanalysis_would_rekey_or
 ):
     hl = _remapped_project(home, tmp_path, monkeypatch, recorded)
     before = hl.read_bytes()
-    monkeypatch.setattr(analyze, "reanalyze", lambda project: pytest.fail("must not reanalyze"))
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda project: pytest.fail("must not reanalyze"))
     with caplog.at_level("WARNING"):
-        assert analyze.reanalyze_if_reachable(tmp_path) is None
+        assert reanalyze.reanalyze_if_reachable(tmp_path) is None
     assert "not found where analyze recorded them, even through source_remap" in caplog.text
     assert hl.read_bytes() == before
 
@@ -237,9 +237,9 @@ def test_reanalyze_tells_a_missing_highlights_file_from_one_without_an_analysis(
 ):
     monkeypatch.setattr(analyze, "analyze", lambda *a, **k: pytest.fail("must not analyze"))
     with pytest.raises(FileNotFoundError, match="not found"):
-        analyze.reanalyze(tmp_path)
+        reanalyze.reanalyze(tmp_path)
     hl = write(tmp_path / "highlights.json", content)
-    for run in (analyze.reanalyze, analyze.reanalyze_if_reachable):
+    for run in (reanalyze.reanalyze, reanalyze.reanalyze_if_reachable):
         with pytest.raises(ValueError, match="records no analysis; run 'cutpoint analyze' again"):
             run(tmp_path)
     assert hl.read_text(encoding="utf-8") == content
@@ -375,7 +375,7 @@ def test_analyze_stores_the_vision_options_and_reanalyze_passes_them_back(
 
     seen: dict = {}
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     assert (seen["vision_top"], seen["ollama_url"], seen["ollama_model"]) == (top, url, model)
 
 
@@ -404,7 +404,7 @@ def test_analyze_records_the_ollama_url_without_its_login(home, tmp_path, monkey
 
     seen: dict = {}
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     assert seen["ollama_url"] == st["ollama_url"]
 
 
@@ -421,7 +421,7 @@ def test_reanalyze_keeps_the_analysis_time_and_records_the_rerank_time(home, tmp
     hl["timings"]["total_s"] = 1234.5  # the first analysis, transcription and all
     path.write_text(json.dumps(hl), encoding="utf-8")
     for _ in range(2):  # a second re-rank keeps the first analysis' time too
-        analyze.reanalyze(proj)
+        reanalyze.reanalyze(proj)
         timings = json.loads(path.read_text(encoding="utf-8"))["timings"]
         assert timings["total_s"] == 1234.5
         assert 0 <= timings["rerank_s"] < 1234.5
@@ -433,7 +433,7 @@ def test_reanalyze_of_an_analysis_without_a_total_passes_no_earlier_total(tmp_pa
         "inputs": [str(tmp_path / "a.mp4")]}, "timings": {}}))  # fmt: skip
     seen: dict = {}
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     assert seen["earlier_total_s"] is None
 
 
@@ -456,7 +456,7 @@ def test_reanalyze_asks_again_for_an_action_cam_style_that_fell_back(tmp_path, m
         write(proj / "pano.json", json.dumps({"clips": []}))
     seen: list = []
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.append((a[1], kw)) or proj)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     [(style, kw)] = seen
     assert (style.name, style.must_include_crash) == ("action-cam", 0.8)
     assert kw["telemetry_fallback"] is not pano
@@ -480,7 +480,7 @@ def test_reanalyze_uses_vision_only_when_the_earlier_run_asked_for_it(
         "inputs": [str(tmp_path / "a.mp4")], **settings}}))  # fmt: skip
     seen: dict = {}
     monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.update(kw) or proj)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     assert seen["vision"] is vision
 
 
@@ -617,7 +617,7 @@ def test_reanalyze_passes_the_recorded_context_back(home, tmp_path, monkeypatch)
             context=words,
         )  # fmt: skip
         monkeypatch.setattr(analyze, "analyze", lambda *a, **kw: seen.append(kw) or proj)
-        analyze.reanalyze(proj)
+        reanalyze.reanalyze(proj)
         monkeypatch.setattr(analyze, "analyze", real)
     assert [kw["context"] for kw in seen] == [None, "chest mount"]
 
@@ -773,19 +773,19 @@ def test_reanalyze_takes_null_settings(tmp_path):
         json.dumps({"sources": [{"path": str(here)}], "settings": None}),
     )
     with pytest.raises(Exception) as err:
-        analyze.reanalyze(tmp_path)
+        reanalyze.reanalyze(tmp_path)
     assert not isinstance(err.value, AttributeError)
-    assert analyze.reanalyze_if_reachable(tmp_path) is None  # source gone: left alone
+    assert reanalyze.reanalyze_if_reachable(tmp_path) is None  # source gone: left alone
 
 
 def test_reanalyze_if_reachable_tolerates_null_or_odd_sources(tmp_path, monkeypatch):
     sentinel = tmp_path / "result.json"
-    monkeypatch.setattr(analyze, "reanalyze", lambda project: sentinel)
+    monkeypatch.setattr(reanalyze, "reanalyze", lambda project: sentinel)
     for sources in (None, ["x", {"name": "a"}, {"path": None}]):
         (tmp_path / "highlights.json").write_text(
             json.dumps({"sources": sources}), encoding="utf-8"
         )
-        assert analyze.reanalyze_if_reachable(tmp_path) is sentinel
+        assert reanalyze.reanalyze_if_reachable(tmp_path) is sentinel
 
 
 def test_reanalyze_skips_recorded_sources_without_a_path(tmp_path, monkeypatch):
@@ -801,5 +801,5 @@ def test_reanalyze_skips_recorded_sources_without_a_path(tmp_path, monkeypatch):
         tmp_path / "highlights.json",
         json.dumps({"sources": ["x", {"name": "n"}, {"path": 5}, {"path": "/v/a.mp4"}]}),
     )
-    analyze.reanalyze(tmp_path)
+    reanalyze.reanalyze(tmp_path)
     assert [str(p).replace("\\", "/") for p in seen["inputs"]] == ["/v/a.mp4"]

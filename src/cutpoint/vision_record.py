@@ -2,7 +2,8 @@
 rating (and the default edit's skip mark of the vision step) still holds for its span.
 
 Stdlib only, so :mod:`cutpoint.scorer` and the event layers import it without a cycle through
-:mod:`cutpoint.analyze`, which rates the candidates (``analyze._rate_vision``).
+:mod:`cutpoint.analyze`, whose vision step rates the candidates
+(``vision_step._rate_vision``).
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ def vision_blend(score: float, rating: float | None, weight: float) -> float:
 def sync_vision(c: dict[str, Any]) -> float | None:
     """Keep the vision rating of the candidate ``c`` only while it describes the clip (#802).
 
-    ``vision_rated`` (written by ``analyze._rate_vision``) holds the span the frames were rated
+    ``vision_rated`` (written by ``vision_step._rate_vision``) holds the span the frames were rated
     over and the analysis score before and after the blend. While ``c`` has that span (within
     :data:`VISION_SPAN_EPS`) the rating counts; once the span changes (widened, trimmed, merged
     back) it moves to ``vision_stale`` (``score``, ``label``, ``window``): ``signals.vision``

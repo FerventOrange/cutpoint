@@ -41,7 +41,7 @@ a detailed diagram of each analyze step, the background OCR and the `edit --kind
 | `procs.py` | Child processes: isolated start, low priority, soft stop and tree kill, Windows job object so children end with Cutpoint, liveness check |
 | `folders.py` | Output folders: temporary part files, atomic outputs, staged swap of a clips folder with recovery, source safety checks, folder locks |
 | `paths.py`, `config.py` | `CUTPOINT_HOME` and every data location; `config.json`, projects folder, source remap |
-| `analyze.py`, `sources.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source |
+| `analyze.py`, `sources.py`, `scenes.py`, `vision_step.py`, `crash_moments.py`, `reanalyze.py` | Signals, peak picking, merging, snapping, `highlights.json`; cached audio and transcripts per source; scene cuts (`scenes.py`); the vision step of the ranking (`vision_step.py`); crash moments outside action-cam (`crash_moments.py`); re-analysis and the candidate ids it keeps (`reanalyze.py`) |
 | `features.py`, `scorer.py`, `dsp.py`, `audio_tracks.py` | Named scoring features and the weighted scorer; signal processing; audio track selection |
 | `srt.py` | Subtitles of clips and finals |
 | `activity.py` | Activity profiles (`cutpoint profile`, `activity.json`) |

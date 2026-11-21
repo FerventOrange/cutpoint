@@ -115,7 +115,7 @@ class Style:
             must-include moments, with their approach, aftermath and reaction, whatever
             the weights say (they replace the moments they overlap and rank first); 0 =
             off. Weaker crashes above the floor (:func:`cutpoint.crash.crash_floor`) are
-            ranked like any moment (``analyze.add_crash_candidates``; action-cam: its
+            ranked like any moment (``crash_moments.add_crash_candidates``; action-cam: its
             ``wipeout`` feature). 0.6 for every style; learned presets may set
             ``"must_include_crash"``.
         file_hash: :func:`content_hash` of the style file a user style was loaded from

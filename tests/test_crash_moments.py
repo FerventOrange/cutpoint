@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from conftest import StubTranscriber, media_info, write
-from cutpoint import analyze, cache, crash, mix, scorer, ui
+from cutpoint import analyze, cache, crash, crash_moments, mix, reanalyze, scenes, scorer, ui
 from cutpoint.events import scoring
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.styles import ACTION_CAM, STYLES, get_style, load_learned
@@ -53,7 +53,7 @@ def test_a_confident_crash_and_its_reaction_replace_the_moments_they_overlap(sty
     r = result()
     r.candidates = [cand(96.0, 104.0), cand(200.0, 208.0)]
     crashes = {"crashes": [record("c1", 100.0, 0.9)]}
-    analyze.add_crash_candidates([r], get_style(style), crashes)
+    crash_moments.add_crash_candidates([r], get_style(style), crashes)
     forced = [c for c in r.candidates if c.must_include]
     assert [c.label_hint for c in forced] == ["crash", "crash reaction"]
     assert all(c.kind == "crash" and c.event["id"] == "c1" for c in forced)
@@ -66,7 +66,7 @@ def test_a_weak_crash_without_a_moment_is_a_candidate_scored_from_the_grids():
     sig["loudness"][int(150 / DT) : int(152 / DT)] = 0.8
     r = result(sig)
     crashes = {"crashes": [record("c1", 50.0, 0.9), record("c2", 150.0, 0.55)]}
-    analyze.add_crash_candidates([r], get_style("action"), crashes)
+    crash_moments.add_crash_candidates([r], get_style("action"), crashes)
     [weak] = [c for c in r.candidates if c.event and c.event["id"] == "c2"]
     assert not weak.must_include and weak.kind == "crash" and weak.label_hint == "crash"
     assert (weak.start, weak.end) == (145.0, 158.0)  # its planned clip, no reaction
@@ -78,7 +78,9 @@ def test_a_weak_crash_marks_the_moment_it_overlaps_most():
     r = result()
     host, other = cand(140.0, 150.0, 40.0), cand(155.0, 170.0, 30.0)
     r.candidates = [host, other]
-    analyze.add_crash_candidates([r], get_style("sport"), {"crashes": [record("c2", 147.0, 0.5)]})
+    crash_moments.add_crash_candidates(
+        [r], get_style("sport"), {"crashes": [record("c2", 147.0, 0.5)]}
+    )
     assert len(r.candidates) == 2  # no new candidate
     assert host.event["id"] == "c2" and other.event is None
     assert (host.start, host.end, host.score, host.must_include) == (140.0, 150.0, 40.0, False)
@@ -96,20 +98,22 @@ def test_crashes_below_the_project_floor_and_of_other_sources_are_left_out():
             record("c3", 200.0, 0.95, Path("b.mp4")),
         ]
     }
-    analyze.add_crash_candidates([r], get_style("action"), crashes)
+    crash_moments.add_crash_candidates([r], get_style("action"), crashes)
     assert {c.event["id"] for c in r.candidates} == {"c1"}
 
 
 def test_must_include_crash_0_forces_none_but_keeps_the_crash_moment():
     r = result()
     style = replace(get_style("action"), must_include_crash=0.0)
-    analyze.add_crash_candidates([r], style, {"crashes": [record("c1", 50.0, 0.9)]})
+    crash_moments.add_crash_candidates([r], style, {"crashes": [record("c1", 50.0, 0.9)]})
     assert [(c.label_hint, c.must_include) for c in r.candidates] == [("crash", False)]
 
 
 def test_a_forced_crash_record_has_the_additive_keys():
     r = result()
-    analyze.add_crash_candidates([r], get_style("action"), {"crashes": [record("c1", 50.0, 0.9)]})
+    crash_moments.add_crash_candidates(
+        [r], get_style("action"), {"crashes": [record("c1", 50.0, 0.9)]}
+    )
     rec = analyze._candidate_record(r.candidates[0], 0, get_style("action"))
     assert rec["must_include"] is True and rec["kind"] == "crash"
     assert rec["crash"]["id"] == "c1"
@@ -120,7 +124,7 @@ def test_no_crashes_json_adds_nothing():
     r = result()
     r.candidates = [cand(10.0, 20.0)]
     for doc in (None, {}, {"crashes": [{"source": "a.mp4"}]}):
-        analyze.add_crash_candidates([r], get_style("action"), doc)
+        crash_moments.add_crash_candidates([r], get_style("action"), doc)
     assert len(r.candidates) == 1 and r.candidates[0].event is None
 
 
@@ -159,7 +163,9 @@ def test_a_crash_without_a_usable_reaction_is_skipped():
     bad["clip"]["reaction"] = {"text": "no times"}
     no_reaction = record("c2", 150.0, 0.9)
     del no_reaction["clip"]["reaction"]
-    assert [c["id"] for c in analyze._crash_entries({"crashes": [bad, no_reaction]})] == ["c2"]
+    assert [c["id"] for c in crash_moments._crash_entries({"crashes": [bad, no_reaction]})] == [
+        "c2"
+    ]
 
 
 def _analyze_with_crash(tmp_path, monkeypatch, **kw: Any) -> tuple[Path, dict[str, Any]]:
@@ -197,14 +203,14 @@ def test_a_360_analysis_makes_no_crash_moments_and_reanalyze_keeps_that(
     proj, hl = _analyze_with_crash(tmp_path, monkeypatch, crash_moments=False)
     assert not any("crash" in c for c in hl["candidates"])
     assert hl["settings"]["crash_moments"] is False
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     again = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert not any("crash" in c for c in again["candidates"])
     # a 360 project analysed before crash_moments was recorded: pano.json says it is one
     del again["settings"]["crash_moments"]
     cache.save_json(proj / "highlights.json", again)
     cache.save_json(proj / "pano.json", {"clips": []})
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     older = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     assert not any("crash" in c for c in older["candidates"])
     assert older["settings"]["crash_moments"] is False
@@ -294,7 +300,7 @@ def _analyzed(tmp_path, monkeypatch) -> tuple[Path, dict[str, Any]]:
     """:func:`_analyze_with_crash`, with a cache for the grids the events re-run builds from
     (this footage has no audio, so analyze cached none)."""
     proj, hl = _analyze_with_crash(tmp_path, monkeypatch)
-    cache.save_json(cache.source_dir(tmp_path / "a.mp4") / analyze.SCENES_FILE, [])
+    cache.save_json(cache.source_dir(tmp_path / "a.mp4") / scenes.SCENES_FILE, [])
     return proj, hl
 
 
@@ -311,13 +317,13 @@ def test_an_events_rerun_rebuilds_the_crash_moments_as_reanalyze_does(home, tmp_
     src = tmp_path / "a.mp4"
     # c1 goes, a forced c2 and a weak c3 come
     _set_crashes(proj, record("c2", 40.0, 0.7, src), record("c3", 58.0, 0.5, src))
-    assert analyze.rebuild_crash_moments(proj) is True
+    assert crash_moments.rebuild_crash_moments(proj) is True
     rebuilt = _moments(proj)
     found = {m["crash"]["id"] for m in rebuilt if m["crash"]}
     assert found == {"c2", "c3"}
     forced = [m for m in rebuilt if m["must_include"]]
     assert forced and all(m["crash_forced"] and m["crash_confidence"] == 0.7 for m in forced)
-    analyze.reanalyze(proj)
+    reanalyze.reanalyze(proj)
     assert _without_ids(_moments(proj)) == _without_ids(rebuilt)
 
 
@@ -329,7 +335,7 @@ def test_an_events_rerun_rebuilds_a_file_without_style_with_the_fallback_style(
     hl["style_base"] = hl.pop("style")
     cache.save_json(proj / "highlights.json", hl)
     _set_crashes(proj, record("c2", 40.0, 0.7, tmp_path / "a.mp4"))
-    assert analyze.rebuild_crash_moments(proj) is True
+    assert crash_moments.rebuild_crash_moments(proj) is True
     assert {m["crash"]["id"] for m in _moments(proj) if m["crash"]} == {"c2"}
 
 
@@ -337,17 +343,17 @@ def test_a_bare_file_without_style_or_duration_is_left_alone(tmp_path):
     """A hand-made file (no style, no source length): no grids, so nothing to rebuild."""
     cache.save_json(tmp_path / "highlights.json", {"sources": [{"path": str(tmp_path / "a.mp4")}]})
     _set_crashes(tmp_path, record("c1", 20.0, 0.9))
-    assert analyze.rebuild_crash_moments(tmp_path) is False
+    assert crash_moments.rebuild_crash_moments(tmp_path) is False
 
 
 def test_an_events_rerun_changes_nothing_the_second_time(home, tmp_path, monkeypatch):
     proj, _ = _analyzed(tmp_path, monkeypatch)
     src = tmp_path / "a.mp4"
-    assert analyze.rebuild_crash_moments(proj) is False  # crashes.json as analyze read it
+    assert crash_moments.rebuild_crash_moments(proj) is False  # crashes.json as analyze read it
     _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 40.0, 0.95, src))
-    assert analyze.rebuild_crash_moments(proj) is True
+    assert crash_moments.rebuild_crash_moments(proj) is True
     once = _moments(proj)
-    assert analyze.rebuild_crash_moments(proj) is False
+    assert crash_moments.rebuild_crash_moments(proj) is False
     assert _moments(proj) == once
     ids = [m["id"] for m in once]
     assert len(ids) == len(set(ids))
@@ -360,14 +366,14 @@ def test_an_events_rerun_lists_equal_scores_in_tie_key_order(home, tmp_path, mon
                    (("h001", 30.0), ("h002", 10.0)))  # fmt: skip
     for c in (late, early):
         c.pop("must_include", None)
-        for k in analyze.CRASH_MARKS:
+        for k in crash_moments.CRASH_MARKS:
             c.pop(k, None)
         c["kind"] = "moment"
     hl["candidates"] = [late, early]
     cache.save_json(proj / "highlights.json", hl)
     _set_crashes(proj, record("c2", 45.0, 0.5, tmp_path / "a.mp4"))  # a change, so it writes
-    assert analyze.rebuild_crash_moments(proj) is True
-    tied = [(m["start"], m["end"]) for m in _moments(proj) if m["kind"] != analyze.CRASH_KIND]
+    assert crash_moments.rebuild_crash_moments(proj) is True
+    tied = [(m["start"], m["end"]) for m in _moments(proj) if m["kind"] != crash_moments.CRASH_KIND]
     assert tied == [(10.0, 15.0), (30.0, 35.0)]
 
 
@@ -378,7 +384,7 @@ def test_new_crash_moments_continue_from_last_candidate_id(home, tmp_path, monke
     hl["settings"]["last_candidate_id"] = 40
     cache.save_json(proj / "highlights.json", hl)
     _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.95, src))
-    analyze.rebuild_crash_moments(proj)
+    crash_moments.rebuild_crash_moments(proj)
     new = {m["id"] for m in _moments(proj)} - before
     assert new and all(int(i[1:]) > 40 for i in new)
     saved = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
@@ -394,12 +400,12 @@ def test_an_events_rerun_leaves_360_and_crash_moments_false_projects_alone(
     hl["settings"]["crash_moments"] = False
     cache.save_json(proj / "highlights.json", hl)
     off = (proj / "highlights.json").read_bytes()
-    assert analyze.rebuild_crash_moments(proj) is False
+    assert crash_moments.rebuild_crash_moments(proj) is False
     assert (proj / "highlights.json").read_bytes() == off
     del hl["settings"]["crash_moments"]
     cache.save_json(proj / "highlights.json", hl)
     cache.save_json(proj / "pano.json", {"clips": []})
-    assert analyze.rebuild_crash_moments(proj) is False
+    assert crash_moments.rebuild_crash_moments(proj) is False
 
 
 def test_an_events_rerun_leaves_action_cam_to_its_scorer(tmp_path):
@@ -408,7 +414,7 @@ def test_an_events_rerun_leaves_action_cam_to_its_scorer(tmp_path):
         {"style": ACTION_CAM, "settings": {}, "sources": [], "candidates": []},
     )
     _set_crashes(tmp_path, record("c1", 20.0, 0.9))
-    assert analyze.rebuild_crash_moments(tmp_path) is False
+    assert crash_moments.rebuild_crash_moments(tmp_path) is False
 
 
 def test_recorded_style_of_a_deleted_style_is_its_base_with_the_crash_threshold(caplog):
@@ -416,7 +422,7 @@ def test_recorded_style_of_a_deleted_style_is_its_base_with_the_crash_threshold(
     one INFO line; the recorded --must-include-crash still applies."""
     hl = {"style": "gone", "style_base": "action", "settings": {"must_include_crash": 0.8}}
     with caplog.at_level(logging.INFO):
-        style = analyze._recorded_style(hl)
+        style = reanalyze._recorded_style(hl)
     assert style == replace(get_style("action"), must_include_crash=0.8)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
         (
@@ -431,14 +437,14 @@ def test_a_file_without_style_takes_the_fallback_style_and_its_crash_threshold()
     the recorded --must-include-crash applies, and restyled tells no override from the
     fallback style's own threshold (#1015)."""
     hl = {"style_base": "sport", "settings": {"must_include_crash": 0.8}}
-    assert analyze._recorded_style(hl) == replace(get_style("sport"), must_include_crash=0.8)
+    assert reanalyze._recorded_style(hl) == replace(get_style("sport"), must_include_crash=0.8)
     hl = {"detection": {"style": "commentary"}, "settings": {}}
-    assert analyze._recorded_style(hl) == get_style("commentary")
+    assert reanalyze._recorded_style(hl) == get_style("commentary")
     bare = {"settings": {"must_include_crash": get_style("action").must_include_crash}}
-    assert analyze._recorded_style(bare) == get_style("action")
-    assert analyze.restyled(bare, get_style("funny")) is get_style("funny")  # same as its own
+    assert reanalyze._recorded_style(bare) == get_style("action")
+    assert reanalyze.restyled(bare, get_style("funny")) is get_style("funny")  # same as its own
     bare["settings"]["must_include_crash"] = 0.9
-    assert analyze.restyled(bare, get_style("funny")).must_include_crash == 0.9
+    assert reanalyze.restyled(bare, get_style("funny")).must_include_crash == 0.9
 
 
 @pytest.mark.parametrize("base", [None, "gone", ["gaming"]])
@@ -449,10 +455,10 @@ def test_recorded_style_without_a_built_in_base_names_the_missing_style(tmp_path
     if base is not None:
         hl["style_base"] = base
     with pytest.raises(ValueError, match=r"'gone' of this analysis is not in the style library"):
-        analyze._recorded_style(hl)
+        reanalyze._recorded_style(hl)
     cache.save_json(tmp_path / "highlights.json", hl)
     with pytest.raises(ValueError, match="run 'cutpoint analyze' again with another --style"):
-        analyze.rebuild_crash_moments(tmp_path)
+        crash_moments.rebuild_crash_moments(tmp_path)
 
 
 def test_the_events_command_rebuilds_the_crash_moments_before_it_rescores(tmp_path, monkeypatch):
@@ -461,7 +467,7 @@ def test_the_events_command_rebuilds_the_crash_moments_before_it_rescores(tmp_pa
     from cutpoint.events import cli as events_cli  # noqa: PLC0415
 
     calls: list[str] = []
-    monkeypatch.setattr(analyze, "rebuild_crash_moments", lambda p: calls.append("rebuild"))
+    monkeypatch.setattr(crash_moments, "rebuild_crash_moments", lambda p: calls.append("rebuild"))
     monkeypatch.setattr(scoring, "rescore_highlights", lambda p: calls.append("rescore"))
     monkeypatch.setattr(events_cli, "project_kind", lambda hl: "gaming")
     monkeypatch.setattr("cutpoint.events.common.load_highlights", lambda p: {"style": "gaming"})
@@ -499,7 +505,7 @@ def test_menu_time_on_a_weak_crash_moment_keeps_repeat_runs_stable(
     src = tmp_path / "a.mp4"
     _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.55, src))
     _menu(proj, src, span)
-    analyze.rebuild_crash_moments(proj)
+    crash_moments.rebuild_crash_moments(proj)
     scoring.rescore_highlights(proj)  # trims or drops the weak one (not must-include)
     hl = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     weak = [c for c in hl["candidates"] if (c.get("crash") or {}).get("id") == "c2"]
@@ -511,7 +517,7 @@ def test_menu_time_on_a_weak_crash_moment_keeps_repeat_runs_stable(
         assert weak == []
     once = _state(proj)
     for _ in range(2):  # the events re-runs that follow
-        assert analyze.rebuild_crash_moments(proj) is False
+        assert crash_moments.rebuild_crash_moments(proj) is False
         scoring.rescore_highlights(proj)
         assert _state(proj) == once
 
@@ -527,7 +533,7 @@ def test_rebuilt_crash_moments_of_a_deleted_style_are_trimmed_as_its_base(
     cache.save_json(proj / "highlights.json", {**hl, "style": "gone", "style_base": hl["style"]})
     _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.55, src))
     _menu(proj, src, (38.0, 43.0))
-    analyze.rebuild_crash_moments(proj)
+    crash_moments.rebuild_crash_moments(proj)
     got = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))
     weak = [c for c in got["candidates"] if (c.get("crash") or {}).get("id") == "c2"]
     assert [(c["start"], c["end"]) for c in weak] == [(43.0, 53.0)]
@@ -544,7 +550,7 @@ def test_a_widened_candidate_alone_is_no_change(home, tmp_path, monkeypatch):
     )  # fmt: skip
     cache.save_json(proj / "highlights.json", hl)
     saved = (proj / "highlights.json").read_bytes()
-    assert analyze.rebuild_crash_moments(proj) is False
+    assert crash_moments.rebuild_crash_moments(proj) is False
     assert (proj / "highlights.json").read_bytes() == saved
 
 
@@ -560,9 +566,9 @@ def test_a_nominated_candidate_hosts_no_crash_as_in_a_reanalysis(home, tmp_path,
     hl["candidates"].append(nominee)
     cache.save_json(proj / "highlights.json", hl)
     _set_crashes(proj, record("c1", 20.0, 0.9, src), record("c2", 45.0, 0.55, src))
-    assert analyze.rebuild_crash_moments(proj) is True
+    assert crash_moments.rebuild_crash_moments(proj) is True
     after = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))["candidates"]
     [nom] = [c for c in after if c["id"] == "h003"]
-    assert not any(k in nom for k in analyze.CRASH_MARKS)
+    assert not any(k in nom for k in crash_moments.CRASH_MARKS)
     [weak] = [c for c in after if (c.get("crash") or {}).get("id") == "c2"]
     assert weak["kind"] == "crash" and (weak["start"], weak["end"]) == (40.0, 53.0)

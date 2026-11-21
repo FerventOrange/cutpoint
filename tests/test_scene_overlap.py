@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import StubTranscriber, media_info, needs_ffmpeg, write
-from cutpoint import analyze, cache, ffmpeg_utils
+from cutpoint import analyze, cache, ffmpeg_utils, scenes
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import RunCancelled
 from cutpoint.styles import get_style
@@ -52,7 +52,7 @@ def test_scene_overlap_is_on_only_for_1(monkeypatch, value, on):
         monkeypatch.delenv(ENV, raising=False)
     else:
         monkeypatch.setenv(ENV, value)
-    assert analyze.scene_overlap() is on
+    assert scenes.scene_overlap() is on
 
 
 # ----------------------------------------------------------------- analyze_source with fakes
@@ -89,13 +89,13 @@ def world(home, tmp_path, monkeypatch):
         w.started.set()
         if w.scene_error is not None:
             raise w.scene_error
-        cache.save_json(cdir / analyze.SCENES_FILE, CUTS)
+        cache.save_json(cdir / scenes.SCENES_FILE, CUTS)
         return list(CUTS)
 
     w.scene = scene
-    w.real_scene_cuts = analyze.scene_cuts
+    w.real_scene_cuts = scenes.scene_cuts
     monkeypatch.setattr(analyze, "Transcriber", FakeTr)
-    monkeypatch.setattr(analyze, "scene_cuts", scene)
+    monkeypatch.setattr(scenes, "scene_cuts", scene)
     w.source = lambda use_scenes=True, timings=None: analyze.analyze_source(
         src, get_style("gaming"), w.tr, use_scenes, None, {} if timings is None else timings
     )
@@ -134,7 +134,7 @@ def test_the_results_are_the_same_with_the_overlap_on_and_off(world, monkeypatch
     t_on, hl_on, files_on = runs["on"]
     assert hl_on["candidates"] and CUTS  # something was compared
     assert hl_on == hl_off
-    assert files_on == files_off and analyze.SCENES_FILE in files_on
+    assert files_on == files_off and scenes.SCENES_FILE in files_on
     assert [s.get("overlap") for s in t_on["sources"]] == [True]
     assert all("overlap" not in s for s in t_off["sources"])
     assert all(isinstance(t_on["sources"][0][k], float) for k in analyze.SOURCE_STAGES)
@@ -174,10 +174,10 @@ def test_the_overlap_time_is_the_scene_threads_own(world, monkeypatch):
 def test_no_scene_thread_when_it_is_not_needed(world, monkeypatch, case):
     monkeypatch.setenv(ENV, "1")
     started = []
-    monkeypatch.setattr(analyze, "_SceneJob", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: started.append(a))
     use_scenes = case != "no scenes in the style"
     if case == "scenes cached":
-        cache.save_json(world.cdir / analyze.SCENES_FILE, CUTS)
+        cache.save_json(world.cdir / scenes.SCENES_FILE, CUTS)
     if case == "transcript cached":
         cache.save_json(world.cdir / transcript_name("stub", None), [])
     # scene_cuts runs in its turn, in the calling thread, exactly as with the switch off
@@ -190,7 +190,7 @@ def test_no_scene_thread_when_it_is_not_needed(world, monkeypatch, case):
 def test_no_scene_thread_for_a_style_without_scenes_through_analyze(world, monkeypatch):
     """``analyze`` ANDs the style's ``use_scenes`` into the flag; here the caller's is False."""
     monkeypatch.setenv(ENV, "1")
-    monkeypatch.setattr(analyze, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
+    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
     analyze.analyze(
         world.src, get_style("gaming"), world.proj, vision=False, use_scenes=False, layers=False
     )
@@ -208,7 +208,7 @@ def test_a_scene_error_is_raised_after_the_transcription_with_its_type(world, mo
         world.source()
     assert FakeTr.calls == 1  # Whisper finished first (serial: it ran before the scenes)
     assert any(world.cdir.glob("transcript-*.json"))  # and its transcript is cached
-    assert not (world.cdir / analyze.SCENES_FILE).exists()
+    assert not (world.cdir / scenes.SCENES_FILE).exists()
     assert not scene_threads()
 
 
@@ -224,14 +224,14 @@ def test_a_scene_error_is_raised_in_the_main_thread(world, monkeypatch):
 # the real scene_cuts, with a fake ffmpeg
 @pytest.fixture
 def real_scenes(world, monkeypatch):
-    monkeypatch.setattr(analyze, "scene_cuts", world.real_scene_cuts)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "scene_cuts", world.real_scene_cuts)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     return world
 
 
 def fake_ffmpeg(monkeypatch, *, finish=False):
-    """``analyze.run_progress`` that writes a partial proxy, then waits for ``cancel``."""
+    """``scenes.run_progress`` that writes a partial proxy, then waits for ``cancel``."""
     seen = type("Seen", (), {})()
     seen.cancel, seen.began, seen.proxy = None, threading.Event(), None
 
@@ -245,7 +245,7 @@ def fake_ffmpeg(monkeypatch, *, finish=False):
             raise AssertionError("never cancelled")
         raise RunCancelled(label)
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
     return seen
 
 
@@ -269,7 +269,7 @@ def test_a_failed_or_stopped_transcription_stops_the_scene_job(real_scenes, monk
     assert err.value is error  # unchanged, not wrapped nor replaced by RunCancelled
     assert ffmpeg.cancel is not None and ffmpeg.cancel.is_set()
     assert not scene_threads()  # stop() waited for it
-    assert not (world.cdir / analyze.SCENES_FILE).exists()
+    assert not (world.cdir / scenes.SCENES_FILE).exists()
     assert not ffmpeg.proxy.exists()  # the partial proxy is gone
     assert not any(world.cdir.glob("transcript-*.json"))
 
@@ -289,37 +289,37 @@ def test_an_error_after_the_transcription_also_stops_the_job(real_scenes, monkey
             world.src, get_style("gaming"), world.tr, True, None, {}, on_transcript=boom
         )
     assert ffmpeg.cancel.is_set() and not scene_threads()
-    assert not (world.cdir / analyze.SCENES_FILE).exists()
+    assert not (world.cdir / scenes.SCENES_FILE).exists()
 
 
 def test_scene_cuts_with_a_cancel_removes_the_proxy_and_writes_nothing(tmp_path, monkeypatch):
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     ffmpeg = fake_ffmpeg(monkeypatch)
     cancel = threading.Event()
     threading.Timer(0.1, cancel.set).start()
     with pytest.raises(RunCancelled):
-        analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel)
+        scenes.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel)
     assert ffmpeg.cancel is cancel
-    assert not list(tmp_path.glob("proxy*")) and not (tmp_path / analyze.SCENES_FILE).exists()
+    assert not list(tmp_path.glob("proxy*")) and not (tmp_path / scenes.SCENES_FILE).exists()
 
 
 def test_scene_cuts_cancelled_just_as_ffmpeg_finishes_still_stops(tmp_path, monkeypatch):
     """ffmpeg ended normally but the event was set meanwhile: no detection on a stopped run."""
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     fake_ffmpeg(monkeypatch, finish=True)
     detected = []
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path: detected.append(path) or [])
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path: detected.append(path) or [])
     cancel = threading.Event()
     cancel.set()
     with pytest.raises(RunCancelled):
-        analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel)
+        scenes.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel)
     assert detected == [] and not list(tmp_path.glob("proxy*"))
 
 
 def test_scene_cuts_without_a_cancel_passes_none_and_detects(tmp_path, monkeypatch):
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
     given = {}
 
@@ -327,9 +327,9 @@ def test_scene_cuts_without_a_cancel_passes_none_and_detects(tmp_path, monkeypat
         given.update(kw)
         write(Path(args[-1]))
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path: CUTS)
-    assert analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0) == CUTS
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path: CUTS)
+    assert scenes.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0) == CUTS
     assert given == {}  # the plain call, as before the overlap existed
 
 
@@ -339,13 +339,13 @@ def test_whisper_is_loaded_before_the_scene_thread_starts(world, monkeypatch):
     monkeypatch.setenv(ENV, "1")
     order = []
     monkeypatch.setattr(FakeTr, "load", lambda self: order.append("load"))
-    real_job = analyze._SceneJob
+    real_job = scenes._SceneJob
 
     def job(*a, **k):
         order.append("job")
         return real_job(*a, **k)
 
-    monkeypatch.setattr(analyze, "_SceneJob", job)
+    monkeypatch.setattr(scenes, "_SceneJob", job)
     world.source()
     assert order == ["load", "job"]
 
@@ -358,22 +358,22 @@ def test_a_low_memory_load_starts_no_scene_thread(world, monkeypatch):
         raise err
 
     monkeypatch.setattr(FakeTr, "load", load)
-    monkeypatch.setattr(analyze, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
+    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
     with pytest.raises(LowMemoryError) as caught:
         world.source()
     assert caught.value is err
     assert world.scene_calls == [] and FakeTr.calls == 0 and not scene_threads()
-    assert not (world.cdir / analyze.SCENES_FILE).exists()
+    assert not (world.cdir / scenes.SCENES_FILE).exists()
 
 
 def hw_ffmpeg(monkeypatch, *, cancels, calls):
     """For the real ``scene_cuts``: the GPU run fails with FFmpegError (and sets the event when
     ``cancels``); the CPU run succeeds. ``calls`` records which ran."""
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0))
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 60.0))
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
-    monkeypatch.setattr(analyze, "STOP_GRACE_S", 0.01)
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
+    monkeypatch.setattr(scenes, "STOP_GRACE_S", 0.01)
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path, **k: CUTS)
 
     def run_progress(args, total, label, cancel=None):
         gpu = "-hwaccel" in args
@@ -385,7 +385,7 @@ def hw_ffmpeg(monkeypatch, *, cancels, calls):
             raise FFmpegError("killed")
         return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
 
 
 def test_an_ffmpeg_failure_while_cancelled_does_not_retry_on_the_cpu(tmp_path, monkeypatch):
@@ -393,9 +393,9 @@ def test_an_ffmpeg_failure_while_cancelled_does_not_retry_on_the_cpu(tmp_path, m
     calls = []
     hw_ffmpeg(monkeypatch, cancels=True, calls=calls)
     with pytest.raises(RunCancelled):
-        analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=threading.Event())
+        scenes.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=threading.Event())
     assert calls == ["gpu"]
-    assert not list(tmp_path.glob("proxy*")) and not (tmp_path / analyze.SCENES_FILE).exists()
+    assert not list(tmp_path.glob("proxy*")) and not (tmp_path / scenes.SCENES_FILE).exists()
 
 
 @pytest.mark.parametrize("with_cancel", [False, True], ids=["no-event", "unset-event"])
@@ -405,7 +405,7 @@ def test_an_ffmpeg_failure_without_a_cancel_still_retries_on_the_cpu(
     calls = []
     hw_ffmpeg(monkeypatch, cancels=False, calls=calls)
     cancel = threading.Event() if with_cancel else None
-    assert analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel) == CUTS
+    assert scenes.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0, cancel=cancel) == CUTS
     assert calls == ["gpu", "cpu"]
 
 
@@ -432,8 +432,8 @@ def proxy_of(clip: Path, folder: Path) -> Path:
 @needs_ffmpeg
 def test_detect_without_a_cancel_writes_scenes_json_and_removes_the_proxy(cut_clip, tmp_path):
     proxy = proxy_of(cut_clip, tmp_path / "cdir")
-    path = proxy.parent / analyze.SCENES_FILE
-    cuts = analyze._detect(proxy, path)
+    path = proxy.parent / scenes.SCENES_FILE
+    cuts = scenes._detect(proxy, path)
     assert cuts and all(isinstance(c, float) for c in cuts)
     assert cache.load_json(path) == cuts and not proxy.exists()
 
@@ -442,18 +442,18 @@ def test_detect_without_a_cancel_writes_scenes_json_and_removes_the_proxy(cut_cl
 def test_detect_stops_through_the_real_scenedetect_api_once_cancelled(cut_clip, tmp_path):
     """F4: a set event stops the real SceneManager; nothing is written, the proxy is gone."""
     proxy = proxy_of(cut_clip, tmp_path / "cdir")
-    path = proxy.parent / analyze.SCENES_FILE
+    path = proxy.parent / scenes.SCENES_FILE
     cancel = threading.Event()
     cancel.set()
     with pytest.raises(RunCancelled):
-        analyze._detect(proxy, path, cancel)
+        scenes._detect(proxy, path, cancel)
     assert not path.exists() and not proxy.exists()
 
 
 @needs_ffmpeg
 def test_an_unset_cancel_detects_the_same_cuts_as_none(cut_clip, tmp_path):
-    plain = analyze._detect(proxy_of(cut_clip, tmp_path / "a"), tmp_path / "a" / "s.json")
-    with_event = analyze._detect(
+    plain = scenes._detect(proxy_of(cut_clip, tmp_path / "a"), tmp_path / "a" / "s.json")
+    with_event = scenes._detect(
         proxy_of(cut_clip, tmp_path / "b"), tmp_path / "b" / "s.json", threading.Event()
     )
     assert plain == with_event
@@ -506,10 +506,10 @@ def test_a_cancel_set_during_the_scan_stops_the_detection(tmp_path, monkeypatch)
     fake_scenedetect(monkeypatch, state, cancel_at=3, cancel=cancel)
     proxy = write(tmp_path / "proxy.mp4")
     with pytest.raises(RunCancelled):
-        analyze._detect(proxy, tmp_path / analyze.SCENES_FILE, cancel)
+        scenes._detect(proxy, tmp_path / scenes.SCENES_FILE, cancel)
     assert state["stops"] >= 1 and state["stopped"]
     assert state["frames"] < 300  # stopped, not run to the end
-    assert not proxy.exists() and not (tmp_path / analyze.SCENES_FILE).exists()
+    assert not proxy.exists() and not (tmp_path / scenes.SCENES_FILE).exists()
 
 
 def test_a_stop_lost_before_the_scan_starts_is_repeated(tmp_path, monkeypatch):
@@ -519,8 +519,8 @@ def test_a_stop_lost_before_the_scan_starts_is_repeated(tmp_path, monkeypatch):
     cancel.set()
     fake_scenedetect(monkeypatch, state)
     with pytest.raises(RunCancelled):
-        analyze._detect(write(tmp_path / "proxy.mp4"), tmp_path / analyze.SCENES_FILE, cancel)
-    assert state["frames"] < 300 and not (tmp_path / analyze.SCENES_FILE).exists()
+        scenes._detect(write(tmp_path / "proxy.mp4"), tmp_path / scenes.SCENES_FILE, cancel)
+    assert state["frames"] < 300 and not (tmp_path / scenes.SCENES_FILE).exists()
 
 
 @pytest.mark.parametrize("outcome", ["returns", "cancelled", "raises"])
@@ -539,10 +539,10 @@ def test_the_cancel_watcher_thread_is_gone_after_the_scan(tmp_path, monkeypatch,
     proxy = write(tmp_path / "proxy.mp4")
     expected = {"returns": None, "cancelled": RunCancelled, "raises": RuntimeError}[outcome]
     if expected is None:
-        analyze._scan(proxy, cancel)
+        scenes._scan(proxy, cancel)
     else:
         with pytest.raises(expected):
-            analyze._scan(proxy, cancel)
+            scenes._scan(proxy, cancel)
     assert scene_cancel_threads() == []
 
 
@@ -580,9 +580,9 @@ def test_a_cancel_stops_a_real_scan_long_before_it_would_finish(tmp_path, monkey
     monkeypatch.setattr(AdaptiveDetector, "process_frame", process_frame)
     monkeypatch.setattr(SceneManager, "stop", stop)
     proxy = proxy_of(clip, tmp_path / "cdir")
-    path = proxy.parent / analyze.SCENES_FILE
+    path = proxy.parent / scenes.SCENES_FILE
     with pytest.raises(RunCancelled):
-        analyze._detect(proxy, path, ev)
+        scenes._detect(proxy, path, ev)
     assert stopped.is_set() and not seen["late"], seen
     assert seen["frames"] < total // 10, seen  # a few frames past the cancel, not the clip
     assert not proxy.exists() and not path.exists()
@@ -593,11 +593,11 @@ def test_an_interrupt_inside_the_detection_removes_the_proxy(tmp_path, monkeypat
     def scan(proxy, cancel):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(analyze, "_scan", scan)
+    monkeypatch.setattr(scenes, "_scan", scan)
     proxy = write(tmp_path / "proxy.mp4")
     with pytest.raises(KeyboardInterrupt):
-        analyze._detect(proxy, tmp_path / analyze.SCENES_FILE)
-    assert not proxy.exists() and not (tmp_path / analyze.SCENES_FILE).exists()
+        scenes._detect(proxy, tmp_path / scenes.SCENES_FILE)
+    assert not proxy.exists() and not (tmp_path / scenes.SCENES_FILE).exists()
 
 
 # ----------------------------------------------------------------- run_progress cancel
@@ -695,7 +695,7 @@ def test_a_stopped_transcription_kills_the_real_child_of_the_scene_job(
         world.source()
     assert err.value is boom
     assert sleeper[0].poll() is not None and not scene_threads()
-    assert not (world.cdir / analyze.SCENES_FILE).exists() and not list(world.cdir.glob("proxy*"))
+    assert not (world.cdir / scenes.SCENES_FILE).exists() and not list(world.cdir.glob("proxy*"))
 
 
 # ---------------------------------------------------------------- scene proxy command (#730)
@@ -718,15 +718,15 @@ def _proxy_command(
             raise first
         return pytest.fail("a one-frame decode for a container that seeks exactly")
 
-    monkeypatch.setattr(analyze, "first_frame_time", first_frame_time)
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: hw)
+    monkeypatch.setattr(scenes, "first_frame_time", first_frame_time)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: hw)
     monkeypatch.setattr(
-        analyze,
+        scenes,
         "probe",
         lambda p: media_info(p, duration, pix_fmt=pix_fmt, vcodec=vcodec, fstart=1.4),
     )
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path, **k: CUTS)
 
     def run_progress(args, total, label, **kw):
         cmds.append(args)
@@ -734,8 +734,8 @@ def _proxy_command(
             raise FFmpegError("no gpu")
         return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
-    assert analyze.scene_cuts(tmp_path / name, tmp_path, duration) == CUTS
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
+    assert scenes.scene_cuts(tmp_path / name, tmp_path, duration) == CUTS
     return cmds
 
 
@@ -790,7 +790,7 @@ def test_a_vaapi_scene_proxy_downloads_after_fps(tmp_path, monkeypatch):
 def test_a_long_file_scene_proxy_keeps_its_keyframe_skip_and_downloads_after_fps(
     tmp_path, monkeypatch
 ):
-    long = analyze.LONG_FILE_S + 1
+    long = scenes.LONG_FILE_S + 1
     gpu = _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), long)[0]
     assert gpu[:2] == ["ffmpeg", "-y"] and "-skip_frame" in gpu
     assert _vf(gpu) == "fps=2:start_time=0,hwdownload,format=nv12,scale=256:144"
@@ -800,11 +800,11 @@ def test_a_long_file_scene_proxy_keeps_its_keyframe_skip_and_downloads_after_fps
 def test_every_scene_proxy_decode_keeps_one_filter_graph(tmp_path, monkeypatch, long):
     """A mid-file change of the video parameters (a joined file) must not rebuild the graph:
     ffmpeg 9 would restart ``setpts`` and ``fps`` there and lose the cuts after it."""
-    duration = analyze.LONG_FILE_S + 1 if long else 60.0
+    duration = scenes.LONG_FILE_S + 1 if long else 60.0
     for cmd in _proxy_command(tmp_path, monkeypatch, ffmpeg_utils.HwDecoder("cuda"), duration):
         i = cmd.index("-reinit_filter")
         assert cmd[i : i + 2] == ["-reinit_filter", "0"] and i < cmd.index("-i")
-    assert analyze._proxy_args(60.0, 5.0, 10.0)[0][:2] == ["-reinit_filter", "0"]
+    assert scenes._proxy_args(60.0, 5.0, 10.0)[0][:2] == ["-reinit_filter", "0"]
 
 
 def test_a_cpu_scene_proxy_has_no_gpu_options_or_download(tmp_path, monkeypatch):
@@ -826,17 +826,17 @@ def test_a_failing_probe_on_a_gpu_decoder_runs_the_plain_cpu_command(tmp_path, m
     def broken_probe(path):
         raise FFmpegError("x")
 
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
-    monkeypatch.setattr(analyze, "probe", broken_probe)
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: ffmpeg_utils.HwDecoder("cuda"))
+    monkeypatch.setattr(scenes, "probe", broken_probe)
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path, **k: CUTS)
 
     def run_progress(args, total, label, **kw):
         cmds.append(args)
         return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
 
-    monkeypatch.setattr(analyze, "run_progress", run_progress)
-    assert analyze.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0) == CUTS
+    monkeypatch.setattr(scenes, "run_progress", run_progress)
+    assert scenes.scene_cuts(tmp_path / "s.mp4", tmp_path, 60.0) == CUTS
     cpu = cmds[-1]
     assert "-hwaccel" not in cpu and "-hwaccel_output_format" not in cpu
     assert _vf(cpu) == "fps=10:start_time=0,scale=320:-2"
@@ -848,7 +848,7 @@ def test_an_mpegts_scene_pass_counts_from_the_container_start(tmp_path, monkeypa
     a GOP: its first decoded frame (one-frame decode, keyframes only as the long pass decodes)
     goes to its container time, 4.421 - 1.4 s. ffmpeg's own timestamps stay (no ``-copyts``),
     so a timestamp reset still runs on; on NVDEC the download stays after ``fps``."""
-    duration = analyze.LONG_FILE_S + 1 if long else 60.0
+    duration = scenes.LONG_FILE_S + 1 if long else 60.0
     hw = ffmpeg_utils.HwDecoder("cuda")
     first: list[bool] = []
     gpu, cpu = _proxy_command(tmp_path, monkeypatch, hw, duration, name="s.ts", first=first)
@@ -888,21 +888,21 @@ def test_a_recovered_mpegts_part_seeks_a_lead_in_without_copyts(tmp_path, monkey
     and its first decoded frame (measured after that seek) is put on the part's clock; ``fps``
     start_time drops the lead-in."""
     cmds = []
-    monkeypatch.setattr(analyze, "decoder_for", lambda src: None)
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 60.0))  # only for the size
+    monkeypatch.setattr(scenes, "decoder_for", lambda src: None)
+    monkeypatch.setattr(scenes, "probe", lambda p: media_info(p, 60.0))  # only for the size
     starts = []
     monkeypatch.setattr(
-        analyze, "first_frame_time", lambda p, **k: starts.append(k["start"]) or 291.5
+        scenes, "first_frame_time", lambda p, **k: starts.append(k["start"]) or 291.5
     )
     monkeypatch.setattr(analyze.importlib, "import_module", lambda name: None)
-    monkeypatch.setattr(analyze, "_detect", lambda proxy, path, **k: CUTS)
+    monkeypatch.setattr(scenes, "_detect", lambda proxy, path, **k: CUTS)
 
     def run(args, total, label, **kw):
         cmds.append(args)
         return ffmpeg_utils.ProgressResult(stderr="", out_time=total)
 
-    monkeypatch.setattr(analyze, "run_progress", run)
-    analyze.scene_cuts(tmp_path / "s.ts", tmp_path, 60.0, offset=300.0, readable_from=280.0)
+    monkeypatch.setattr(scenes, "run_progress", run)
+    scenes.scene_cuts(tmp_path / "s.ts", tmp_path, 60.0, offset=300.0, readable_from=280.0)
     (cmd,) = cmds
     assert starts == [290.0] and cmd[cmd.index("-ss") + 1] == "290.000"
     assert "-copyts" not in cmd
