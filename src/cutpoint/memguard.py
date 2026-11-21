@@ -170,6 +170,12 @@ def _smi_rows(fields: str) -> list[list[str]]:
     return [[f.strip() for f in line.split(",")] for line in out.splitlines() if line.strip()]
 
 
+def gpu_driver_version() -> str:
+    """The NVIDIA driver version nvidia-smi reports ("" if unknown)."""
+    rows = _smi_rows("driver_version")
+    return rows[0][2] if rows and len(rows[0]) > 2 else ""
+
+
 def gpu_mib(*fields: str) -> tuple[int, ...] | None:
     """nvidia-smi's ``memory.<field>`` values in MiB (``"free"``, ``"total"``, ...) of
     :func:`visible_gpu`: the row of that index, or of the UUID it starts (as CUDA, a unique

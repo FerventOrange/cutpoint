@@ -42,7 +42,7 @@ from typing import IO, Any, Literal
 import numpy as np
 
 from cutpoint import paths, procs, state
-from cutpoint.cache import host_tag
+from cutpoint.cache import atomic_path, host_tag
 from cutpoint.config import get_config
 from cutpoint.errors import (
     EncoderUnavailableError,
@@ -1143,10 +1143,105 @@ def vaapi_devices() -> list[str]:
     return sorted(str(p) for p in Path("/dev/dri").glob("renderD*"))
 
 
+# Encoder and decoder probes really encode and decode a test clip, and `cutpoint ui` starts one
+# process per job, so their verdicts are kept in the cache folder (A737). A verdict is used while
+# the ffmpeg build (path, size, modification time) and, for NVIDIA, the driver version are the
+# same, for a week. Only a working verdict is stored: a failure (a busy GPU, a timeout) may be
+# temporary, so it is kept for this process only. `cutpoint capabilities` probes again
+# (find_encoder with ``refresh``).
+PROBE_FILE = "probe-verdicts.json"
+PROBE_OK_TTL_S = 7 * 86400
+_PROBE_LOCK = threading.Lock()  # around the file update only, never the probe itself
+
+
+@state.register_cache
+@cache
+def _probe_stamp(nvidia: bool) -> str | None:
+    """What a stored verdict depends on (None: unknown, so nothing is stored or used)."""
+    try:
+        exe = find_tool("ffmpeg")
+    except FFmpegNotFoundError:
+        return None
+    st = file_stamp(Path(exe))
+    if st is None:
+        return None
+    driver = ""
+    if nvidia:
+        from cutpoint import memguard  # noqa: PLC0415 - not needed for the CPU or AMD paths
+
+        driver = memguard.gpu_driver_version()
+    return f"{exe}|{st[0]}|{st[1]}|{driver}"
+
+
+def _probe_verdict(ident: str, probe: Callable[[], str | None], *, nvidia: bool) -> str | None:
+    """``probe()``, or the verdict an earlier process stored for ``ident`` with the same stamp
+    (see :data:`PROBE_FILE`); a fresh "works" verdict is stored, a failure is not."""
+    stamp = _probe_stamp(nvidia)
+    file = paths.cache_dir() / PROBE_FILE
+    data: dict[str, Any] = {}
+    if stamp is not None:
+        try:
+            loaded = json.loads(file.read_text(encoding="utf-8"))
+            data = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+        hit = data.get(ident)
+        if isinstance(hit, dict) and hit.get("stamp") == stamp:
+            at = hit.get("at")
+            if (
+                hit.get("error") is None
+                and isinstance(at, (int, float))
+                and 0 <= time.time() - at < PROBE_OK_TTL_S
+            ):
+                return None
+    error = probe()
+    if stamp is not None and error is None:  # a failure may be temporary: not stored
+        _update_probe_file(ident, {"stamp": stamp, "error": None, "at": time.time()})
+    return error
+
+
+def _update_probe_file(ident: str, verdict: dict[str, Any] | None) -> None:
+    """Set (or, with None, drop) the stored verdict of ``ident``: the file is read again, changed
+    and replaced atomically under a lock, as the parallel export threads all call this."""
+    file = paths.cache_dir() / PROBE_FILE
+    with _PROBE_LOCK:
+        try:
+            loaded = json.loads(file.read_text(encoding="utf-8"))
+            data: dict[str, Any] = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+        if verdict is None:
+            if data.pop(ident, None) is None:
+                return
+        else:
+            data[ident] = verdict
+        try:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            with atomic_path(file) as tmp:
+                tmp.write_text(json.dumps(data), encoding="utf-8")
+        except OSError:  # a read-only cache folder: probed again next time
+            pass
+
+
+def _forget_probe(ident: str) -> None:
+    """Drop the stored verdict of ``ident`` (a forced re-probe)."""
+    _update_probe_file(ident, None)
+
+
 @state.register_cache
 @cache
 def encoder_error(enc: VideoEncoder) -> str | None:
-    """None if ffmpeg really encodes with ``enc`` here, else the first real line of its error."""
+    """None if ffmpeg really encodes with ``enc`` here, else the first real line of its error.
+    The verdict is kept across processes (see :data:`PROBE_FILE`)."""
+    return _probe_verdict(
+        f"enc:{enc.kind}:{enc.device or ''}",
+        lambda: _encoder_probe(enc),
+        nvidia=enc.kind == "nvenc",
+    )
+
+
+def _encoder_probe(enc: VideoEncoder) -> str | None:
+    """:func:`encoder_error` without the stored verdict: really encode a test clip."""
     try:
         run(
             [
@@ -1171,8 +1266,9 @@ def encoder_error(enc: VideoEncoder) -> str | None:
     return None
 
 
-def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
-    """The first working encoder of ``kind`` (VAAPI: first working render node) and the errors."""
+def find_encoder(kind: str, *, refresh: bool = False) -> tuple[VideoEncoder | None, list[str]]:
+    """The first working encoder of ``kind`` (VAAPI: first working render node) and the errors.
+    ``refresh`` probes again instead of using a verdict stored by an earlier process."""
     if kind == "vaapi" and not sys.platform.startswith("linux"):
         return None, ["VAAPI is Linux-only"]
     if kind == "vaapi":
@@ -1181,6 +1277,9 @@ def find_encoder(kind: str) -> tuple[VideoEncoder | None, list[str]]:
     else:
         cands, errors = [VideoEncoder(kind)], []
     for enc in cands:
+        if refresh:
+            _forget_probe(f"enc:{enc.kind}:{enc.device or ''}")
+            encoder_error.cache_clear()
         error = encoder_error(enc)
         if error is None:
             return enc, []
@@ -1245,7 +1344,15 @@ def gpu_chain(hw: HwDecoder | None, chain: str | None) -> str | None:
 def decoder_error(dec: HwDecoder) -> str | None:
     """None if ffmpeg decodes a generated 8-bit H.264 clip on ``dec`` here, else the first real
     line of its error. Frames go through :data:`_GPU_DOWNLOAD`, so a hardware start that fell back
-    to software (which ffmpeg does silently) fails here instead of passing."""
+    to software (which ffmpeg does silently) fails here instead of passing. The verdict is kept
+    across processes (see :data:`PROBE_FILE`)."""
+    return _probe_verdict(
+        f"dec:{dec.kind}:{dec.device or ''}", lambda: _decoder_probe(dec), nvidia=dec.kind == "cuda"
+    )
+
+
+def _decoder_probe(dec: HwDecoder) -> str | None:
+    """:func:`decoder_error` without the stored verdict."""
     with tempfile.TemporaryDirectory() as tmp:
         clip = Path(tmp) / "probe.mp4"
         make = ["-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=0.4"]
@@ -1533,6 +1640,8 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
         _unmark_suspect(enc.codec)
         first = enc.codec not in _GPU_ENCODE_FAILED
         _GPU_ENCODE_FAILED.add(enc.codec)
+    # The CPU worked where the GPU failed: a stored "works" verdict is wrong, so probe again.
+    _forget_probe(f"enc:{enc.kind}:{enc.device or ''}")
     if first:
         logger.info("Encoding the rest of this run with libx264 instead of %s", enc.codec)
     return result

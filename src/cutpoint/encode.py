@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePath
 from typing import Any, Protocol
@@ -469,15 +470,13 @@ def warn_if_log(src: Path, info: MediaInfo, at: float) -> None:
     sat, black, white = log_stats(got[1])
     logger.debug("%s: saturation %.3f, luma %.3f-%.3f", src.name, sat, black, white)
     if looks_log(sat, black, white):
-        logger.warning(
-            "%s looks like log/flat footage (10-bit, saturation %.2f, luma %.2f-%.2f): "
-            "clips keep that look; give your camera's LUT with --lut FILE or apply it in an editor "
-            "for normal colors",
-            src.name,
-            sat,
-            black,
-            white,
+        message = (
+            f"{src.name} looks like log/flat footage (10-bit, saturation {sat:.2f}, luma "
+            f"{black:.2f}-{white:.2f}): clips keep that look; give your camera's LUT with "
+            "--lut FILE or apply it in an editor for normal colors"
         )
+        logger.warning("%s", message)
+        jsonout.warn("log_footage", message, [src])
 
 
 def audio_fade_filter(
@@ -693,6 +692,9 @@ def plan_makeup(
     return replace(plan, makeup=tuple(None if g is None else round(g, 2) for g in gains(best)))
 
 
+MEASURE_WORKERS = 4  # clips measured at once by plan_set (each is one ffmpeg child)
+
+
 def plan_set(
     preset: str,
     measure: Callable[[int, str], list[float]],
@@ -709,14 +711,16 @@ def plan_set(
     in the INFO line (None: not named). Returns None (one INFO line) when no clip has audio
     above silence.
     """
-    series = [measure(i, "") for i in range(len(durations))]
+    n = len(durations)
+    with ThreadPoolExecutor(max_workers=max(1, min(n, MEASURE_WORKERS))) as pool:
+        series = list(pool.map(lambda i: measure(i, ""), range(n)))
     plan = plan_peaks(preset, series, durations, apply)
     if plan is None:
         logger.info("Compress peaks: no clip has audio above silence")
         return None
-    compressed = [
-        measure(i, chain) if (chain := plan.measure_chain(i)) else [] for i in range(len(series))
-    ]
+    chains = [plan.measure_chain(i) for i in range(n)]
+    with ThreadPoolExecutor(max_workers=max(1, min(n, MEASURE_WORKERS))) as pool:
+        compressed = list(pool.map(lambda i: measure(i, chains[i]) if chains[i] else [], range(n)))
     plan = plan_makeup(plan, series, compressed)
     logger.info(
         "Compress peaks (%s): compressor from %.1f dB RMS; clip gains %s; makeup %s"
@@ -969,12 +973,12 @@ def _export_checked(
             return {"failure_time": None, "messages": messages, "retried": True, "end": end}
         if long_enough:  # complete, but ffmpeg reported read errors inside it: keep it
             messages = list(dict.fromkeys(messages + found))[:5]
-            logger.warning(
-                "%s from %s is complete but ffmpeg reported read errors inside it: %s",
-                out.name,
-                src.name,
-                "; ".join(messages),
+            message = (
+                f"{out.name} from {src.name} is complete but ffmpeg reported read errors inside "
+                f"it: {'; '.join(messages)}"
             )
+            logger.warning("%s", message)
+            jsonout.warn("read_errors_in_clip", message, [src])
             return {"failure_time": None, "messages": messages, "retried": attempt == 2, "end": end}
         messages = list(dict.fromkeys(messages + found))[:5]
         fail_t = start + got
