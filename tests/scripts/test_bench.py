@@ -5,6 +5,7 @@ faked and writes a synthetic ``highlights.json``), the per-bucket scores, A vs B
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import signal
@@ -818,3 +819,216 @@ def test_interrupt_while_taking_the_lock_or_writing_the_report_frees_it(
     monkeypatch.setattr(bench, "render_report", interrupted)
     assert bench.main([str(manifest), "--sample-interval", "0"]) == 130
     assert not bench.machine_lock().exists()
+
+
+# -- menu time ---------------------------------------------------------------------------------
+
+
+def menus_file(video: str = "a.mp4", menus: list | None = None, **top) -> dict:
+    spans = [
+        {"start": "0:10", "end": 30, "category": "lobby"},
+        {"start": 30, "end": 40, "category": "replay", "unsure": True, "why": "x"},
+        {"start": 60, "end": "1:20", "category": "select"},
+    ]
+    return {"schema": 1, "video": video, "duration": 100, "reviewed": False,
+            "menus": spans if menus is None else menus, **top}  # fmt: skip
+
+
+def menu_source(sid: str, data: dict, **over) -> tuple[dict, dict]:
+    """A manifest source with the menu file ``data`` (pinned by its sha256) and the labels
+    dict for :func:`write_manifest`."""
+    name = f"{sid}.menus.json"
+    digest = hashlib.sha256(json.dumps(data).encode()).hexdigest()
+    return source(sid, menus=name, menus_sha256=digest, **over), {name: data}
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        (menus_file(schema=2), '"schema": 1'),
+        (menus_file("b.mp4"), "not the source's file 'a.mp4'"),
+        (menus_file(reviewed="no"), "'reviewed' must be"),
+        (menus_file(menus=[{"start": 5, "end": 5, "category": "lobby"}]), "not before end"),
+        (menus_file(menus=[{"start": "1:75", "end": 9, "category": "lobby"}]), "mm:ss"),
+        (menus_file(menus=[{"start": 90, "end": 110, "category": "lobby"}]), "after the duration"),
+        (menus_file(menus=[{"start": 1, "end": 9, "category": "gameplay"}]), "category 'gameplay'"),
+        (
+            menus_file(menus=[{"start": 1, "end": 9, "category": "lobby", "unsure": "y"}]),
+            "'unsure' must be",
+        ),
+        (
+            menus_file(
+                menus=[
+                    {"start": 10, "end": 20, "category": "lobby"},
+                    {"start": 15, "end": 25, "category": "loading"},
+                ]
+            ),
+            "sort them, no overlaps",
+        ),
+        (
+            menus_file(
+                menus=[
+                    {"start": 30, "end": 40, "category": "lobby"},
+                    {"start": 10, "end": 20, "category": "loading"},
+                ]
+            ),
+            "sort them, no overlaps",
+        ),
+    ],
+)
+def test_menu_file_errors(tmp_path, data, message):
+    src, labels = menu_source("a", data)
+    with pytest.raises(bench.ManifestError, match=message):
+        bench.load_manifest(write_manifest(tmp_path, [src], labels))
+
+
+def test_menu_file_hash_and_manifest_keys(tmp_path):
+    src, labels = menu_source("a", menus_file())
+    m = bench.load_manifest(write_manifest(tmp_path, [src], labels))
+    spans = m.sources[0].menus
+    assert [(s["start"], s["end"], s["menu"]) for s in spans] == [
+        (10.0, 30.0, True),
+        (30.0, 40.0, False),
+        (60.0, 80.0, True),
+    ]
+    assert bench.source_entry(m.sources[0])["menus_sha256"] == src["menus_sha256"]
+    assert "menus" not in bench.source_entry(bench.Source("b", Path(), "", "", False))
+    for i, (bad, message) in enumerate(
+        [
+            ({**src, "menus_sha256": "00"}, "the menus file's sha256 is " + src["menus_sha256"]),
+            ({**src, "menus_sha256": None}, "'menus_sha256' is None"),
+            ({**source("a"), "menus_sha256": "00"}, "'menus_sha256' without 'menus'"),
+        ]
+    ):
+        with pytest.raises(bench.ManifestError, match=message):
+            bench.load_manifest(write_manifest(tmp_path / str(i), [bad], labels))
+
+
+def test_menu_labels_need_one_file(tmp_path):
+    src, labels = menu_source("a", menus_file("folder"), input="footage/folder")
+    path = write_manifest(tmp_path, [src], labels)
+    (path.parent / "footage" / "folder").unlink()
+    (path.parent / "footage" / "folder").mkdir()
+    with pytest.raises(bench.ManifestError, match="input of one file, not a folder"):
+        bench.load_manifest(path)
+
+
+def labels_of(*spans) -> list[dict]:
+    return [
+        {"start": a, "end": b, "category": c, "menu": c in bench.MENU_CATEGORIES}
+        for a, b, c in spans
+    ]
+
+
+def test_score_menus_seconds_and_tolerance():
+    labels = labels_of((10, 30, "lobby"), (30, 40, "replay"), (60, 80, "select"), (90, 91, "map"))
+    # 9.5-29: an early start (in the tolerance) and a late end; 35-45: neutral, then 4 s on
+    # gameplay past the tolerance; 70-72 inside the select
+    m = bench.score_menus([(9.5, 29.0), (35.0, 45.0), (70.0, 72.0)], labels)
+    assert m["menu_s"] == 41 and m["neutral_s"] == 10 and m["detected_s"] == 31.5
+    assert m["menu_tp_s"] == 21  # 10-29 and 70-72
+    assert m["menu_fp_s"] == 4  # 41-45; 9.5-10 lies in the tolerance
+    # missed: 61-70 and 72-79 of the select (narrowed by 1 s); 29-30 of the lobby and the 1 s
+    # map lie in the tolerance
+    assert m["menu_fn_s"] == 16
+    assert m["menu_precision"] == pytest.approx(21 / 25)
+    assert m["menu_recall"] == pytest.approx(1 - 16 / 41)
+    assert m["fp_spans"] == [[41.0, 45.0]] and m["fn_spans"] == [[61.0, 70.0], [72.0, 79.0]]
+    exact = bench.score_menus([(9.5, 29.0)], labels, tolerance=0)
+    assert (exact["menu_fp_s"], exact["menu_fn_s"]) == (0.5, 22)
+    none = bench.score_menus([], labels_of((5, 9, "cutscene")))
+    assert none["menu_precision"] is None and none["menu_recall"] is None
+    assert none["menu_tp_s"] == none["menu_fp_s"] == 0.0
+
+
+def write_events(project: Path, spans, ocr: bool = True, sources: int = 1) -> None:
+    project.mkdir(parents=True, exist_ok=True)
+    names = [f"{i}{VIDEO}" for i in range(sources)]
+    stats = {"ocr": {n: {"menu_spans": spans} for n in names}}
+    data = {"sources": [f"D:/Videos/{n}" for n in names], "stats": stats if ocr else {}}
+    (project / "events.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_menu_scores_per_source_and_bucket_from_events_json(tmp_path):
+    a, la = menu_source("a", menus_file())
+    b, lb = menu_source("b", menus_file("b.mp4"), bucket="gameplay-nokills")
+    m = bench.load_manifest(write_manifest(tmp_path, [a, b, source("c")], la | lb))
+    write_events(tmp_path / "p" / "a", [[10.0, 30.0], [60.0, 70.0]])
+    write_events(tmp_path / "p" / "b", [[50.0, 58.0]])
+    write_events(tmp_path / "p" / "c", [[0.0, 99.0]])  # no menu labels: not scored
+    entries = []
+    for s in m.sources:
+        project = tmp_path / "p" / s.id
+        write_highlights(project)
+        entries.append(bench.source_entry(s) | bench.score_source(s, project, 5, 7, 0.5))
+    assert entries[0]["menus"]["menu_fn_s"] == 9 and entries[0]["errors"] == []
+    assert entries[1]["menus"]["menu_fp_s"] == 8  # 50-58: past the tolerance of 60
+    assert "menus" not in entries[2]
+    menus = bench.summarize(entries)["tune"]["menus"]
+    assert set(menus) == {"gameplay-kills", "gameplay-nokills", bench.ALL}
+    total = menus[bench.ALL]
+    assert (total["sources"], total["menu_s"], total["menu_tp_s"]) == (2, 80, 30)
+    assert (total["menu_fp_s"], total["menu_fn_s"]) == (8, 9 + 36)
+    assert total["menu_precision"] == pytest.approx(30 / 38)
+    assert total["menu_recall"] == pytest.approx(1 - 45 / 80)
+    result = run_result("A", entries) | {"holdout_viewed": False}
+    report = "\n".join(bench._menu_table(result["summary"]["tune"]["menus"], entries))
+    assert "| a | 40 | 30 | 0 | 9 | 100% |" in report
+    assert "- b: false menu 50-58; missed 11-29, 61-79" in report
+    # no events.json, no OCR stats, or a project of two sources: an error, no score
+    for name, write in [
+        ("none", None),
+        ("noocr", lambda p: write_events(p, [], ocr=False)),
+        ("two", lambda p: write_events(p, [], sources=2)),
+    ]:
+        project = tmp_path / "q" / name
+        write_highlights(project)
+        if write:
+            write(project)
+        out = bench.score_source(m.sources[0], project, 5, 7, 0.5)
+        assert out["menus"] is None and out["errors"][0].startswith("menus: ")
+
+
+def menu_entry(sid, bucket="gameplay-kills", tp=100.0, fp=0.0, fn=20.0, menu=120.0):
+    m = {"menu_s": menu, "menu_tp_s": tp, "menu_fp_s": fp, "menu_fn_s": fn}
+    return {**entry(sid, bucket), "menus": m, "menus_sha256": "aa"}
+
+
+MENU_BASE = [menu_entry("g0"), menu_entry("g1", fp=60.0)]
+
+
+@pytest.mark.parametrize(
+    ("b", "failure"),
+    [
+        ([menu_entry("g0", fp=7.0), MENU_BASE[1]], "menu_fp_s up 7.0 s (allowed 6.0)"),
+        ([menu_entry("g0", fn=34.0), MENU_BASE[1]], "menu_recall down 0.06"),
+        ([MENU_BASE[0], {**entry("g1"), "menus": None, "menus_sha256": "aa"}], "g1: scored in A"),
+        ([menu_entry("g0", fp=6.0, fn=31.0), MENU_BASE[1]], None),  # within both limits
+    ],
+)
+def test_menu_gate_rules(b, failure):
+    cmp = bench.compare_results(run_result("A", MENU_BASE), run_result("B", b), bench.GateRules())
+    fails = cmp["gate"]["failures"]
+    if failure is None:
+        assert fails == []
+    else:
+        assert any(failure in f for f in fails), fails
+
+
+def test_menu_compare_lines_and_relabelled_menus(tmp_path, capsys):
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps(run_result("A", MENU_BASE)))
+    b.write_text(json.dumps(run_result("B", [menu_entry("g0", fp=12.0, fn=10.0), MENU_BASE[1]])))
+    assert bench.main(["--compare", str(a), str(b), "--gate-menu-fp-rise", "20"]) == 0
+    out = capsys.readouterr().out
+    assert "Menu time (sources with menu labels scored in both; A -> B):" in out
+    assert "| gameplay-kills | 200 -> 200 | 60 -> 72 | 40 -> 30 | 77% -> 74% | 83% -> 88% |" in out
+    assert "g0 (gameplay-kills): menu_fp_s +12, menu_fn_s -10" in out
+    assert "Gate (advice, tune split only): PASS" in out
+    assert bench.main(["--compare", str(a), str(b), "--strict-gate"]) == 3
+    relabelled = [{**menu_entry("g0", fp=50.0), "menus_sha256": "bb"}, MENU_BASE[1]]
+    cmp = bench.compare_results(
+        run_result("A", MENU_BASE), run_result("B", relabelled), bench.GateRules()
+    )
+    assert cmp["gate"]["verdict"] == "pass"
+    assert any(w.startswith("g0: menus_sha256 differ") for w in cmp["warnings"])
