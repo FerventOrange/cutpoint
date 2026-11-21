@@ -29,7 +29,7 @@ from __future__ import annotations
 import contextlib
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -265,15 +265,21 @@ def split_group(
 
 
 def sample_frames(
-    sources: list[Any], out_dir: Path, params: DiscoverParams
+    sources: list[Any],
+    out_dir: Path,
+    params: DiscoverParams,
+    make_engine: Callable[[], Any] | None = None,
 ) -> list[dict[str, Any]]:
     """OCR :data:`SAMPLE_BURSTS` bursts of each source into ``out_dir`` (``frames/`` and
     ``ocr.jsonl``, cached like discovery's); the OCR model loads only when a frame needs
-    reading. Folders left empty (nothing decoded) are removed, ``out_dir``'s parent too."""
+    reading (``make_engine``: the run's, as for discovery). Folders left empty (nothing
+    decoded) are removed, ``out_dir``'s parent too."""
     bursts = [b for s in sources for b in plan_bursts([s], SAMPLE_BURSTS)]
     if not bursts:
         return []
-    got = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl")
+    got = _ocr_frames(
+        bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", make_engine=make_engine
+    )
     for folder in (out_dir / "frames", out_dir, out_dir.parent):  # nothing read: no empty folders
         with contextlib.suppress(OSError):
             folder.rmdir()  # only when empty

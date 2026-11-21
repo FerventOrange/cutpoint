@@ -31,6 +31,7 @@ unless the vision answer and the read text both disagree with the pixels (:func:
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import importlib.util
 import logging
 import math
@@ -617,7 +618,8 @@ def text_probe(io: Path, duration: float, width: int, height: int) -> dict[str, 
     frames = _text_frames(io, duration, width, height)
     if len(frames) < TEXT_MIN_FRAMES:
         return None
-    engine = OcrEngine()
+    make = _TEXT_OCR.get()
+    engine = make() if make is not None else OcrEngine()
 
     def boxes(frame: np.ndarray) -> list[Box]:
         found = []
@@ -646,6 +648,30 @@ def text_probe(io: Path, duration: float, width: int, height: int) -> dict[str, 
         "frames": len(frames),
         "anchors": out,
     }
+
+
+# the engine factory of :func:`probe_sources` for the HUD text checks of its sources
+_TEXT_OCR: contextvars.ContextVar[Callable[[], Any] | None] = contextvars.ContextVar(
+    "text_ocr", default=None
+)
+
+
+@contextlib.contextmanager
+def _one_ocr() -> Iterator[None]:
+    """One OCR engine for the HUD text checks in the block (#1085 A694): built at the first
+    check that reads, freed at the end."""
+    if not ocr_installed():
+        yield
+        return
+    from cutpoint.events.killfeed import SharedOcr  # noqa: PLC0415
+
+    shared = SharedOcr()
+    token = _TEXT_OCR.set(shared)
+    try:
+        yield
+    finally:
+        _TEXT_OCR.reset(token)
+        shared.release()
 
 
 def ocr_installed() -> bool:
@@ -1070,6 +1096,15 @@ def _with_vision(
         answers = {**answers, key: answer}
         cache.save_json(cdir / VISION_FILE, {"version": VISION_VERSION, "answers": answers})
     return replace(found, vision=answers[key])
+
+
+def probe_sources(
+    sources: Sequence[Path], vision: FootageVision | None = None
+) -> list[SourceProbe]:
+    """:func:`probe_source` of each of ``sources``, in order; their HUD text checks share
+    one OCR engine (#1085 A694)."""
+    with _one_ocr():
+        return [probe_source(s, vision) for s in sources]
 
 
 def probe_source(src: Path, vision: FootageVision | None = None) -> SourceProbe:
@@ -1543,12 +1578,12 @@ def detect(
     """
     logger.info("Detecting the footage category of %d source(s)", len(sources))
     if shared is not None:
-        probes = [probe_source(s, shared) for s in sources]
+        probes = probe_sources(sources, shared)
         shared.close()
         every = shared.every_source
     else:
         with footage_vision(vision, ollama_url, ollama_model, context, every_source) as fv:
-            probes = [probe_source(s, fv) for s in sources]
+            probes = probe_sources(sources, fv)
         every = fv is not None and fv.every_source
     return probes, decide(probes, every_source=every)
 

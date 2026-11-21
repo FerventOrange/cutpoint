@@ -310,7 +310,7 @@ def _cmd_detect(a: argparse.Namespace) -> None:
     with category.footage_vision(
         _vision(a), a.ollama_url, a.ollama_model, a.context, every
     ) as vision:
-        probes = [category.probe_source(s, vision) for s in found]
+        probes = category.probe_sources(found, vision)
         every = vision is not None and vision.every_source
     speech = {}
     for src, p in zip(found, probes, strict=True):

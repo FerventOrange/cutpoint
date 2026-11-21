@@ -19,7 +19,7 @@ from cutpoint.errors import LowMemoryError
 from cutpoint.events import discover, game_fit
 from cutpoint.events import hud_map as vision_map
 from cutpoint.events import regions as hud
-from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.killfeed import OcrParams, SharedOcr
 from cutpoint.events.pipeline import (
     DISCOVERY_PCT,
     USER_PRESET_KEYS,
@@ -65,6 +65,9 @@ class DiscoverRun:
         self.load_preset = load_preset
         self.game_key_for_path = game_key_for_path
         self.params = discover.DiscoverParams(bursts=bursts)
+        # one OCR engine for the run's discoveries and fit samples (#1085 A707), freed
+        # before a vision top-up and at the end
+        self.make_ocr = SharedOcr(lanes=1, rec_batch=1)
         self.by_game: dict[str, list[Any]] = {}
         self.guesses: dict[str, str] = {}  # path -> first guess, for the sources the check decides
         self.before: dict[
@@ -81,13 +84,16 @@ class DiscoverRun:
         self._group()
         planned = sum(self.force or self.load_preset(g, self.project) is None for g in self.by_game)
         self.total = max(1, planned)
-        for game, srcs in self.by_game.items():
-            existing = self.load_preset(game, self.project)
-            tested = [s for s in srcs if str(s.path) in self.guesses]
-            if existing is None:
-                self._new_game(game, srcs, tested)
-            else:
-                self._known_game(game, srcs, tested, existing)
+        try:
+            for game, srcs in self.by_game.items():
+                existing = self.load_preset(game, self.project)
+                tested = [s for s in srcs if str(s.path) in self.guesses]
+                if existing is None:
+                    self._new_game(game, srcs, tested)
+                else:
+                    self._known_game(game, srcs, tested, existing)
+        finally:
+            self.make_ocr.release()
         return self.out
 
     # ---- grouping
@@ -370,6 +376,7 @@ class DiscoverRun:
                 **({"labeler": self.labeler} if self.labeler and not topping else {}),
                 **({"keep_src_keys": keep} if keep is not None else {}),
                 **({"hud_mapper": self.hud_mapper} if self.hud_mapper is not None else {}),
+                make_engine=self.make_ocr,
             )
         except LowMemoryError:
             raise
@@ -458,6 +465,7 @@ class DiscoverRun:
             and not vision_map.tried(game, mapper.model, existing.path)
         ):
             return
+        self.make_ocr.release()
         if self.before_top_up is not None:
             self.before_top_up()
         try:
@@ -611,7 +619,10 @@ class DiscoverRun:
             logger.debug("HUD fit check for %r: sampling %d source(s)", game, len(need))
             try:
                 recs = game_fit.sample_frames(
-                    need, self.project / "discovery" / "_fit" / game, self.params
+                    need,
+                    self.project / "discovery" / "_fit" / game,
+                    self.params,
+                    make_engine=self.make_ocr,
                 )
             except LowMemoryError:
                 raise
