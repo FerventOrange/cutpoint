@@ -82,6 +82,7 @@ import numpy as np
 
 from cutpoint import cache, features, scorer
 from cutpoint.config import path_key, source_path
+from cutpoint.dsp import bin_of
 from cutpoint.intervals import overlaps
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
@@ -299,7 +300,7 @@ def build_features(
         ``(features, mask, friends)``; ``mask`` is 1 where clips are not allowed.
     """
     tel = ctx.telemetry.get(str(src))
-    o = int(offset / DT)
+    o = bin_of(offset, DT)
     f = {k: np.zeros(n) for k in FEATURES}
     mask = np.zeros(n)
     sp_kmh = None
@@ -386,7 +387,7 @@ def layer_features(
     from cutpoint.events import voice as VO  # noqa: PLC0415
 
     out: dict[str, np.ndarray] = {}
-    o = round(offset / DT)
+    o = bin_of(offset, DT)  # as build_features slices the telemetry (#1085 A187)
     vg = VO.load_voice(src)
     if vg is not None:
         moving = None if speed_kmh is None else np.clip(speed_kmh / 40.0, 0, 1)
@@ -593,11 +594,11 @@ def pick(
             shift = max(0.0, -a) - max(0.0, b - duration)
             a, b = a + shift, b + shift
         a, b = max(0.0, a), min(duration, b)
-        ia = max(0, min(int(a / DT), s0) - 5)
-        ib = min(n, max(int(b / DT), s1 + 1) + 5)
+        ia = max(0, min(bin_of(a, DT), s0) - 5)
+        ib = min(n, max(bin_of(b, DT), s1 + 1) + 5)
         score[ia:ib] = 0.0
         taken[ia:ib] = True
-        sl = slice(int(a / DT), max(int(a / DT) + 1, int(b / DT)))
+        sl = slice(bin_of(a, DT), max(bin_of(a, DT) + 1, bin_of(b, DT)))
         sigs = {k: round(float(v[sl].max()), 3) for k, v in features.items()}
         picks.append(
             Pick(

@@ -37,6 +37,17 @@ def gauss_smooth(
     return np.apply_along_axis(lambda c: np.convolve(c, k, mode="valid"), 0, xp)
 
 
+BIN_EPS = 1e-6  # in bins: ``0.3 / 0.1`` is 2.9999999999999996, still bin 3
+
+
+def bin_of(t: float, dt: float) -> int:
+    """Index of the ``dt`` grid bin that holds time ``t`` (s): ``t / dt`` rounded down, with
+    :data:`BIN_EPS` of slack so a time on a bin edge (a time rounded to 0.1 s on a 0.1 s grid)
+    is not one bin early through float error. A negative ``t`` truncates toward 0, as
+    ``int(t / dt)`` does (callers clamp it)."""
+    return int(t / dt + BIN_EPS)
+
+
 def mask_runs(mask: np.ndarray) -> list[tuple[int, int]]:
     """``[start, end)`` index pairs of True runs."""
     m = np.concatenate([[False], mask.astype(bool), [False]])

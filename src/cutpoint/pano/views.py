@@ -1213,7 +1213,7 @@ def run_layer(
     from cutpoint.insta360 import imu_source  # noqa: PLC0415
 
     p = params or ViewParams()
-    todo = [c for c in clips if c.lrv and (force or load_views(Path(c.lrv), p) is None)]
+    todo = [c for c in clips if c.lrv and (force or not views_current(Path(c.lrv), p))]
     stats: dict[str, Any] = {
         "cached": sum(1 for c in clips if c.lrv) - len(todo),
         "computed": 0,
