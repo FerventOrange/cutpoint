@@ -20,6 +20,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.errors import FFmpegError
+from cutpoint.events.common import SourceGuard
 from cutpoint.ffmpeg_utils import grab_images
 
 logger = logging.getLogger(__name__)
@@ -149,8 +150,6 @@ def _source_frames(s: Any) -> tuple[list[_Frame], list[_Frame], list[_Frame], _B
     try:
         tel = extract(s.path, s.duration)
     except Exception as err:  # noqa: BLE001 - unreadable telemetry: no lift or stop masking
-        from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
-
         SourceGuard(
             "contact sheets",
             message="{name}: telemetry not read ({err}); its frames are not masked",
@@ -187,8 +186,6 @@ def write_visual_sheets(project: Path, sources: list[Any], n: int = 24) -> list[
     error is raised. A source whose telemetry fails to read stays, unmasked (same warnings). An out-of-memory error stops the run
     (:class:`~cutpoint.errors.LowMemoryError`).
     """
-    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
-
     beauty: list[_Frame] = []
     friends: list[_Frame] = []
     lift: list[_Frame] = []

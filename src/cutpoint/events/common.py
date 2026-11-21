@@ -9,7 +9,8 @@ import sys
 import threading
 import time
 import wave
-from collections.abc import Iterator
+import zipfile
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,8 +18,9 @@ from typing import Any
 import numpy as np
 import requests
 
-from cutpoint import cache, projectfiles
+from cutpoint import cache, jsonout, memguard, projectfiles
 from cutpoint.backends import ollama_post, ollama_ps, ollama_url
+from cutpoint.errors import LowMemoryError
 
 logger = logging.getLogger(__name__)
 
@@ -286,8 +288,6 @@ def unload_ollama(url: str | None = None) -> list[str]:
 def gpu_memory_used_mib() -> int | None:
     """Current GPU memory use in MiB of the GPU the models use via nvidia-smi
     (:func:`cutpoint.memguard.gpu_mib`; None if unavailable)."""
-    from cutpoint import memguard  # noqa: PLC0415
-
     got = memguard.gpu_mib("used")
     return got[0] if got is not None else None
 
@@ -298,7 +298,8 @@ class VramMonitor:
     Entering and leaving cost no nvidia-smi call: the baseline is the thread's first
     reading, and leaving signals the thread without waiting for its poll in flight
     (that poll still reaps its process, and its result is dropped). A layer shorter
-    than one poll reports None.
+    than one poll reports None. It polls every ``interval_s`` (5 s): each poll starts an
+    nvidia-smi process, and the peak is only recorded (events.json ``stats.vram_mib``).
 
     Usage::
 
@@ -307,7 +308,7 @@ class VramMonitor:
         vm.peak_mib, vm.baseline_mib
     """
 
-    def __init__(self, interval_s: float = 0.5) -> None:
+    def __init__(self, interval_s: float = 5.0) -> None:
         self.interval_s = interval_s
         self.baseline_mib: int | None = None
         self.peak_mib: int | None = None
@@ -351,3 +352,119 @@ def free_torch() -> None:
     torch = sys.modules.get("torch")
     if torch is not None and torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+class SourceGuard:
+    """One bad source skips only itself (#985, #1033), the rule of every per-source loop of
+    the events layers, the action-cam telemetry read, the contact sheets and the crash layer.
+
+    In the loop, ``except Exception as err: guard.skip(err, name, path)`` (then ``continue``):
+    a :class:`~cutpoint.errors.LowMemoryError` is raised again and an out-of-memory ``err``
+    stops the run as one (:func:`~cutpoint.memguard.raise_if_out_of_memory`, resumable);
+    any other error is logged at DEBUG with its traceback, a WARNING and a ``step_failed``
+    warning name the source, and it is recorded in :attr:`failed`. After the loop,
+    :meth:`raise_if_all_failed` raises the last error when every source failed: not one bad
+    file, the step failed. KeyboardInterrupt is not an :class:`Exception`: it passes.
+
+    Args:
+        what: The step, in the message: ``"<name>: <what> skipped this source (<err>)"``.
+        message: Another message (``str.format`` fields ``name``, ``what`` and ``err``).
+        oom_what: The step in the out-of-memory error (default: ``what``).
+        debug_what: The step in the DEBUG line ``"<path>: <debug_what> failed"`` (default:
+            ``what``).
+        log: The logger of the lines (default: this module's); the caller's keeps their
+            logger name (``caplog`` and ``-v`` filters by it).
+    """
+
+    def __init__(
+        self,
+        what: str,
+        *,
+        message: str = "{name}: {what} skipped this source ({err})",
+        oom_what: str | None = None,
+        debug_what: str | None = None,
+        log: logging.Logger | None = None,
+    ) -> None:
+        self.what = what
+        self.log = log or logger
+        self.message = message
+        self.oom_what = oom_what or what
+        self.debug_what = debug_what or what
+        self.failed: dict[str, Exception] = {}  # str(path): its error, in the order they failed
+
+    def skip(self, err: Exception, name: str, path: Path | str, *, warn: bool = True) -> None:
+        """Skip the source ``name`` (``path``) that failed with ``err`` (see the class);
+        ``warn=False``: logged at DEBUG only (the caller warned for it already).
+
+        Raises:
+            LowMemoryError: If ``err`` is one or is an out-of-memory error.
+        """
+        if isinstance(err, LowMemoryError):
+            raise err
+        memguard.raise_if_out_of_memory(err, self.oom_what, name)
+        self.log.debug("%s: %s failed", path, self.debug_what, exc_info=True)
+        if warn:
+            message = self.message.format(name=name, what=self.what, err=err)
+            self.log.warning("%s", message)
+            jsonout.warn("step_failed", message, [path])
+        self.failed[str(path)] = err
+
+    def all_failed(self, total: int) -> bool:
+        """Whether a source failed and as many failed as ``total`` (the sources it counts)."""
+        return bool(self.failed) and len(self.failed) == total
+
+    def raise_if_all_failed(self, total: int) -> None:
+        """Raise the last source's error, unchanged (cli.py maps its type), when
+        :meth:`all_failed`."""
+        if self.all_failed(total):
+            raise list(self.failed.values())[-1]
+
+
+def for_each_source(
+    guard: SourceGuard,
+    sources: list[Source],
+    fn: Callable[[Source], Any],
+    errors: list[Exception] | None = None,
+    total: int | None = None,
+) -> int:
+    """Run ``fn`` on every source under ``guard`` (one bad source skips only itself) and
+    return how many gave a result (not None), the loop of the layers that compute a per-source
+    cache.
+
+    The errors of the sources that failed are appended to ``errors`` (the caller decides), or
+    without ``errors`` the last one is raised when as many failed as ``total`` (default: every
+    source of ``sources``): not one bad file, the layer failed.
+    :class:`~cutpoint.errors.LowMemoryError` always propagates.
+    """
+    done = 0
+    for s in sources:
+        try:
+            got = fn(s)
+        except Exception as err:  # noqa: BLE001 - one bad source, logged
+            guard.skip(err, s.name, s.path)
+            continue
+        if got is not None:
+            done += 1
+    if errors is not None:
+        errors += guard.failed.values()
+    else:
+        guard.raise_if_all_failed(len(sources) if total is None else total)
+    return done
+
+
+def npz_cache_path(src: Source | Path, layer: str, params: dict[str, Any]) -> Path:
+    """``cache/<source>/<layer>-<hash>.npz``: the array cache of one layer on one source."""
+    cdir = src.cdir if isinstance(src, Source) else cache.source_dir(src)
+    return cdir / f"{layer}-{params_key(params)}.npz"
+
+
+def npz_present(path: Path, keys: Iterable[str] = ()) -> bool:
+    """Whether the ``.npz`` at ``path`` exists as a readable archive holding the arrays
+    ``keys``, read from its zip directory only (no array is decompressed): a presence check
+    for a layer's cache, where loading it would decompress every array."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = {n.removesuffix(".npy") for n in z.namelist()}
+    except (OSError, zipfile.BadZipFile):
+        return False
+    return set(keys) <= names

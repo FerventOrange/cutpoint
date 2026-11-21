@@ -28,8 +28,9 @@ from typing import Any
 
 from cutpoint import cache
 from cutpoint.events import eventtypes
+from cutpoint.events.audio_events import REACTION_GROUPS
 
-AUDIO_PAYOFFS = {"Laughter", "Scream", "Cheering"}
+AUDIO_PAYOFFS = set(REACTION_GROUPS)
 OCR_HOLD_S = 1.0  # an OCR payoff counts as lasting this long from its first sighting
 
 

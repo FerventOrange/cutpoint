@@ -32,7 +32,15 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.events import paths
-from cutpoint.events.common import WAV_SR, Source, iter_audio_blocks, params_key
+from cutpoint.events.common import (
+    WAV_SR,
+    Source,
+    SourceGuard,
+    for_each_source,
+    iter_audio_blocks,
+    npz_cache_path,
+    npz_present,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +55,9 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "Narration, monologue",
         "Babbling",
     ),
+    # PANNs classes, not the audio layer's groups (audio_events.DEFAULT_GROUPS): "laugh" lacks
+    # "Baby laughter" and "cheer" holds the shouts the audio layer counts as a Scream. They are
+    # calibrated on these sets and not part of the cache key, so they stay as they are.
     "laugh": ("Laughter", "Giggle", "Snicker", "Belly laugh", "Chuckle, chortle"),
     "cheer": ("Cheering", "Whoop", "Shout", "Yell", "Screaming", "Children shouting"),
     "wind": ("Wind", "Wind noise (microphone)"),
@@ -71,8 +82,7 @@ class VoiceParams:
 
 def cache_path(src: Source | Path, params: VoiceParams) -> Path:
     """``cache/<source>/voice-<hash>.npz``."""
-    cdir = src.cdir if isinstance(src, Source) else cache.source_dir(src)
-    return cdir / f"voice-{params_key(params.key())}.npz"
+    return npz_cache_path(src, "voice", params.key())
 
 
 def load_voice(
@@ -291,9 +301,7 @@ def run_layer(
     is skipped with a WARNING and a ``step_failed`` warning; its error is appended to
     ``errors`` (the caller decides), or without ``errors`` the last one is raised when
     every source failed. :class:`~cutpoint.errors.LowMemoryError` always propagates."""
-    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
-
-    need = [s for s in sources if force or load_voice(s, params) is None]
+    need = [s for s in sources if force or not _cached(s, params)]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
     if not need:
         return stats
@@ -303,24 +311,33 @@ def run_layer(
     det = det or PannsDetector()
     stats["device"] = det.device
     vad = SileroVad()
-    guard = SourceGuard("Voice layer")
     try:
-        for s in need:
-            try:
-                got = compute_voice(s, det, vad, params, force=True)
-            except Exception as err:  # noqa: BLE001 - one bad source, logged
-                guard.skip(err, s.name, s.path)
-                continue
-            if got is not None:
-                stats["computed"] += 1
+        stats["computed"] = for_each_source(
+            SourceGuard("Voice layer", log=logger),
+            need,
+            lambda s: compute_voice(s, det, vad, params, force=True),
+            errors,
+            total=len(sources),
+        )
     finally:
         if own:
             det.close()
-    if errors is not None:
-        errors += guard.failed.values()
-    else:  # not one bad file: the layer failed
-        guard.raise_if_all_failed(len(sources))
     return stats
+
+
+def _cached(src: Source, params: VoiceParams) -> bool:
+    """Whether the voice grids of ``src`` are cached (the archive and its arrays are there;
+    none is decompressed). An offline source has no cache key: not cached."""
+    try:
+        path = cache_path(src, params)
+    except OSError:
+        return False
+    return npz_present(path, ("wind_db", "level_db", "vad", *_grid_names()))
+
+
+def _grid_names() -> list[str]:
+    """The PANNs grid names of the cache (``raw_*`` and ``hp_*`` per group)."""
+    return [f"{pre}_{g}" for pre in ("raw", "hp") for g in GROUPS]
 
 
 # --------------------------------------------------------------------------- features

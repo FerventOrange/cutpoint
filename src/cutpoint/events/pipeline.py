@@ -35,6 +35,7 @@ from cutpoint.events.audio_events import (
     detect_audio_events,
 )
 from cutpoint.events.common import (
+    SourceGuard,
     VramMonitor,
     free_torch,
     load_highlights,
@@ -496,7 +497,7 @@ def _audio_layer(run: _Run, audio: AudioParams, *, keep: bool) -> None:
             # no Ollama unload up front: a run with every source cached loads nothing, and
             # PANNs' memory guard (memguard.device_for) frees Ollama's models when it is short
             with VramMonitor() as vm:
-                guard = SourceGuard("Audio events")
+                guard = SourceGuard("Audio events", log=logger)
                 try:
                     for i, s in enumerate(sources):
                         if run.batch_size and i and not i % run.batch_size:  # a batch boundary
@@ -791,16 +792,19 @@ def _confirm_explosions(run: _Run, boom: explosions.ExplosionParams) -> None:
     """Explosions (#801): a heard boom counts once the loudness jumps with it and the picture
     was not black just before it (a loading screen ending)."""
     t0 = time.perf_counter()
-    booms = sum(
-        explosions.confirm(
+    booms = 0
+    for s in run.sources:
+        if not explosions.has_booms(run.layer1[str(s.path)]):
+            continue
+        # --recover parts share the file and its time; decoded frames are cached per source
+        luma = explosions.CachedLuma(s.path, s.cdir, explosions.luma_reader(s.path))
+        booms += explosions.confirm(
             run.layer1[str(s.path)],
             [(p.offset, p.cdir) for p in source_parts(s.path)],
             boom,
-            luma=explosions.luma_reader(s.path),  # --recover parts share the file and its time
+            luma=luma,
         )
-        for s in run.sources
-        if explosions.has_booms(run.layer1[str(s.path)])
-    )
+        luma.save()
     run.timings["explosions_s"] = round(time.perf_counter() - t0, 1)
     dark = sum(
         1
@@ -1138,7 +1142,7 @@ def _light_layer(
     try:
         if enc is None:
             enc = ClipEncoder(device="cpu")
-        guard = SourceGuard("Frame index")
+        guard = SourceGuard("Frame index", log=logger)
         for i, (s, _) in enumerate(todo.values()):
             progress.update(progress.fraction(i, len(todo)))
             try:
@@ -1276,72 +1280,6 @@ def _release_engine(make_engine: Callable[[], OcrEngine]) -> None:
     make_engine.cache_clear()  # type: ignore[attr-defined]
 
 
-class SourceGuard:
-    """One bad source skips only itself (#985, #1033), the rule of every per-source loop of
-    the events layers, the action-cam telemetry read, the contact sheets and the crash layer.
-
-    In the loop, ``except Exception as err: guard.skip(err, name, path)`` (then ``continue``):
-    a :class:`~cutpoint.errors.LowMemoryError` is raised again and an out-of-memory ``err``
-    stops the run as one (:func:`~cutpoint.memguard.raise_if_out_of_memory`, resumable);
-    any other error is logged at DEBUG with its traceback, a WARNING and a ``step_failed``
-    warning name the source, and it is recorded in :attr:`failed`. After the loop,
-    :meth:`raise_if_all_failed` raises the last error when every source failed: not one bad
-    file, the step failed. KeyboardInterrupt is not an :class:`Exception`: it passes.
-
-    Args:
-        what: The step, in the message: ``"<name>: <what> skipped this source (<err>)"``.
-        message: Another message (``str.format`` fields ``name``, ``what`` and ``err``).
-        oom_what: The step in the out-of-memory error (default: ``what``).
-        debug_what: The step in the DEBUG line ``"<path>: <debug_what> failed"`` (default:
-            ``what``).
-        log: The logger of the lines (default: this module's); the caller's keeps their
-            logger name (``caplog`` and ``-v`` filters by it).
-    """
-
-    def __init__(
-        self,
-        what: str,
-        *,
-        message: str = "{name}: {what} skipped this source ({err})",
-        oom_what: str | None = None,
-        debug_what: str | None = None,
-        log: logging.Logger | None = None,
-    ) -> None:
-        self.what = what
-        self.log = log or logger
-        self.message = message
-        self.oom_what = oom_what or what
-        self.debug_what = debug_what or what
-        self.failed: dict[str, Exception] = {}  # str(path): its error, in the order they failed
-
-    def skip(self, err: Exception, name: str, path: Path | str, *, warn: bool = True) -> None:
-        """Skip the source ``name`` (``path``) that failed with ``err`` (see the class);
-        ``warn=False``: logged at DEBUG only (the caller warned for it already).
-
-        Raises:
-            LowMemoryError: If ``err`` is one or is an out-of-memory error.
-        """
-        if isinstance(err, LowMemoryError):
-            raise err
-        memguard.raise_if_out_of_memory(err, self.oom_what, name)
-        self.log.debug("%s: %s failed", path, self.debug_what, exc_info=True)
-        if warn:
-            message = self.message.format(name=name, what=self.what, err=err)
-            self.log.warning("%s", message)
-            jsonout.warn("step_failed", message, [path])
-        self.failed[str(path)] = err
-
-    def all_failed(self, total: int) -> bool:
-        """Whether a source failed and as many failed as ``total`` (the sources it counts)."""
-        return bool(self.failed) and len(self.failed) == total
-
-    def raise_if_all_failed(self, total: int) -> None:
-        """Raise the last source's error, unchanged (cli.py maps its type), when
-        :meth:`all_failed`."""
-        if self.all_failed(total):
-            raise list(self.failed.values())[-1]
-
-
 def _telemetry_layer(
     project: Path, sources: list[Any], vlm: VlmParams
 ) -> dict[str, list[dict[str, Any]]]:
@@ -1358,7 +1296,7 @@ def _telemetry_layer(
 
     data = cache.load_json(project / "telemetry.json") or {}
     out: dict[str, list[dict[str, Any]]] = {}
-    guard = SourceGuard("Telemetry coverage")
+    guard = SourceGuard("Telemetry coverage", log=logger)
     for s in sources:
         rec = (data.get("sources") or {}).get(str(s.path))
         if not rec:

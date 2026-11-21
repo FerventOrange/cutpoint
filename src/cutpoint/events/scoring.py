@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from cutpoint import cache, projectfiles, repeats, scorer, selfcheck, sources
-from cutpoint.events.audio_events import DEFAULT_GROUPS
+from cutpoint.events.audio_events import CHEERING, DEFAULT_GROUPS, LAUGHTER, SCREAM
 from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
@@ -73,7 +73,7 @@ TYPED_KINDS = ("ocr", "audio")
 REACTION_WINDOW_S = 6.0  # a reaction starts at most this long after the event
 REACTION_PAUSE_S = 1.5  # speech is a reaction only after this much silence up to the event
 # audio events that are a reaction after an event (:func:`has_reaction`); cheering is not one
-AFTER_EVENT_SOUNDS = ("Laughter", "Scream")
+AFTER_EVENT_SOUNDS = (LAUGHTER, SCREAM)
 # A nominee's analysis score is at least this share of its source's best (a dialogue stretch's:
 # DIALOGUE_FLOOR). A whole dialogue stretch over DIALOGUE_WIDEN_MAX_S has exactly its share,
 # whatever its grids say.
@@ -87,17 +87,17 @@ NOMINEE_FLOOR = 0.6
 # source still rank above a bit of talk with no event in it.
 DIALOGUE_FLOOR = 0.75
 DIALOGUE_FLOOR_PER_H, DIALOGUE_FLOOR_MIN = 2.5, 2
-LAUGH_SOUNDS = ("Laughter",)  # audio events that score laughter points
+LAUGH_SOUNDS = (LAUGHTER,)  # audio events that score laughter points
 # A heard laugh the detector found only by its relative rule (``details.relative``: its peak is
 # below the laughter group's absolute threshold, at 0.04-0.1 it includes speech and game sounds)
 # makes no moment of its own and gives it no label unless something nearby backs it
 # (:func:`laugh_backed`); a stronger one does as before. LAUGH_STRONG is that threshold of
 # ``audio_events.DEFAULT_GROUPS``, for laughter evidence without the flag (a candidate's
 # ``signals.events.laughter``, an event without ``details``).
-LAUGH_STRONG = next(g.abs_thr for g in DEFAULT_GROUPS if g.name == "Laughter")
+LAUGH_STRONG = next(g.abs_thr for g in DEFAULT_GROUPS if g.name == LAUGHTER)
 BACKUP_S = 5.0  # the backup of a weak laugh is this close to it
 LOUD_SPEECH = 0.6  # loudness (0-1 grid) that, with speech, backs a weak laugh
-SCREAM_SOUNDS = ("Scream", "Cheering")  # audio events that score scream points
+SCREAM_SOUNDS = (SCREAM, CHEERING)  # audio events that score scream points
 # the audio events that score laughter or scream points (:func:`seeds`, :func:`event_boost`)
 REACTION_SOUNDS = (*LAUGH_SOUNDS, *SCREAM_SOUNDS)
 DIALOGUE_TYPE = "dialogue"  # ``type`` of the text events of the dialogue reader
@@ -143,12 +143,35 @@ def has_reaction(
             return True
     if not segments:
         return False
-    if any(t < m["start"] <= end for m in _laugh_markers(segments)):
+    markers, spoken = _reaction_cues(segments)
+    if any(t < m <= end for m in markers):
         return True
-    segments = [s for s in segments if s.get("text")]  # not a marker holder
-    if any(s["end"] >= t - REACTION_PAUSE_S and s["start"] <= t for s in segments):
+    if any(s["end"] >= t - REACTION_PAUSE_S and s["start"] <= t for s in spoken):
         return False
-    return any(t < s["start"] <= end for s in segments)
+    return any(t < s["start"] <= end for s in spoken)
+
+
+# The last transcript asked of :func:`_reaction_cues` (the list, its length) and its cues:
+# event_boost asks once per reacting event of every candidate, always with the source's list.
+_CUES: tuple[list[dict[str, Any]], int, tuple[list[float], list[dict[str, Any]]]] | None = None
+
+
+def _reaction_cues(
+    segments: list[dict[str, Any]],
+) -> tuple[list[float], list[dict[str, Any]]]:
+    """(the start times of the laughing markers of ``segments``, its segments with text: not a
+    marker holder), worked out once per transcript list (the same list object at the same
+    length as the last call reuses them)."""
+    global _CUES
+    hit = _CUES
+    if hit is not None and hit[0] is segments and hit[1] == len(segments):
+        return hit[2]
+    cues = (
+        [m["start"] for m in _laugh_markers(segments)],
+        [s for s in segments if s.get("text")],
+    )
+    _CUES = (segments, len(segments), cues)
+    return cues
 
 
 def _laugh_markers(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
