@@ -3541,6 +3541,253 @@ def _raw_region_keys(regions: list[Region]) -> list[dict[str, Any]]:
     return [r.key() | ({"still": False} if r.kind == "score" else {}) for r in regions]
 
 
+class _Report:
+    """Calls ``on_progress`` with the share (0-1) of the source read at ``t``, at most once
+    per percent."""
+
+    def __init__(self, duration: float, on_progress: Callable[[float], None] | None) -> None:
+        self.duration = duration
+        self.on_progress = on_progress
+        self.shown = -1  # the last percent reported
+
+    def __call__(self, t: float) -> None:
+        pct = int(100 * min(1.0, t / self.duration)) if self.duration > 0 else 0
+        if self.on_progress is not None and pct > self.shown:
+            self.shown = pct
+            self.on_progress(pct / 100)
+
+
+def _replay(
+    raw: ocr_raw.RawStore,
+    meta: dict[str, Any] | None,
+    regions: list[Region],
+    interp: OcrInterpretation,
+    report: _Report,
+    cancel: threading.Event | None,
+) -> tuple[int, ocr_raw.Chunk | None]:
+    """Feed the finished raw chunks of ``meta`` (all of a complete read, or those an
+    interrupted one left) to ``interp``; returns how many and the last one."""
+    done, last = 0, None
+    if meta is None:
+        return done, last
+    if meta.get("complete"):
+        raw.touch()  # in use: another process's cleanup keeps it
+    for chunk in raw.chunks(meta):
+        if cancel is not None and cancel.is_set():
+            raise OcrCancelled
+        for rec in _records(chunk, regions):
+            interp.add(rec)
+            report(rec.t)
+        done, last = done + 1, chunk
+    return done, last
+
+
+@dataclass
+class _LiveRead:
+    """A live OCR read of one source (:func:`_read_segments`): what it reads with, where it
+    resumes (``seg``, ``idx``, ``read_errors``: the ``pos`` of the last raw chunk) and where it
+    is (``frame_no``, decoder ``hw``, ``failed``, the raw cache ``writer``: None after a disk
+    error)."""
+
+    src: Source
+    params: OcrParams
+    regions: list[Region]
+    union: tuple[int, int, int, int]
+    reader: OcrReader
+    interp: OcrInterpretation
+    stats: dict[str, Any]
+    report: _Report
+    info: dict[str, Any]  # width, height and duration, for the raw read's start
+    done: int  # raw chunks replayed before
+    writer: ocr_raw.RawStore | None
+    debug_dir: Path | None
+    cancel: threading.Event | None
+    seg: int
+    idx: int
+    read_errors: int
+    frame_no: int
+    hw: Any
+    failed: bool  # a segment gave no frames: the read stays incomplete
+    pending: list[FrameRec] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)  # the decode errors of this pass
+    all_errors: list[str] = field(default_factory=list)  # of the segments read
+
+    def write(self, step: Callable[..., None], *args: Any) -> None:
+        """A raw cache write; on a disk error the read goes on without the raw cache."""
+        try:
+            step(*args)
+        except OSError as err:
+            logger.warning("%s: raw OCR cache not written: %s", self.src.name, err)
+            self.writer = None
+
+    def flush(self, seg: int, idx: int) -> None:
+        """Write the pending records as a chunk; the read resumes at frame ``idx`` of
+        segment ``seg``. The first flush starts the raw read (an interrupt before it
+        leaves no folder)."""
+        if self.writer is not None and not self.writer.started:
+            self.write(self.writer.start, self.done, self.info)
+        if self.writer is None or not self.pending:
+            return
+        state, arrays = self.reader.state()
+        n_errors = sum(bool(READ_ERROR_RE.search(e)) for e in self.all_errors + self.errors)
+        at = {"seg": seg, "idx": idx, "frame_no": self.frame_no, "hw": self.hw}
+        at |= {"hwaccel": self.stats["hwaccel"], "read_errors": self.read_errors + n_errors}
+        at["failed"] = self.failed
+        chunk = _chunk(self.pending, self.regions, {"reader": state, "pos": at}, arrays)
+        self.write(self.writer.add, chunk)
+        self.pending.clear()
+
+    def save_crop(self, out: Path, t: float, r: Region, crop: np.ndarray) -> None:
+        """Save the region crop of a new event as a PNG in ``out``."""
+        out.mkdir(parents=True, exist_ok=True)
+        write_png(out / f"{self.src.path.stem[-24:]}_{t:07.1f}_{r.name}.png", crop)
+
+    def segment(self, si: int, seg_a: float, seg_b: float) -> bool:
+        """Read segment ``si`` (``seg_a``-``seg_b``), from where the read resumes; a failed
+        GPU decode is retried on the CPU, a failed CPU one marks the read ``failed``. False:
+        nothing of it was left to read (its pass did not run)."""
+        params, src, cancel = self.params, self.src, self.cancel
+        k0 = self.idx if si == self.seg else 0  # frames of the segment already read
+        start = seg_a + k0 / params.fps
+        if start >= seg_b:
+            return False
+        by_name = {r.name: r for r in self.regions}
+        duration = self.info["duration"]
+        while True:
+            self.errors.clear()
+            exits: list[int] = []  # background: an ffmpeg exit it did not cause
+            k = k0
+            # "auto" decodes on the CPU when no GPU decoder fits this source: a failed CPU
+            # pass is no GPU failure, and a plain retry would only repeat it
+            gpu = self.hw and decoder_for(src.io_path) is not None
+            try:
+                for t, frame in iter_frames(
+                    src.io_path,
+                    params.fps,
+                    self.union,
+                    self.hw,
+                    self.errors,
+                    start,
+                    None if seg_b >= duration else seg_b - start,
+                    cancel=cancel,
+                    exit_codes=exits if cancel is not None else None,
+                ):
+                    if cancel is not None and cancel.is_set():
+                        raise OcrCancelled
+                    if k0:  # resumed: the time stamps of an uninterrupted read
+                        t = seg_a + k / params.fps
+                    k += 1
+                    rec, crops = self.reader.read(self.frame_no, t, frame)
+                    self.frame_no += 1
+                    for name in self.interp.add(rec):
+                        if self.debug_dir:
+                            self.save_crop(self.debug_dir, t, by_name[name], crops[name])
+                    if self.writer is not None:
+                        self.pending.append(rec)
+                        if len(self.pending) >= ocr_raw.CHUNK_FRAMES:
+                            self.flush(si, k)
+                    self.report(t)
+                if cancel is not None and (cancel.is_set() or exits):
+                    raise OcrCancelled  # killed on cancel, or stopped from outside
+                self.stats["hwaccel"] = gpu
+                return True
+            except RuntimeError as err:
+                if is_out_of_memory(err) and not isinstance(err, FFmpegError):
+                    raise  # an OCR call short of memory is no failed decode (detect_ocr_events)
+                if cancel is not None and (cancel.is_set() or exits or gpu):
+                    # cancelled or stopped from outside, or a failed GPU pass: the read in
+                    # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a
+                    # serial run would
+                    raise OcrCancelled from err
+                if k0 and k == k0 and start > seg_b - 1.0:
+                    # resumed at the very end of the segment: nothing was left
+                    logger.debug("%s: nothing left after %.1fs: %s", src.name, start, err)
+                    return True
+                if gpu:
+                    logger.warning("%s: hwaccel decode failed (%s); retrying on CPU", src.name, err)
+                    self.hw = False
+                    continue
+                logger.warning("%s: no frames in %.0f-%.0fs: %s", src.name, seg_a, seg_b, err)
+                self.failed = True
+                return True
+
+
+def _read_segments(read: _LiveRead, segments: list[tuple[float, float]], tries: int) -> None:
+    """Read the ``segments`` from where ``read`` resumes, then finish its raw cache (complete,
+    or left incomplete when a part gave no frames: ``stats["incomplete"]`` counts the
+    ``tries``)."""
+    stats, name = read.stats, read.src.name
+    for si, (seg_a, seg_b) in enumerate(segments):
+        if si < read.seg:
+            continue
+        if read.segment(si, seg_a, seg_b):
+            read.all_errors += read.errors
+    read.errors.clear()
+    read_errors = [e for e in read.all_errors if READ_ERROR_RE.search(e)]
+    if read_errors:
+        logger.warning(
+            "%s: %d read errors during OCR decode (e.g. %s)",
+            name,
+            len(read_errors),
+            read_errors[0],
+        )
+    stats["read_errors"] = read.read_errors + len(read_errors)
+    if read.failed:
+        stats["incomplete"] = tries + 1
+    read.flush(len(segments), 0)
+    if read.writer is not None and read.failed:
+        logger.info("%s: raw OCR cache left incomplete (a part gave no frames)", name)
+        read.write(read.writer.fail)
+    elif read.writer is not None:
+        read.write(read.writer.finish, {k: stats[k] for k in ("hwaccel", "read_errors")})
+
+
+def _save(
+    src: Source,
+    cpath: Path,
+    key: dict[str, Any],
+    stats: dict[str, Any],
+    interp: OcrInterpretation,
+    t_start: float,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """The events ``interp`` saw in the read (or replay), logged and cached under ``cpath``;
+    returns (events, stats)."""
+    stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
+    events = interp.finish()
+    if stats.get("replayed"):
+        logger.info(
+            "%s: %d OCR events, %d frames, replayed from the raw OCR cache: 0 live OCR calls "
+            "(the cached read made %s), %.1fs",
+            src.name,
+            len(events),
+            stats["frames"],
+            stats["ocr_calls"],
+            stats["elapsed_s"],
+        )
+    else:
+        logger.info(
+            "%s: %d OCR events, %d frames, OCR calls %s, %.1fs",
+            src.name,
+            len(events),
+            stats["frames"],
+            stats["ocr_calls"],
+            stats["elapsed_s"],
+        )
+    if "det_skipped" in stats:
+        skipped = sum(stats["det_skipped"].values())
+        logger.info(
+            "%s: det gate skipped on %d of %d region reads (unchanged since its last det call)",
+            src.name,
+            skipped,
+            skipped + sum(stats["det_calls"].values()),
+        )
+    _log_score_slots(src.name, stats)
+    cache.save_json(
+        cpath, {"source": str(src.path), "params": key, "stats": stats, "events": events}
+    )
+    return events, stats
+
+
 def detect_ocr_events(
     src: Source,
     params: OcrParams,
@@ -3668,26 +3915,9 @@ def detect_ocr_events(
     interp = OcrInterpretation(src.name, params, preset, regions, (width, height), stats)
     t_start = time.perf_counter()
     segments = keep_segments(duration, avoid)
-    shown = [-1]  # the last percent reported to on_progress
-
-    def report(t: float) -> None:
-        pct = int(100 * min(1.0, t / duration)) if duration > 0 else 0
-        if on_progress is not None and pct > shown[0]:
-            shown[0] = pct
-            on_progress(pct / 100)
-
+    report = _Report(duration, on_progress)
     # replay the finished raw chunks: all of a complete read, or those an interrupted one left
-    done, last = 0, None
-    if meta is not None:
-        if meta.get("complete"):
-            raw.touch()  # in use: another process's cleanup keeps it
-        for chunk in raw.chunks(meta):
-            if cancel is not None and cancel.is_set():
-                raise OcrCancelled
-            for rec in _records(chunk, regions):
-                interp.add(rec)
-                report(rec.t)
-            done, last = done + 1, chunk
+    done, last = _replay(raw, meta, regions, interp, report, cancel)
     if meta is not None and meta.get("complete") and done == meta["chunks"]:
         raw.touch()
         stats |= meta.get("stats", {})  # hwaccel and read errors of the read
@@ -3706,8 +3936,9 @@ def detect_ocr_events(
             "idx": 0,
             "frame_no": 0,
             "hw": params.hwaccel,
+            "hwaccel": False,
+            "read_errors": 0,
         }
-        pos |= {"hwaccel": False, "read_errors": 0}
         if last is not None:
             reader.restore(last.state["reader"], last.arrays)
             pos = last.state["pos"]
@@ -3717,161 +3948,26 @@ def detect_ocr_events(
                 src.name,
                 stats["frames"],
             )
-        writer = raw if raw.writable() else None
-        pending: list[FrameRec] = []
-
-        def write(step: Callable[..., None], *args: Any) -> None:
-            """A raw cache write; on a disk error the read goes on without the raw cache."""
-            nonlocal writer
-            try:
-                step(*args)
-            except OSError as err:
-                logger.warning("%s: raw OCR cache not written: %s", src.name, err)
-                writer = None
-
-        frame_no, hw = pos["frame_no"], pos["hw"]
-        failed = bool(pos.get("failed"))  # a segment gave no frames: the read stays incomplete
-        errors: list[str] = []
-        all_errors: list[str] = []
-
-        def flush(seg: int, idx: int) -> None:
-            """Write the pending records as a chunk; the read resumes at frame ``idx`` of
-            segment ``seg``. The first flush starts the raw read (an interrupt before it
-            leaves no folder)."""
-            if writer is not None and not writer.started:
-                write(writer.start, done, {"width": width, "height": height, "duration": duration})
-            if writer is None or not pending:
-                return
-            state, arrays = reader.state()
-            n_errors = sum(bool(READ_ERROR_RE.search(e)) for e in all_errors + errors)
-            at = {"seg": seg, "idx": idx, "frame_no": frame_no, "hw": hw}
-            at |= {"hwaccel": stats["hwaccel"], "read_errors": pos["read_errors"] + n_errors}
-            at["failed"] = failed
-            write(writer.add, _chunk(pending, regions, {"reader": state, "pos": at}, arrays))
-            pending.clear()
-
-        def save_crop(out: Path, t: float, r: Region, crop: np.ndarray) -> None:
-            """Save the region crop of a new event as a PNG in ``out``."""
-            out.mkdir(parents=True, exist_ok=True)
-            write_png(out / f"{src.path.stem[-24:]}_{t:07.1f}_{r.name}.png", crop)
-
-        by_name = {r.name: r for r in regions}
-        for si, (seg_a, seg_b) in enumerate(segments):
-            if si < pos["seg"]:
-                continue
-            k0 = pos["idx"] if si == pos["seg"] else 0  # frames of the segment already read
-            start = seg_a + k0 / params.fps
-            if start >= seg_b:
-                continue
-            while True:
-                errors.clear()
-                exits: list[int] = []  # background: an ffmpeg exit it did not cause
-                k = k0
-                # "auto" decodes on the CPU when no GPU decoder fits this source: a failed CPU
-                # pass is no GPU failure, and a plain retry would only repeat it
-                gpu = hw and decoder_for(src.io_path) is not None
-                try:
-                    for t, frame in iter_frames(
-                        src.io_path,
-                        params.fps,
-                        union,
-                        hw,
-                        errors,
-                        start,
-                        None if seg_b >= duration else seg_b - start,
-                        cancel=cancel,
-                        exit_codes=exits if cancel is not None else None,
-                    ):
-                        if cancel is not None and cancel.is_set():
-                            raise OcrCancelled
-                        if k0:  # resumed: the time stamps of an uninterrupted read
-                            t = seg_a + k / params.fps
-                        k += 1
-                        rec, crops = reader.read(frame_no, t, frame)
-                        frame_no += 1
-                        for name in interp.add(rec):
-                            if debug_dir:
-                                save_crop(debug_dir, t, by_name[name], crops[name])
-                        if writer is not None:
-                            pending.append(rec)
-                            if len(pending) >= ocr_raw.CHUNK_FRAMES:
-                                flush(si, k)
-                        report(t)
-                    if cancel is not None and (cancel.is_set() or exits):
-                        raise OcrCancelled  # killed on cancel, or stopped from outside
-                    stats["hwaccel"] = gpu
-                    break
-                except RuntimeError as err:
-                    if is_out_of_memory(err) and not isinstance(err, FFmpegError):
-                        raise  # an OCR call short of memory is no failed decode (see above)
-                    if cancel is not None and (cancel.is_set() or exits or gpu):
-                        # cancelled or stopped from outside, or a failed GPU pass: the read in
-                        # its turn redoes it from the raw chunks (CPU retry, hwaccel stats) as a
-                        # serial run would
-                        raise OcrCancelled from err
-                    if k0 and k == k0 and start > seg_b - 1.0:
-                        # resumed at the very end of the segment: nothing was left
-                        logger.debug("%s: nothing left after %.1fs: %s", src.name, start, err)
-                        break
-                    if gpu:
-                        logger.warning(
-                            "%s: hwaccel decode failed (%s); retrying on CPU", src.name, err
-                        )
-                        hw = False
-                        continue
-                    logger.warning("%s: no frames in %.0f-%.0fs: %s", src.name, seg_a, seg_b, err)
-                    failed = True
-                    break
-            all_errors += errors
-        errors.clear()
-        read_errors = [e for e in all_errors if READ_ERROR_RE.search(e)]
-        if read_errors:
-            logger.warning(
-                "%s: %d read errors during OCR decode (e.g. %s)",
-                src.name,
-                len(read_errors),
-                read_errors[0],
-            )
-        stats["read_errors"] = pos["read_errors"] + len(read_errors)
-        if failed:
-            stats["incomplete"] = tries + 1
-        flush(len(segments), 0)
-        if writer is not None and failed:
-            logger.info("%s: raw OCR cache left incomplete (a part gave no frames)", src.name)
-            write(writer.fail)
-        elif writer is not None:
-            write(writer.finish, {k: stats[k] for k in ("hwaccel", "read_errors")})
-    stats["elapsed_s"] = round(time.perf_counter() - t_start, 2)
-    events = interp.finish()
-    if stats.get("replayed"):
-        logger.info(
-            "%s: %d OCR events, %d frames, replayed from the raw OCR cache: 0 live OCR calls "
-            "(the cached read made %s), %.1fs",
-            src.name,
-            len(events),
-            stats["frames"],
-            stats["ocr_calls"],
-            stats["elapsed_s"],
+        read = _LiveRead(
+            src=src,
+            params=params,
+            regions=regions,
+            union=union,
+            reader=reader,
+            interp=interp,
+            stats=stats,
+            report=report,
+            info={"width": width, "height": height, "duration": duration},
+            done=done,
+            writer=raw if raw.writable() else None,
+            debug_dir=debug_dir,
+            cancel=cancel,
+            seg=pos["seg"],
+            idx=pos["idx"],
+            read_errors=pos["read_errors"],
+            frame_no=pos["frame_no"],
+            hw=pos["hw"],
+            failed=bool(pos.get("failed")),
         )
-    else:
-        logger.info(
-            "%s: %d OCR events, %d frames, OCR calls %s, %.1fs",
-            src.name,
-            len(events),
-            stats["frames"],
-            stats["ocr_calls"],
-            stats["elapsed_s"],
-        )
-    if "det_skipped" in stats:
-        skipped = sum(stats["det_skipped"].values())
-        logger.info(
-            "%s: det gate skipped on %d of %d region reads (unchanged since its last det call)",
-            src.name,
-            skipped,
-            skipped + sum(stats["det_calls"].values()),
-        )
-    _log_score_slots(src.name, stats)
-    cache.save_json(
-        cpath, {"source": str(src.path), "params": key, "stats": stats, "events": events}
-    )
-    return events, stats
+        _read_segments(read, segments, tries)
+    return _save(src, cpath, key, stats, interp, t_start)
