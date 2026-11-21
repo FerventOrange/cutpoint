@@ -23,7 +23,6 @@ import logging
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -31,7 +30,6 @@ import threading
 import time
 import uuid
 import wave
-import zlib
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager, suppress
@@ -44,7 +42,7 @@ from typing import IO, Any, Literal
 import numpy as np
 
 from cutpoint import paths, procs, state
-from cutpoint.cache import atomic_path
+from cutpoint.cache import atomic_path, host_tag
 from cutpoint.config import get_config
 from cutpoint.errors import (
     EncoderUnavailableError,
@@ -800,7 +798,7 @@ def unique_tmp(dst: Path) -> Path:
 
 def _host_tag() -> str:
     """8 hex digits that tell this computer from another one sharing the cache folder."""
-    return f"{zlib.crc32(socket.gethostname().encode('utf-8', 'replace')):08x}"
+    return host_tag()
 
 
 def _tmp_fields(dst: Path, tmp: Path) -> tuple[int | None, str | None]:

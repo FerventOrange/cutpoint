@@ -35,7 +35,7 @@ from collections.abc import Iterator, Sequence
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from cutpoint import cache, folders, jsonout, paths, state
+from cutpoint import cache, folders, jsonout, paths, state, winvol
 from cutpoint.config import (
     canonical_source,
     get_config,
@@ -93,9 +93,6 @@ def _mount(path: Path) -> tuple[str, str]:
     return best, fstype
 
 
-_DRIVE_NO_ROOT, _DRIVE_REMOVABLE, _DRIVE_REMOTE = 1, 2, 4  # GetDriveTypeW; 0 is unknown
-
-
 def is_remote(path: Path) -> bool:
     """Whether ``path`` is likely on slow or network storage.
 
@@ -112,16 +109,13 @@ def is_remote(path: Path) -> bool:
             drive = drive[4:]
         if drive.startswith("\\\\"):
             return True
-        # Lazy: projectdelete is heavy and stage is imported by the CLI at startup.
-        from cutpoint import projectdelete  # noqa: PLC0415
-
         try:
-            kind = projectdelete._drive_type(drive + "\\")
+            kind = winvol.drive_type(drive + "\\")
         except (OSError, AttributeError):
             kind = 0
-        if kind in (_DRIVE_REMOVABLE, _DRIVE_REMOTE):
+        if kind in (winvol.DRIVE_REMOVABLE, winvol.DRIVE_REMOTE):
             return True
-        if kind > _DRIVE_NO_ROOT:
+        if kind > winvol.DRIVE_NO_ROOT:
             return False
         return drive.upper() not in ("C:", "D:", "E:")
     return _mount(path)[1] in _NETWORK_FS
@@ -460,25 +454,7 @@ def _staged_path(path: str, *, repaired: bool = True) -> tuple[str, int | None, 
     return str(copy), entry["size"], False
 
 
-def _query_dos_device(drive: str) -> str | None:
-    """Windows: what ``QueryDosDeviceW`` names drive ``drive`` (``Q:``): ``\\??\\C:\\real`` for
-    a ``subst`` drive, ``\\Device\\...`` for a disk or a network drive. A local kernel call (no
-    network access). Never raises; None on failure and on other platforms.
-    """
-    if sys.platform != "win32":
-        return None
-    try:
-        import ctypes  # noqa: PLC0415 - Windows only
-    except ImportError:
-        return None
-    try:
-        query = ctypes.WinDLL("kernel32").QueryDosDeviceW  # type: ignore[attr-defined]
-        buf = ctypes.create_unicode_buffer(1024)
-        if query(drive, buf, len(buf)):
-            return buf.value
-    except (OSError, AttributeError, ValueError, ctypes.ArgumentError):
-        pass
-    return None
+_query_dos_device = winvol.query_dos_device
 
 
 # _subst_target results by drive letter.
@@ -611,17 +587,18 @@ def _update_index(stage_dir: Path, slot: str, entry: dict[str, Any]) -> None:
 
 
 def copy_once(src: Path, dst: Path, label: str) -> float:
-    """Sequentially copy ``src`` to ``dst`` (via ``.partial``), keeping mtime.
+    """Sequentially copy ``src`` to ``dst`` (via a temp file beside it), keeping mtime.
 
     Returns:
         Seconds spent reading and writing.
     """
     st = src.stat()
     size = st.st_size
-    tmp = dst.with_name(dst.name + ".partial")
     t0 = time.perf_counter()
     done, next_log = 0, 0.1
-    try:
+    with cache.atomic_path(
+        dst, sweep=True
+    ) as tmp:  # a read error or Ctrl+C leaves no half copy behind
         with src.open("rb") as fi, tmp.open("wb") as fo:
             while chunk := fi.read(CHUNK):
                 fo.write(chunk)
@@ -636,11 +613,6 @@ def copy_once(src: Path, dst: Path, label: str) -> float:
                     )
                     next_log += 0.1
         os.utime(tmp, ns=(st.st_atime_ns, st.st_mtime_ns))
-        tmp.replace(dst)
-    except BaseException:  # a read error or Ctrl+C leaves no half copy behind
-        with contextlib.suppress(OSError):
-            tmp.unlink(missing_ok=True)
-        raise
     return time.perf_counter() - t0
 
 

@@ -200,6 +200,14 @@ def test_settings_offer_the_presets_with_their_model_fields(ui_client: TestClien
     assert got["key_hosts"]["xai"] == "api.x.ai"
 
 
+def test_every_settings_provider_has_an_offer_in_the_provider_module() -> None:
+    """A419: the provider table lives beside PRESETS, one Offer per preset and subscription."""
+    got = providers.offers("http://box:11434", "some-vl:7b")
+    assert set(got) == set(providers.PRESETS) | set(providers.SUBSCRIPTION_PROVIDERS)
+    assert got["ollama"] == ("http://box:11434", "some-vl:7b", ["some-vl:7b"], "some-vl:7b", False)
+    assert got["codex"].model == providers.DEFAULT_CODEX_MODEL and got["codex"].url == ""
+
+
 @pytest.mark.parametrize(
     "section",
     [

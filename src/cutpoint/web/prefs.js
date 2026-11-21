@@ -1,7 +1,8 @@
 // cutpoint editing workspace: preferences kept in this browser's storage (Settings toggles, theme,
 // column widths, volume, the side tab and the moments list's order and filters).
 import { $, baseName, filtersOn, h, naturalCompare, NO_FILTERS, readStore, themeFromStored, writeStore } from './util.js';
-import { blend, cands, dip, els, icon, OPT_FIELDS, OPT_SELECTS, popOpen, renderMoments, renderNerdStats, S } from './app.js';
+import { blend, cands, dip, icon, OPT_FIELDS, OPT_SELECTS, popOpen, renderMoments, renderNerdStats, S } from './app.js';
+import { els } from './player.js';
 import { openModelsTab } from './models.js';
 
 const SIDE_KEY = 'cutpoint.sideWidth'; // localStorage: the sequence column width the user dragged to
