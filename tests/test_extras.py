@@ -106,6 +106,13 @@ def _receipt_with(source: str) -> str:
     return f'[tool]\nrequirements = [{{ name = "cutpoint", {source} }}]\n'
 
 
+def test_installer_hints_use_the_release_installers_not_main():
+    """A hint installs the newest release's installer (a release asset), never `main`'s."""
+    base = "https://github.com/FerventOrange/cutpoint/releases/latest/download"
+    assert f"curl -LsSf {base}/install.sh | sh" == extras.INSTALL_SH
+    assert f"irm {base}/install.ps1 | iex" == extras.INSTALL_PS1
+
+
 def _rerun_with(sh_src: str, ps_src: str) -> str:
     return (
         f"re-run the installer: {extras.INSTALL_SH} -s -- --source {sh_src} (Linux, macOS) or "
