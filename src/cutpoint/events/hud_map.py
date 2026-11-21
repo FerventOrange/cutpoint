@@ -381,7 +381,7 @@ def ocr_stats(frames: list[dict[str, Any]], zone: Rect) -> dict[str, Any]:
     text): frames and bursts with text, distinct lines, the change rate (consecutive frames of a
     burst whose text there differs, of those with text in either), generic kill words, icon
     kill lines, the letter share and the small numbers (:func:`score_value`)."""
-    from cutpoint.events.killfeed import DEFAULT_KILL_WORDS  # noqa: PLC0415 (heavy imports)
+    from cutpoint.events.feed_parser import DEFAULT_KILL_WORDS  # noqa: PLC0415 (heavy imports)
 
     x, y, w, h = zone
     per = [(f, boxes_in(f, x, y, w, h)) for f in frames]
@@ -857,7 +857,7 @@ def apply(
             )
             if excluded:
                 # stays a feed: reading it tells chat from a feed by lines per hour and drops
-                # the events of a chat (killfeed._drop_chat), as with a feed labelled chat
+                # the events of a chat (ocr_read._drop_chat), as with a feed labelled chat
                 logger.info(
                     "HUD map: rule-made feed %s@%d,%d %dx%d is no kill feed (a chat "
                     "box there); kept as a feed so its lines are filtered",

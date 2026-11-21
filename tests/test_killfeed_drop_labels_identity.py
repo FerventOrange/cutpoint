@@ -10,15 +10,9 @@ from typing import Any
 
 import pytest
 
-from cutpoint.events.killfeed import (
-    LABEL_REPEATS,
-    MENU,
-    ROW_NOTICE_MAX_S,
-    Interpreter,
-    OcrParams,
-    _runs,
-    _two_hues,
-)
+from cutpoint.events.killfeed import OcrParams
+from cutpoint.events.menu_rules import MENU
+from cutpoint.events.ocr_read import LABEL_REPEATS, ROW_NOTICE_MAX_S, Interpreter, _runs, _two_hues
 
 # ------------------------------------------------------------------ the old code, frozen
 

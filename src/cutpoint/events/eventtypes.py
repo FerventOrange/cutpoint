@@ -186,11 +186,11 @@ class EventType:
 # and victim) come after teamkills and before both: their own type, worth half
 # a kill, a tail payoff and a seed like a death. Player kills: kills by the
 # player (``player_kill``). Score changes: an on-screen number that stepped by one (``score``
-# events of a "score" region, :class:`cutpoint.events.killfeed.ScoreTracker`), worth a kill
+# events of a "score" region, :class:`cutpoint.events.score_readout.ScoreTracker`), worth a kill
 # each, at most 3 counted, a tail payoff, a seed like a round banner and at most one moment
 # seed a minute per source. Announcements: big-text lines (never notices) the OCR
 # layer learned as pop-ups that come back all through the source (``announce``,
-# :func:`cutpoint.events.killfeed.learn_announcements`), half a kill each, at most 2 counted, no tail
+# :func:`cutpoint.events.tracker.learn_announcements`), half a kill each, at most 2 counted, no tail
 # payoff. Boost-only: they add points to candidates that exist and never nominate a moment or seed a
 # VLM window. Repeat-damped (#1071): a line shown often in a source (a phase or team caption
 # every round) counts less each time; banners, kills and score changes are outcomes, not

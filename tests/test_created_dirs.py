@@ -11,7 +11,7 @@ import pytest
 
 from conftest import set_config, write
 from cutpoint import cache, folders, stage
-from cutpoint.events import discover, killfeed, visual
+from cutpoint.events import discover, ocr_engine, visual
 from cutpoint.events.common import Source
 from cutpoint.pano import qa, qa_paths, stitch, views
 from pano_helpers import x3clip
@@ -120,7 +120,7 @@ def test_interrupted_discovery_ocr_leaves_no_discovery_folder(
     monkeypatch.setattr(
         discover, "_burst_frames", lambda *_a, **_k: [np.zeros((4, 4, 3), np.uint8)]
     )
-    monkeypatch.setattr(killfeed, "OcrEngine", lambda **_k: interrupt)  # the OCR call
+    monkeypatch.setattr(ocr_engine, "OcrEngine", lambda **_k: interrupt)  # the OCR call
     with pytest.raises(KeyboardInterrupt):
         discover._ocr_frames(
             [(src, 5.0)], discover.DiscoverParams(), frame_dir, frame_dir.parent / "ocr.jsonl"

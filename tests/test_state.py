@@ -120,8 +120,8 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.events.paths._TORCH_HOME_SET": _fill_torch_home,
     "cutpoint.features.installed_extras": lambda t, m: features.installed_extras(),
     "cutpoint.styles._warn_reserved": lambda t, m: styles._warn_reserved("auto.json"),
-    "cutpoint.events.killfeed._find_tag": lambda t, m: importlib.import_module(
-        "cutpoint.events.killfeed"
+    "cutpoint.events.feed_parser._find_tag": lambda t, m: importlib.import_module(
+        "cutpoint.events.feed_parser"
     )._find_tag("MARIGOLD", "MARIGLD"),
     "cutpoint.activity.default_prompts": lambda t, m: importlib.import_module(
         "cutpoint.activity"

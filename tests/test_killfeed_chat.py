@@ -12,18 +12,17 @@ from typing import Any
 import numpy as np
 import pytest
 
-from cutpoint.events import killfeed, ocr_raw
+from cutpoint.events import killfeed, ocr_raw, ocr_read
 from cutpoint.events.common import Source
-from cutpoint.events.killfeed import (
+from cutpoint.events.killfeed import OcrParams, detect_ocr_events
+from cutpoint.events.ocr_read import (
     CHAT_LINES_PER_HOUR,
     CHAT_MIN_FOOTAGE_S,
     CHAT_UNSURE_LINES_PER_HOUR,
     FrameRec,
     OcrInterpretation,
-    OcrParams,
     _chat_lines,
     chat_label,
-    detect_ocr_events,
 )
 from cutpoint.events.regions import Region, preset_from_dict
 
@@ -158,7 +157,7 @@ def test_chat_region_gives_no_events_and_other_regions_keep_theirs(tmp_path: Pat
 def test_unsure_region_stays_a_feed_with_a_warning(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.INFO, logger="cutpoint.events.killfeed")
+    caplog.set_level(logging.INFO, logger="cutpoint.events.ocr_read")
     # one line per frame: about 3600/h, between the two rates
     events, stats = _run(tmp_path, {"chat_box": 1, "game_feed": 0})
     info = stats["feed_regions"]["chat_box"]
@@ -176,7 +175,7 @@ def test_unsure_region_stays_a_feed_with_a_warning(
 def test_hand_made_preset_is_never_relabelled_chat(
     tmp_path: Path, caplog: pytest.LogCaptureFixture, source: str | None
 ) -> None:
-    caplog.set_level(logging.INFO, logger="cutpoint.events.killfeed")
+    caplog.set_level(logging.INFO, logger="cutpoint.events.ocr_read")
     events, stats = _run(tmp_path, {"chat_box": 3, "game_feed": 0}, source=source)
     info = stats["feed_regions"]["chat_box"]
     assert info["label"] == "feed"
@@ -202,7 +201,7 @@ def test_real_feed_with_few_distinct_lines_keeps_its_kills(tmp_path: Path) -> No
 def test_short_footage_keeps_the_feed_with_a_warning_and_its_events(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    caplog.set_level(logging.INFO, logger="cutpoint.events.killfeed")
+    caplog.set_level(logging.INFO, logger="cutpoint.events.ocr_read")
     # 500 s at a chat rate: under the 10 minute floor
     events, stats = _run(tmp_path, {"chat_box": 3, "game_feed": 0}, sec=500)
     info = stats["feed_regions"]["chat_box"]
@@ -226,8 +225,8 @@ def _det_run(
     chat = Region("chat_box", 0, 0, 400, 400, "feed", gate="det")
     game = Region("game_feed", 1500, 0, 400, 400, "feed", gate="det")
     seen: dict[str, Any] = {}
-    real_drop = killfeed.Interpreter.drop_labels
-    real_rules = killfeed.menu_rules
+    real_drop = ocr_read.Interpreter.drop_labels
+    real_rules = ocr_read.menu_rules
 
     def drop_labels(self: Any) -> None:
         seen["labels"] = {e.get("region") for e in self.tracker.events}
@@ -237,8 +236,8 @@ def _det_run(
         seen["feed_times"] = set(kw["feed_times"] or ())
         return real_rules(frames, **kw)
 
-    monkeypatch.setattr(killfeed.Interpreter, "drop_labels", drop_labels)
-    monkeypatch.setattr(killfeed, "menu_rules", menu_rules)
+    monkeypatch.setattr(ocr_read.Interpreter, "drop_labels", drop_labels)
+    monkeypatch.setattr(ocr_read, "menu_rules", menu_rules)
     stats: dict[str, Any] = {}
     interp = OcrInterpretation(
         "rec.mp4",

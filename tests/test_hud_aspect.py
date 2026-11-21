@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from cutpoint import paths
-from cutpoint.events import discover, feed_labels, hud_map, killfeed, regions
+from cutpoint.events import discover, feed_labels, hud_map, ocr_engine, regions
 from cutpoint.events.regions import Region
 
 SIZES = [(3440, 1440), (1440, 1080), (1920, 1080)]  # 21:9, 4:3, 16:9
@@ -39,7 +39,7 @@ def test_discovered_box_reads_back_at_its_pixel_row(tmp_path, monkeypatch, w, h)
     x0, y0, x1, y1 = int(w * 0.70), int(h * 0.92), int(w * 0.95), int(h * 0.97)
     box = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
     monkeypatch.setattr(discover, "_burst_frames", lambda *_a: [np.zeros((h, w, 3), np.uint8)] * 4)
-    monkeypatch.setattr(killfeed, "OcrEngine", _engine(box))
+    monkeypatch.setattr(ocr_engine, "OcrEngine", _engine(box))
     frames = discover._ocr_frames(
         [(_src(tmp_path), 0.0)], discover.DiscoverParams(), tmp_path / "f", tmp_path / "o.jsonl"
     )
@@ -125,7 +125,7 @@ def test_cached_frames_without_a_version_are_read_again_only_when_not_16x9(
             return []
 
     monkeypatch.setattr(discover, "_burst_frames", lambda *_a: [np.zeros((h, w, 3), np.uint8)] * 4)
-    monkeypatch.setattr(killfeed, "OcrEngine", Engine)
+    monkeypatch.setattr(ocr_engine, "OcrEngine", Engine)
     bursts = [(_src(tmp_path), 0.0)]
     args = (discover.DiscoverParams(), tmp_path / "f", tmp_path / "o.jsonl")
     first = discover._ocr_frames(bursts, *args)

@@ -612,7 +612,7 @@ def text_probe(io: Path, duration: float, width: int, height: int) -> dict[str, 
 
     Needs ``rapidocr_onnxruntime`` (the events extra).
     """
-    from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
+    from cutpoint.events.ocr_engine import OcrEngine  # noqa: PLC0415
     from cutpoint.events.ocr_raw import engine_version  # noqa: PLC0415
 
     frames = _text_frames(io, duration, width, height)
@@ -663,7 +663,7 @@ def _one_ocr() -> Iterator[None]:
     if not ocr_installed():
         yield
         return
-    from cutpoint.events.killfeed import SharedOcr  # noqa: PLC0415
+    from cutpoint.events.ocr_engine import SharedOcr  # noqa: PLC0415
 
     shared = SharedOcr()
     token = _TEXT_OCR.set(shared)

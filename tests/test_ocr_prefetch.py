@@ -929,7 +929,7 @@ def test_real_background_read_equals_the_serial_read(home, tmp_path, monkeypatch
 
     import ocr_helpers as e2e  # noqa: PLC0415
     from cutpoint import paths  # noqa: PLC0415
-    from cutpoint.events import common, killfeed  # noqa: PLC0415
+    from cutpoint.events import common, killfeed, ocr_engine  # noqa: PLC0415
     from hud_fixtures import write_preset  # noqa: PLC0415
 
     folder = tmp_path / "footage"
@@ -943,7 +943,7 @@ def test_real_background_read_equals_the_serial_read(home, tmp_path, monkeypatch
     write_preset(paths.presets_dir(), {"game": e2e.GAME, "regions": [region], "feed": feed})
     project = tmp_path / "proj"
     params = OcrParams(game=e2e.GAME, fps=1.0, hwaccel=False, project=project)
-    engine = killfeed.OcrEngine()
+    engine = ocr_engine.OcrEngine()
     serial = killfeed.detect_ocr_events(common.load_source(serial_clip, 12.0), params, engine)
     pre = ocr_prefetch.OcrPrefetch(project, [background_clip], OcrParams(game=e2e.GAME, fps=1.0))
     pre.params.hwaccel = False

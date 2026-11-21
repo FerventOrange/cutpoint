@@ -1,6 +1,6 @@
 """Menu time in highlight candidates.
 
-The OCR layer flags menu and scoreboard frames (:func:`cutpoint.events.killfeed.menu_rules`)
+The OCR layer flags menu and scoreboard frames (:func:`cutpoint.events.menu_rules.menu_rules`)
 and records them per source as ``menu_spans`` in its stats (``events.json``:
 ``stats.ocr.<source key>.menu_spans``, ``[start, end]`` in source seconds; the key is the
 file name, see :func:`ocr_stats_key`). A candidate

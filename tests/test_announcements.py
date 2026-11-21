@@ -8,15 +8,10 @@ from typing import Any
 import pytest
 
 from cutpoint.events import eventtypes, scoring, vlm_windows
-from cutpoint.events.killfeed import (
-    GENERIC_VERSION,
-    FrameRec,
-    Interpreter,
-    OcrInterpretation,
-    OcrParams,
-    learn_announcements,
-)
+from cutpoint.events.killfeed import GENERIC_VERSION, OcrParams
+from cutpoint.events.ocr_read import FrameRec, Interpreter, OcrInterpretation
 from cutpoint.events.regions import Region, preset_from_dict
+from cutpoint.events.tracker import learn_announcements
 
 FEED = Region("feed", 1500, 0, 400, 400, "feed")
 NOTICE = Region("notice", 600, 700, 700, 100, "notice")
