@@ -62,7 +62,7 @@ from cutpoint import (
     tsrepair,
 )
 from cutpoint.config import path_key, remap_source, unc_path
-from cutpoint.dsp import conv_same
+from cutpoint.dsp import conv_same, gauss_kernel, gauss_smooth
 from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.events import paths as event_paths
 from cutpoint.events.menu_spans import drop_menu_time
@@ -244,17 +244,6 @@ class Candidate:
 
 
 # --------------------------------------------------------------------------- signals
-def _gauss_kernel(sigma_s: float) -> tuple[int, np.ndarray]:
-    """Unnormalised Gaussian kernel over +-3 sigma at the analysis rate: ``(radius, k)``."""
-    radius = int(3 * sigma_s / DT)
-    return radius, np.exp(-0.5 * (np.arange(-radius, radius + 1) * DT / sigma_s) ** 2)
-
-
-def _gauss_smooth(x: np.ndarray, sigma_s: float) -> np.ndarray:
-    _, k = _gauss_kernel(sigma_s)
-    return conv_same(x, k / k.sum())
-
-
 def _impulse_signal(n: int, events: list[tuple[float, float]], sigma_s: float = 1.0) -> np.ndarray:
     """Place weighted impulses, blur them (peak height == weight), then saturate to 0-1."""
     x = np.zeros(n)
@@ -262,7 +251,7 @@ def _impulse_signal(n: int, events: list[tuple[float, float]], sigma_s: float = 
         i = int(t / DT)
         if 0 <= i < n:
             x[i] += w
-    _, k = _gauss_kernel(sigma_s)
+    _, k = gauss_kernel(sigma_s, DT, normalise=False)
     return 1.0 - np.exp(-conv_same(x, k))
 
 
@@ -272,7 +261,7 @@ def loudness_signal(lufs: np.ndarray) -> np.ndarray:
     med = np.median(x)
     mad = np.median(np.abs(x - med)) * 1.4826 + 1e-6
     z = np.clip((x - med) / max(mad, 1.0), 0, None)
-    return np.clip(_gauss_smooth(z, 0.4) / 4.0, 0, 1)
+    return np.clip(gauss_smooth(z, 0.4, dt=DT, pad="zero") / 4.0, 0, 1)
 
 
 def continuity_signal(n: int, words: list[dict[str, Any]], window_s: float = 10.0) -> np.ndarray:
@@ -360,7 +349,7 @@ def keyword_signal(
     """
     if cap is None:
         return _impulse_signal(n, [(t, w) for t, w, _ in hits], sigma_s)
-    radius, k = _gauss_kernel(sigma_s)
+    radius, k = gauss_kernel(sigma_s, DT, normalise=False)
     total, strongest = np.zeros(n), np.zeros(n)
     for t, w, _ in hits:
         i = int(t / DT)
