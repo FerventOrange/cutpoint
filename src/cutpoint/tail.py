@@ -28,7 +28,8 @@ from typing import Any
 
 import numpy as np
 
-from cutpoint.styles import LAUGHTER, Style
+from cutpoint.styles import Style
+from cutpoint.transcribe import is_laugh
 
 SPEECH_END_S = 1.0  # clip ends this close after the last word -> speech-ended
 JOIN_GAP_S = 0.8  # resumed speech closer than this continues the exchange
@@ -38,9 +39,6 @@ BASELINE_PCT = 20  # percentile of RMS dB used as the local baseline
 BASELINE_MARGIN_DB = 6.0  # "settled" = within this many dB of the baseline
 SETTLE_PAD_S = 0.3  # keep a beat of the quiet after the reaction ends
 HOP_S, WIN_S, SMOOTH_S = 0.05, 0.10, 0.25
-# "laugh" is no transcript-signal word (analyze.laughter_hits counts Whisper's markers), but a
-# clip still waits for a laugh being written out after its last word
-_LAUGH_STEMS = (*(p.rstrip("*") for p in LAUGHTER), "laugh")
 
 
 @dataclass(frozen=True)
@@ -105,12 +103,6 @@ class TailResult:
             for k, v in asdict(self).items()
             if v not in (None, "")
         }
-
-
-def is_laugh(word: str) -> bool:
-    """Whether a transcript word starts with a laughter stem (:data:`cutpoint.styles.LAUGHTER`)."""
-    tok = "".join(ch for ch in word.lower() if ch.isalnum())
-    return bool(tok) and tok.startswith(_LAUGH_STEMS)
 
 
 def rms_db(samples: np.ndarray, sr: int = 16000) -> np.ndarray:

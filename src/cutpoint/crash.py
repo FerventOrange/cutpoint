@@ -672,12 +672,12 @@ def load_inputs(
 ) -> SourceInputs:
     """Gather the cached layers of one source (computing only the IMU grids); its words
     from the transcript of ``language`` (:func:`cutpoint.sources.source_words`)."""
-    from cutpoint.analyze import keyword_hits  # noqa: PLC0415
     from cutpoint.events import visual as V  # noqa: PLC0415
     from cutpoint.events import voice as VO  # noqa: PLC0415
     from cutpoint.mix import lift_rides  # noqa: PLC0415
     from cutpoint.sources import source_words  # noqa: PLC0415
     from cutpoint.telemetry import extract  # noqa: PLC0415
+    from cutpoint.transcribe import keyword_hits  # noqa: PLC0415
 
     inp = SourceInputs(path=src, duration=duration)
     inp.tel, tel_failed = _telemetry_or_none(lambda: extract(src, duration), src)

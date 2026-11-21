@@ -102,7 +102,6 @@ from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
 from cutpoint.styles import (
     ACTION_CAM,
     AUTO,
-    LAUGHTER,
     PROFANITY,
     AutoRequest,
     Style,
@@ -120,6 +119,8 @@ from cutpoint.transcribe import (
     flat_markers,
     flat_words,
     is_fallback,
+    keyword_hits,
+    laughter_hits,
     record_transcript,
     shift_segments,
     split_markers,
@@ -271,70 +272,6 @@ def continuity_signal(n: int, words: list[dict[str, Any]], window_s: float = 10.
         talk[int(w["start"] / DT) : int(w["end"] / DT) + 1] = 1.0
     k = int(window_s / DT)
     return np.clip(conv_same(talk, np.ones(k) / k) * 1.25, 0, 1)
-
-
-def _norm_token(word: str) -> str:
-    return re.sub(r"[^a-z0-9*]", "", word.lower())
-
-
-def keyword_hits(
-    words: list[dict[str, Any]], patterns: dict[str, float], *, once: bool = False
-) -> list[tuple[float, float, str]]:
-    """Find (time, weight, phrase) matches; ``*`` suffix = prefix match. ``once``: a word that
-    several patterns match (``haha`` for ``haha*`` and ``hah*``) counts once, for the strongest."""
-    compiled: dict[tuple[str, ...], tuple[float, str]] = {}
-    for phrase, weight in patterns.items():
-        parts = tuple(_norm_token(p) for p in phrase.split())
-        compiled[parts] = (weight, phrase.rstrip("*"))
-    toks = [_norm_token(w["word"]) for w in words]
-    hits = []
-    for i in range(len(toks)):
-        found = []
-        for parts, (weight, phrase) in compiled.items():
-            if i + len(parts) > len(toks):
-                continue
-            if all(
-                toks[i + j].startswith(p[:-1]) if p.endswith("*") else toks[i + j] == p
-                for j, p in enumerate(parts)
-            ):
-                found.append((float(words[i]["start"]), weight, phrase))
-        hits += [max(found, key=lambda h: h[1])] if once and found else found
-    return hits
-
-
-# Whisper's non-speech laughter markers: "[laughter]", "(laughs)", "*laughing*", "[light laughter]".
-# The brackets (or asterisks) are required: the plain spoken word is not laughter.
-_LAUGH_STEM = r"(?:laugh|giggl|chuckl|chortl|snicker|guffaw)"
-_LAUGH_MARKER = re.compile(
-    rf"\[[^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\]"
-    rf"|\([^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\)"
-    rf"|\*{_LAUGH_STEM}\w*\*",
-    re.IGNORECASE,
-)
-
-
-def laughter_hits(
-    words: list[dict[str, Any]], markers: list[dict[str, Any]] | None = None
-) -> list[tuple[float, float, str]]:
-    """Find the (time, weight, phrase) laughter hits of the transcript ``words``: the
-    interjections of :data:`~cutpoint.styles.LAUGHTER` (haha, lol) and Whisper's non-speech
-    markers for laughing (``[laughter]``, ``(laughs)``, ``*laughing*``; weight 1, the phrase is
-    the text inside the brackets), found among the ``words`` and in ``markers``
-    (:func:`~cutpoint.transcribe.flat_markers`: the markers taken out of the words). The spoken
-    word "laughter" or "laugh" is not a hit."""
-    hits = keyword_hits(words, LAUGHTER, once=True)
-    text, at = "", []  # the words joined by spaces, and the word each character belongs to
-    for i, w in enumerate(words):
-        piece = str(w["word"]).strip()
-        at += [i] * (len(piece) + 1)
-        text += piece + " "
-    for m in _LAUGH_MARKER.finditer(text):
-        phrase = m.group(0)[1:-1].strip().lower()
-        hits.append((float(words[at[m.start()]]["start"]), 1.0, phrase))
-    for mark in markers or []:
-        if m := _LAUGH_MARKER.search(str(mark["text"])):
-            hits.append((float(mark["start"]), 1.0, m.group(0)[1:-1].strip().lower()))
-    return sorted(hits, key=lambda h: h[0])
 
 
 def keyword_signal(

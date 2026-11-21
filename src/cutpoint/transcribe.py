@@ -21,6 +21,7 @@ from cutpoint.errors import LowMemoryError, is_out_of_memory
 from cutpoint.extras import LITE, edition, install_hint
 from cutpoint.ffmpeg_utils import pcm_float
 from cutpoint.hub import quiet_hub_handler
+from cutpoint.styles import LAUGHTER
 
 logger = logging.getLogger(__name__)
 
@@ -653,6 +654,88 @@ def split_markers(segments: list[Segment]) -> list[Segment]:
             kept["start"], kept["end"] = left[0]["start"], left[-1]["end"]
         out.append(kept)
     return out
+
+
+def _norm_token(word: str) -> str:
+    return re.sub(r"[^a-z0-9*]", "", word.lower())
+
+
+def keyword_hits(
+    words: list[dict[str, Any]], patterns: dict[str, float], *, once: bool = False
+) -> list[tuple[float, float, str]]:
+    """Find (time, weight, phrase) matches; ``*`` suffix = prefix match. ``once``: a word that
+    several patterns match (``haha`` for ``haha*`` and ``hah*``) counts once, for the strongest."""
+    compiled: dict[tuple[str, ...], tuple[float, str]] = {}
+    for phrase, weight in patterns.items():
+        parts = tuple(_norm_token(p) for p in phrase.split())
+        compiled[parts] = (weight, phrase.rstrip("*"))
+    toks = [_norm_token(w["word"]) for w in words]
+    hits = []
+    for i in range(len(toks)):
+        found = []
+        for parts, (weight, phrase) in compiled.items():
+            if i + len(parts) > len(toks):
+                continue
+            if all(
+                toks[i + j].startswith(p[:-1]) if p.endswith("*") else toks[i + j] == p
+                for j, p in enumerate(parts)
+            ):
+                found.append((float(words[i]["start"]), weight, phrase))
+        hits += [max(found, key=lambda h: h[1])] if once and found else found
+    return hits
+
+
+# What counts as laughter in a transcript. Two kinds of evidence, kept apart on purpose:
+# - the interjections of styles.LAUGHTER (haha, hah, hehe, lol, lmao, dying, "i'm dead"), and
+# - Whisper's non-speech markers for laughing: "[laughter]", "(laughs)", "*laughing*",
+#   "[light laughter]". The brackets (or asterisks) are required, and the marker stems
+#   (laugh, giggl, chuckl, chortl, snicker, guffaw) count only inside them.
+# The plain spoken word "laugh" ("laughing") is no laughter_hits hit (it is said in normal talk
+# and is no transcript signal), but is_laugh counts it by default (spoken_laugh=True): a clip
+# tail or a boundary still waits for a laugh written out after the last word.
+# (Audio evidence is another signal: events.scoring.heard_laughter.)
+_LAUGH_STEM = r"(?:laugh|giggl|chuckl|chortl|snicker|guffaw)"
+_LAUGH_MARKER = re.compile(
+    rf"\[[^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\]"
+    rf"|\([^\[\]()*]{{0,30}}?\b{_LAUGH_STEM}\w*[^\[\]()*]{{0,30}}\)"
+    rf"|\*{_LAUGH_STEM}\w*\*",
+    re.IGNORECASE,
+)
+_LAUGH_STEMS = tuple(p.rstrip("*") for p in LAUGHTER)  # the interjections, as word stems
+_LAUGH_STEMS_SPOKEN = (*_LAUGH_STEMS, "laugh")
+
+
+def laughter_hits(
+    words: list[dict[str, Any]], markers: list[dict[str, Any]] | None = None
+) -> list[tuple[float, float, str]]:
+    """Find the (time, weight, phrase) laughter hits of the transcript ``words``: the
+    interjections of :data:`~cutpoint.styles.LAUGHTER` (haha, lol) and Whisper's non-speech
+    markers for laughing (``[laughter]``, ``(laughs)``, ``*laughing*``; weight 1, the phrase is
+    the text inside the brackets), found among the ``words`` and in ``markers``
+    (:func:`flat_markers`: the markers taken out of the words). The spoken word "laughter" or
+    "laugh" is not a hit (unlike :func:`is_laugh`'s default)."""
+    hits = keyword_hits(words, LAUGHTER, once=True)
+    text, at = "", []  # the words joined by spaces, and the word each character belongs to
+    for i, w in enumerate(words):
+        piece = str(w["word"]).strip()
+        at += [i] * (len(piece) + 1)
+        text += piece + " "
+    for m in _LAUGH_MARKER.finditer(text):
+        phrase = m.group(0)[1:-1].strip().lower()
+        hits.append((float(words[at[m.start()]]["start"]), 1.0, phrase))
+    for mark in markers or []:
+        if m := _LAUGH_MARKER.search(str(mark["text"])):
+            hits.append((float(mark["start"]), 1.0, m.group(0)[1:-1].strip().lower()))
+    return sorted(hits, key=lambda h: h[0])
+
+
+def is_laugh(word: str, *, spoken_laugh: bool = True) -> bool:
+    """Whether a transcript word starts with a laughter stem (:data:`cutpoint.styles.LAUGHTER`).
+    ``spoken_laugh``: the plain word "laugh" ("laughing", "laughs") counts too, which
+    :func:`laughter_hits` never counts."""
+    tok = "".join(ch for ch in word.lower() if ch.isalnum())
+    stems = _LAUGH_STEMS_SPOKEN if spoken_laugh else _LAUGH_STEMS
+    return bool(tok) and tok.startswith(stems)
 
 
 # Thresholds for dropping likely hallucinations (see filter_hallucinations).
