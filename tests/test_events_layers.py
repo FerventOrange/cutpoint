@@ -4,6 +4,7 @@ windows and the cached loading-screen frames. Synthetic data only."""
 
 from __future__ import annotations
 
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +95,21 @@ def test_npz_present_reads_only_the_zip_directory(tmp_path: Path, monkeypatch):
     assert not common.npz_present(path, ("a", "c"))
 
 
+def test_npz_present_survives_a_damaged_zip_directory(tmp_path: Path):
+    path = tmp_path / "bad.npz"
+    cache.save_npz(path, a=np.zeros(3))
+    raw = bytearray(path.read_bytes())
+    # a central-directory entry with the UTF-8 flag set and an invalid name byte
+    cd = raw.rindex(b"PK")
+    raw[cd + 8] |= 0x08  # general purpose flag bit 11 (UTF-8 names)
+    raw[cd + 9] |= 0x08
+    raw[cd + 46] = 0xFF
+    path.write_bytes(bytes(raw))
+    with pytest.raises(UnicodeDecodeError):
+        zipfile.ZipFile(path)
+    assert not common.npz_present(path, ("a",))
+
+
 def test_voice_and_visual_presence_checks_load_nothing(tmp_path: Path, monkeypatch):
     s = _src(tmp_path)
     vp, xp = voice.VoiceParams(), visual.VisualParams()
@@ -157,6 +173,18 @@ def test_has_reaction_reads_the_transcript_cues_once(monkeypatch):
     assert len(calls) == 1
     segments.append(_seg(41, 42))  # a longer list is read again
     assert scoring.has_reaction(40.0, [], segments) is True
+    assert len(calls) == 2
+
+
+def test_has_reaction_cues_survive_a_two_source_alternation(monkeypatch):
+    one = [_seg(12, 14)]
+    two = [_seg(22, 24)]
+    calls = []
+    real = scoring._laugh_markers
+    monkeypatch.setattr(scoring, "_laugh_markers", lambda s: calls.append(1) or real(s))
+    for _ in range(3):
+        scoring.has_reaction(10.0, [], one)
+        scoring.has_reaction(20.0, [], two)
     assert len(calls) == 2
 
 

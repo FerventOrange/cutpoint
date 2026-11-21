@@ -461,10 +461,12 @@ def npz_cache_path(src: Source | Path, layer: str, params: dict[str, Any]) -> Pa
 def npz_present(path: Path, keys: Iterable[str] = ()) -> bool:
     """Whether the ``.npz`` at ``path`` exists as a readable archive holding the arrays
     ``keys``, read from its zip directory only (no array is decompressed): a presence check
-    for a layer's cache, where loading it would decompress every array."""
+    for a layer's cache, where loading it would decompress every array. A damaged entry
+    behind an intact directory still counts as present (its load returns None until
+    ``--force``)."""
     try:
         with zipfile.ZipFile(path) as z:
             names = {n.removesuffix(".npy") for n in z.namelist()}
-    except (OSError, zipfile.BadZipFile):
+    except cache.NPZ_ERRORS:
         return False
     return set(keys) <= names

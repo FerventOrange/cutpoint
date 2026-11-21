@@ -151,9 +151,11 @@ def has_reaction(
     return any(t < s["start"] <= end for s in spoken)
 
 
-# The last transcript asked of :func:`_reaction_cues` (the list, its length) and its cues:
-# event_boost asks once per reacting event of every candidate, always with the source's list.
-_CUES: tuple[list[dict[str, Any]], int, tuple[list[float], list[dict[str, Any]]]] | None = None
+# The transcripts asked of :func:`_reaction_cues` (id of the list -> the list itself, kept so
+# the id cannot be reused, its length and its cues): event_boost asks once per reacting event of
+# every candidate, in rank order, so the sources of a project alternate.
+_CUES: dict[int, tuple[list[dict[str, Any]], int, tuple[list[float], list[dict[str, Any]]]]] = {}
+_CUES_MAX = 16
 
 
 def _reaction_cues(
@@ -161,16 +163,17 @@ def _reaction_cues(
 ) -> tuple[list[float], list[dict[str, Any]]]:
     """(the start times of the laughing markers of ``segments``, its segments with text: not a
     marker holder), worked out once per transcript list (the same list object at the same
-    length as the last call reuses them)."""
-    global _CUES
-    hit = _CUES
+    length as an earlier call reuses them)."""
+    hit = _CUES.get(id(segments))
     if hit is not None and hit[0] is segments and hit[1] == len(segments):
         return hit[2]
     cues = (
         [m["start"] for m in _laugh_markers(segments)],
         [s for s in segments if s.get("text")],
     )
-    _CUES = (segments, len(segments), cues)
+    if len(_CUES) >= _CUES_MAX:
+        _CUES.clear()
+    _CUES[id(segments)] = (segments, len(segments), cues)
     return cues
 
 
