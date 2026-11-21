@@ -17,7 +17,17 @@ from typing import Any, Literal
 
 from fastapi import HTTPException
 
-from cutpoint import cache, folders, insta360, jsonout, progress, projectdelete, runstate, stage
+from cutpoint import (
+    cache,
+    folders,
+    insta360,
+    jsonout,
+    progress,
+    projectdelete,
+    runstate,
+    stage,
+    winvol,
+)
 from cutpoint.assemble import JOIN_TRANSITIONS
 from cutpoint.assistant import context as ai_context
 from cutpoint.assistant import ops as ai_ops
@@ -355,9 +365,6 @@ class MediaLookups:
 _REMOTE: dict[str, bool] = {}  # project folder -> stage.is_remote of it, for the page (#1014)
 
 
-DRIVE_REMOVABLE, DRIVE_REMOTE = 2, 4  # GetDriveTypeW
-
-
 def on_network(p: Path) -> bool:
     """Whether the project folder ``p`` is likely on a network or removable drive, checked once
     per folder and run. Windows asks the drive type (a UNC path is remote), so a local drive
@@ -369,7 +376,7 @@ def on_network(p: Path) -> bool:
             if sys.platform == "win32":
                 try:
                     kind = projectdelete._drive_type(p.anchor)
-                    _REMOTE[key] = kind in (DRIVE_REMOVABLE, DRIVE_REMOTE)
+                    _REMOTE[key] = kind in (winvol.DRIVE_REMOVABLE, winvol.DRIVE_REMOTE)
                     return _REMOTE[key]
                 except OSError:
                     pass

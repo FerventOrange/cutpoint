@@ -596,7 +596,9 @@ def copy_once(src: Path, dst: Path, label: str) -> float:
     size = st.st_size
     t0 = time.perf_counter()
     done, next_log = 0, 0.1
-    with cache.atomic_path(dst) as tmp:  # a read error or Ctrl+C leaves no half copy behind
+    with cache.atomic_path(
+        dst, sweep=True
+    ) as tmp:  # a read error or Ctrl+C leaves no half copy behind
         with src.open("rb") as fi, tmp.open("wb") as fo:
             while chunk := fi.read(CHUNK):
                 fo.write(chunk)

@@ -72,6 +72,9 @@ def test_the_windows_queries_answer_for_the_system_drive():
     drive = os.path.splitdrive(os.environ["SYSTEMROOT"])[0]
     assert winvol.drive_type(drive + chr(92)) == winvol.DRIVE_FIXED
     assert winvol.dos_target(drive).startswith(chr(92) + "Device")
+    assert winvol.query_dos_device(drive).startswith(chr(92) + "Device")
+    rc, unc = winvol.network_connection(drive)
+    assert unc is None and rc not in (None, 0)
     root = winvol.mount_root(os.environ["SYSTEMROOT"])
     assert winvol.volume_total_mb(root) > 0
     assert winvol.volume_guid(root).startswith("{")

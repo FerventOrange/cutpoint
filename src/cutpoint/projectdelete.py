@@ -75,7 +75,6 @@ LOCK_FILE = re.compile(r"\.(.+)\.cutpoint-lock")
 RUN_LOCK = f".{runstate.LOCK_NAME}.cutpoint-lock"  # held by the delete itself, never in the plan
 # What ``360 qa`` writes into ``<clips>_qa`` (cutpoint.pano.qa, qa_compare)
 QA_FILE = re.compile(r"qa\.json|edge_gap\.json|(?:flagged|overview)_\d+\.jpg")
-DRIVE_FIXED = 3  # GetDriveTypeW
 
 
 class NoTrash(OSError):
@@ -363,7 +362,7 @@ def windows_blocker(items: list[tuple[Path, int]]) -> str | None:
             sizes[root] = sizes.get(root, 0) + size
         no_recycle, percent = _policy()
         for root, total in sizes.items():
-            if _drive_type(root) != DRIVE_FIXED:
+            if _drive_type(root) != winvol.DRIVE_FIXED:
                 return f"{root} is not a fixed drive, so it has no Recycle Bin"
             if no_recycle:
                 return "a Group Policy turns the Recycle Bin off"
@@ -396,7 +395,7 @@ def source_key(path: str) -> str:
             local = (
                 bool(drive)
                 and not drive.startswith("\\\\")
-                and _drive_type(drive + "\\") == DRIVE_FIXED
+                and _drive_type(drive + "\\") == winvol.DRIVE_FIXED
             )
         except (OSError, AttributeError):
             local = False
