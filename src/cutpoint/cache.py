@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import glob
 import hashlib
 import io
 import json
 import logging
 import os
 import signal
+import socket
 import tempfile
 import time
 import zipfile
@@ -18,7 +20,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import paths, state
+from cutpoint import paths, procs, state
 
 if TYPE_CHECKING:
     import numpy as np
@@ -437,19 +439,48 @@ def _fsync_dir(folder: Path) -> None:
             os.close(fd)
 
 
+def host_tag() -> str:
+    """8 hex digits that tell this computer from another one sharing a folder."""
+    return f"{zlib.crc32(socket.gethostname().encode('utf-8', 'replace')):08x}"
+
+
+def sweep_stale_tmp(path: Path) -> None:
+    """Remove the temp files of :func:`atomic_path` for ``path`` that runs which are gone left
+    behind (a hard kill cannot clean up): names tagged with the process id and computer, and
+    only those of dead processes of this computer; a live process's stay, and so do those of
+    another computer. Also the ``<name>.partial`` of older versions."""
+    with contextlib.suppress(OSError):
+        path.with_name(path.name + ".partial").unlink(missing_ok=True)
+    for tmp in path.parent.glob(f"{glob.escape(path.name)}.*.tmp"):
+        fields = tmp.name[len(path.name) + 1 :].split(".")
+        try:
+            if len(fields) != 4 or not fields[0].isdigit() or fields[1] != host_tag():
+                continue
+            if procs.pid_alive(int(fields[0]), tmp.stat().st_mtime):
+                continue
+            tmp.unlink()
+        except OSError as err:
+            logger.debug("could not remove %s: %s", tmp, err)
+
+
 @contextlib.contextmanager
-def atomic_path(path: Path, *, match: bool = True) -> Iterator[Path]:
-    """Yield a temp file beside ``path`` to write (``<name>.<random>.tmp``, unique, created
-    empty), renamed onto ``path`` when the block ends, so a reader never sees a half-written
-    ``path``. ``match``: give it the mode a plain write would (:func:`match_mode`) first;
-    False keeps the mode the block gave it (a copy's). The rename is retried while another
-    process holds ``path`` (Windows, :func:`retry_locked`); on any failure, Ctrl+C included,
-    the temp file is removed and ``path`` is left as it was.
+def atomic_path(path: Path, *, match: bool = True, sweep: bool = False) -> Iterator[Path]:
+    """Yield a temp file beside ``path`` to write (``<name>.<pid>.<host>.<random>.tmp``,
+    unique, created empty), renamed onto ``path`` when the block ends, so a reader never sees
+    a half-written ``path``. ``match``: give it the mode a plain write would
+    (:func:`match_mode`) first; False keeps the mode the block gave it (a copy's). ``sweep``:
+    first remove the temp files a hard-killed run left (:func:`sweep_stale_tmp`), for big
+    files. The rename is retried while another process holds ``path`` (Windows,
+    :func:`retry_locked`); on any failure, Ctrl+C included, the temp file is removed and
+    ``path`` is left as it was.
 
     Raises:
         PermissionError: If ``path`` stays locked through all attempts (:func:`retry_locked`).
     """
-    fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    if sweep:
+        sweep_stale_tmp(path)
+    prefix = f"{path.name}.{os.getpid()}.{host_tag()}."
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=".tmp")
     os.close(fd)
     tmp = Path(name)
     try:
