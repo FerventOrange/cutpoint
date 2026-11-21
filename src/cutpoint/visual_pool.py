@@ -41,7 +41,7 @@ import numpy as np
 
 from cutpoint import actioncam, telemetry
 from cutpoint.config import path_key
-from cutpoint.dsp import clean_mask, mask_runs
+from cutpoint.dsp import bin_of, clean_mask, mask_runs
 from cutpoint.intervals import overlap
 from cutpoint.styles import ACTION_CAM, Style, style_name
 
@@ -192,7 +192,7 @@ def _speed(src: Path, offset: float, n: int) -> np.ndarray | None:
         return None
     if sp is None or not np.isfinite(sp).any():
         return None
-    return _resize(sp[round(offset / DT) :], n, np.nan)
+    return _resize(sp[bin_of(offset, DT) :], n, np.nan)
 
 
 def _inputs(

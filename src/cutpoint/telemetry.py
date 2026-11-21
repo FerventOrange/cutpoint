@@ -56,7 +56,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.config import remap_source, source_path
-from cutpoint.dsp import clean_mask, conv_same, mask_runs
+from cutpoint.dsp import bin_of, clean_mask, conv_same, mask_runs
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import ffprobe_json
 
@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 DT = 0.1
 G = 9.80665
-TELEMETRY_VERSION = 2
+TELEMETRY_VERSION = 3
 # A crash event always ends in a stop (:func:`_crash_events` skips the others): the stop's
 # share of its score.
 STOP_SHARE = 0.4
@@ -412,7 +412,7 @@ def paint_spans(n: int, spans: list[tuple[float, float, float]]) -> np.ndarray:
     """
     x = np.zeros(n)
     for a, b, v in spans:
-        i, j = max(0, int(a / DT)), min(n, int(b / DT) + 1)
+        i, j = max(0, bin_of(a, DT)), min(n, bin_of(b, DT) + 1)
         if i < j:
             x[i:j] = np.maximum(x[i:j], v)
     return x
@@ -445,7 +445,7 @@ def _airtime_events(
             continue
         j = min(len(am), e + int(0.5 * fs))
         landing = float(am[e:j].max()) if j > e else 0.0
-        i = min(n - 1, int(t[s] / DT))
+        i = min(n - 1, bin_of(float(t[s]), DT))
         v = float(speed[i]) if gps_ok[i] > 0 and np.isfinite(speed[i]) else None
         if v is not None and v < p.min_takeoff_kmh:
             continue  # camera dropped / handled while standing
@@ -504,7 +504,7 @@ def _crash_events(
         tp = float(t[i_pk])
 
         def med(lo: float, hi: float, arr: np.ndarray = speed) -> float | None:
-            a0, a1 = max(0, int(lo / DT)), min(n, int(hi / DT))
+            a0, a1 = max(0, bin_of(lo, DT)), min(n, max(0, bin_of(hi, DT)))
             seg = arr[a0:a1]
             seg = seg[np.isfinite(seg)]
             return float(np.median(seg)) if seg.size else None
@@ -514,7 +514,8 @@ def _crash_events(
             moving = v_before >= p.crash_min_kmh
             stopped = moving and v_after <= max(p.still_kmh + 2, 0.25 * v_before)
         else:  # no GPS: moving before (vibration), still after
-            moving = (med(tp - 3, tp - 0.5, vib) or 0) > 0.12
+            before = med(tp - 3, tp - 0.5, vib)
+            moving = before is not None and before > 0.12
             after = med(tp + 1.5, tp + 4.0, vib)
             stopped = moving and (1 if after is None else after) < p.still_vibration_g
         if not stopped:
@@ -756,7 +757,7 @@ def _compute(
     )
 
     airtime = _airtime_events(t, am, fs, speed, gps_ok, p)
-    airtime = [e for e in airtime if not lift[min(n - 1, int(e["t"] / DT))]]
+    airtime = [e for e in airtime if not lift[min(n - 1, bin_of(e["t"], DT))]]
     crashes = _crash_events(t, am, grav, speed, grid["vibration"], p)
     w_air = {"high": 1.0, "medium": 0.7, "low": 0.35}
     for e in airtime:
@@ -998,7 +999,7 @@ def join_runs(
         sp, alt, dur = [], [], 0.0
         for s in run:
             g = by_src[s["source"]].grid
-            a, b = int(s["t0"] / DT), int(s["t1"] / DT)
+            a, b = bin_of(s["t0"], DT), bin_of(s["t1"], DT)
             v = g["speed_kmh"][a:b]
             sp.append(v[np.isfinite(v)])
             al = g["alt_m"][a:b]

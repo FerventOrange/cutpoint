@@ -498,7 +498,7 @@ def _log_sdk_status() -> dict[str, Any]:
 def cmd_status(a: argparse.Namespace) -> None:
     """The SDK, then per clip: files, cached layers and the render source that would be used."""
     from cutpoint.pano.project import find_studio_export, sdk_output  # noqa: PLC0415
-    from cutpoint.pano.views import load_views  # noqa: PLC0415
+    from cutpoint.pano.views import views_current  # noqa: PLC0415
 
     s = _log_sdk_status()
     jsonout.output("sdk", {k: s.get(k) for k in ("exe", "origin", "found", "runs", "version")})
@@ -517,13 +517,13 @@ def cmd_status(a: argparse.Namespace) -> None:
             mode, render_file = "studio", Path(studio)
         else:
             mode, render_file = "dfisheye (preview)", None
-        pv = load_views(Path(c.source)) if c.lrv else None
+        pv = bool(c.lrv) and views_current(Path(c.source))
         report.append(
             {
                 "id": c.clip_id,
                 "mode": c.mode,
                 "duration": round(c.duration, 3),
-                "views": pv is not None,
+                "views": pv,
                 "render": mode.split(" ")[0],
                 "render_file": render_file,
             }
@@ -533,7 +533,7 @@ def cmd_status(a: argparse.Namespace) -> None:
             c.clip_id,
             c.mode,
             c.duration,
-            "yes" if pv is not None else "no",
+            "yes" if pv else "no",
             mode,
             render_file or why,
         )

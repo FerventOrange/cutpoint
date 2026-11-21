@@ -344,7 +344,7 @@ def test_pano_views_layer_names_a_missing_torch_first(monkeypatch, tmp_path):
 
 
 def test_pano_cached_views_need_no_checkpoint(stub_torch, tmp_path, monkeypatch):
-    monkeypatch.setattr(views, "load_views", lambda src, p=None: object())
+    monkeypatch.setattr(views, "views_current", lambda src, p=None: True)
     st = views.run_layer([_view_clip(tmp_path)])
     assert (st["cached"], st["computed"]) == (1, 0)
     assert stub_torch.built == [] and not paths.detector_weights().exists()
