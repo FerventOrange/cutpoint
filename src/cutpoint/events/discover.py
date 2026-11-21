@@ -84,19 +84,20 @@ from cutpoint import cache, folders
 from cutpoint.errors import FFmpegError
 from cutpoint.events.common import Source
 from cutpoint.events.regions import (
+    REF_H,
+    REF_W,
     Region,
     bigtext_region,
     guard_entry,
     guard_regions,
     source_tag,
 )
-from cutpoint.events.text import alnum_words
+from cutpoint.events.text import alnum_words, notice_letters
 from cutpoint.ffmpeg_utils import grab_images, probe
 from cutpoint.imageio import read_image, write_jpeg
 
 logger = logging.getLogger(__name__)
 
-REF_W, REF_H = 1920, 1080
 # 2: box y scales with the frame height, not the width (#1085); records without it from
 # frames that are not 16:9 are read again
 REF_VERSION = 2
@@ -388,9 +389,12 @@ def _ocr_frames(
     frame_dir: Path,
     cache_path: Path,
     on_frame: Callable[[int, int], None] | None = None,
+    make_engine: Callable[[], Any] | None = None,
 ) -> list[dict[str, Any]]:
     """OCR every burst frame (cached in ``cache_path`` as JSON lines); ``on_frame`` is
-    called with (frames done, frames planned) after each frame and each burst."""
+    called with (frames done, frames planned) after each frame and each burst.
+    ``make_engine`` gives the engine of the run (#1085 A707), an ``OcrEngine(lanes=1,
+    rec_batch=1)`` as below; None: one of its own."""
 
     from cutpoint.events.killfeed import OcrEngine  # noqa: PLC0415
 
@@ -456,7 +460,7 @@ def _ocr_frames(
                     # many boxes of very different widths: recognised one at a time, none is
                     # padded to the widest of a batch, which made first-run discovery about
                     # 22% faster on 5 test clips (#443)
-                    engine = OcrEngine(lanes=1, rec_batch=1)
+                    engine = make_engine() if make_engine else OcrEngine(lanes=1, rec_batch=1)
                 sx, sy = REF_W / img.shape[1], REF_H / img.shape[0]
                 items = engine(img, params.min_score)
                 boxes = []
@@ -1201,13 +1205,6 @@ def _static_key(text: str) -> str:
     return re.sub(r"\d", "", _norm_text(text))
 
 
-def _notice_letters(text: str) -> bool:
-    """The OCR layer's rule for an unknown notice line: 4+ letters, 60% of the
-    characters (spaces left out)."""
-    letters = sum(ch.isalpha() for ch in text)
-    return letters >= 4 and letters >= 0.6 * len(text.replace(" ", ""))
-
-
 def _same_text(a: str, b: str) -> bool:
     """Whether two :func:`_static_key` texts are one text read differently: the shorter
     one (:data:`NOTICE_SAME_MIN` characters or more) is part of the longer one, or they
@@ -1496,7 +1493,7 @@ def notice_proposals(
                 continue
             left.append(b)
         for ln in _frame_lines(left):
-            if _notice_letters(str(ln["text"])):
+            if notice_letters(str(ln["text"])):
                 lines.append(ln | {"fid": str(f["id"]), "bkey": (src, int(f["burst"]))})
     clusters: list[list[dict[str, Any]]] = []
     means: list[dict[str, float]] = []
@@ -1819,6 +1816,7 @@ def discover_regions(
     | None = None,
     keep_src_keys: set[str] | None = None,
     hud_mapper: Any = None,
+    make_engine: Callable[[], Any] | None = None,
 ) -> dict[str, Any]:
     """Run discovery on ``sources`` and write the proposal into ``out_dir``.
 
@@ -1845,6 +1843,7 @@ def discover_regions(
         hud_mapper: The vision HUD map (:func:`cutpoint.events.hud_map.make_mapper`; called
             with the proposals, the gameplay frames and their folder before ``labeler``, and
             its ``release()`` after it); None, or no map: as without it.
+        make_engine: The OCR engine of the run, as for :func:`_ocr_frames`.
 
     Returns:
         The proposal: a preset dict (``game``, ``regions``, ``banner_phrases``,
@@ -1881,7 +1880,9 @@ def discover_regions(
             params.burst_frames,
             sum(src_key(s) in keep_src_keys for s in sources),
         )
-    frames = _ocr_frames(bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame)
+    frames = _ocr_frames(
+        bursts, params, out_dir / "frames", out_dir / "ocr.jsonl", on_frame, make_engine
+    )
     if keep_src_keys is not None:
         frames = [f for f in frames if _src(f) in keep_src_keys]
     proposals, maps = cluster_regions(frames, params)
@@ -1904,6 +1905,8 @@ def discover_regions(
     settled: dict[str, dict[str, str]] = {}
     vision: list[Region] = []
     excl: list[tuple[int, int, int, int]] = []
+    if (hud_mapper is not None or labeler) and make_engine is not None:
+        getattr(make_engine, "release", lambda: None)()  # not loaded during the vision calls
     try:
         if hud_mapper is not None:
             hud = hud_mapper(proposals, game_frames, out_dir / "frames")

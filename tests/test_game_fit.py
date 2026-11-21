@@ -275,7 +275,7 @@ class _Fake:
         (out_dir / "proposal.json").write_text(json.dumps(proposal), encoding="utf-8")
         return proposal
 
-    def sample_frames(self, sources, out_dir, params) -> list[dict]:
+    def sample_frames(self, sources, out_dir, params, make_engine=None) -> list[dict]:
         self.sampled += [s.name for s in sources]
         return [r for s in sources for r in self.records(s, 8)]
 
@@ -377,7 +377,7 @@ def test_out_of_memory_in_the_fit_check_names_the_step_and_the_sources(folder, m
     srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a", "alpha three.mp4": "a"})
     err = RuntimeError("CUDA out of memory. Tried to allocate 64.00 MiB (GPU 0)")
 
-    def sample(sources, out_dir, params):
+    def sample(sources, out_dir, params, make_engine=None):
         raise err
 
     monkeypatch.setattr(game_fit, "sample_frames", sample)
@@ -699,7 +699,7 @@ def test_discover_regions_clusters_only_the_kept_sources_and_writes_fit_ref(
     names = ["Kip", "Zorbo", "Mellan", "Quaff", "Dross", "Tavik", "Brinn", "Oskel", "Pyra"]
     names += ["Velt", "Hunn"]  # invented
 
-    def ocr_frames(bursts, params, frame_dir, cache_path, on_frame=None):
+    def ocr_frames(bursts, params, frame_dir, cache_path, on_frame=None, make_engine=None):
         out = []
         for bi, (src, _t) in enumerate(bursts):
             for k in range(params.burst_frames):

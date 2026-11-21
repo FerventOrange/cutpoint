@@ -17,6 +17,7 @@ import bisect
 import contextlib
 import difflib
 import functools
+import heapq
 import logging
 import os
 import queue
@@ -46,15 +47,17 @@ from cutpoint.events.discover import (
 )
 from cutpoint.events.menu_spans import merge_menu_frames
 from cutpoint.events.regions import (
+    REF_H,
     HudPreset,
     Region,
     game_key_for_path,
     letters,
     load_preset,
     marker_seen,
+    ref_factors,
     scaled,
 )
-from cutpoint.events.text import alnum_words
+from cutpoint.events.text import alnum_words, notice_letters
 from cutpoint.ffmpeg_utils import READ_ERROR_RE, decode_raw, decoder_for, probe
 from cutpoint.imageio import write_png
 
@@ -1393,15 +1396,53 @@ class OcrEngine:
         ]
 
 
-def _rows(items: list[tuple[list, str, float]], tol: float) -> list[list[tuple]]:
-    """Group OCR boxes into text rows by vertical centre, each row sorted by x."""
-    rows: list[list[tuple]] = []
-    for it in sorted(items, key=lambda i: np.mean([p[1] for p in i[0]])):
-        cy = np.mean([p[1] for p in it[0]])
-        if rows and abs(np.mean([p[1] for p in rows[-1][0][0]]) - cy) <= tol:
+class SharedOcr:
+    """One lazily built :class:`OcrEngine` for several reads (#1085 A694, A707): the first
+    call builds it with ``kwargs`` (the memory guard checks then, as for any engine), later
+    calls return the same one until :meth:`release`, which frees it for the next models.
+    Thread-safe: one engine is built however many threads ask at once."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._kwargs = kwargs
+        self._lock = threading.Lock()
+        self._engine: OcrEngine | None = None
+
+    def __call__(self) -> OcrEngine:
+        with self._lock:
+            if self._engine is None:
+                self._engine = OcrEngine(**self._kwargs)
+            return self._engine
+
+    def release(self) -> None:
+        """Drop the engine; the next call builds a new one."""
+        with self._lock:
+            self._engine = None
+
+
+def by_centre[T](
+    items: Iterable[T],
+    centre: Callable[[T], Any],
+    tol: float,
+    order: Callable[[T], Any] | None = None,
+) -> list[list[T]]:
+    """``items`` grouped into rows, top to bottom (#1085 A338): in ``order`` (by default by
+    ``centre``), an item whose ``centre`` is within ``tol`` of the centre of the first item
+    of the row before joins that row, else it starts one. Each caller keeps its tolerance."""
+    rows: list[list[T]] = []
+    anchor: Any = 0.0
+    for it in sorted(items, key=order or centre):
+        cy = centre(it)
+        if rows and abs(anchor - cy) <= tol:
             rows[-1].append(it)
         else:
             rows.append([it])
+            anchor = cy
+    return rows
+
+
+def _rows(items: list[tuple[list, str, float]], tol: float) -> list[list[tuple]]:
+    """Group OCR boxes into text rows by vertical centre, each row sorted by x."""
+    rows = by_centre(items, lambda i: np.mean([p[1] for p in i[0]]), tol)
     return [sorted(r, key=lambda i: min(p[0] for p in i[0])) for r in rows]
 
 
@@ -1623,10 +1664,9 @@ class Interpreter:
                 continue
             if region.kind == "bigtext" and h < 1.4 * min_h:
                 continue  # unknown text must be really big to count as a banner
-            n_letters = sum(ch.isalpha() for ch in line)
             etype = "notice" if region.kind == "notice" else "bigtext"
             tracker = self.tracker
-            if n_letters < 4 or n_letters < 0.6 * len(line.replace(" ", "")):
+            if not notice_letters(line):
                 if etype == "notice" or not any(ch.isdigit() for ch in line):
                     continue  # ranges, reticle marks; numbers in a notice are never learned
                 tracker = self.digits  # numbers: no event unless learned as an announcement
@@ -2011,13 +2051,7 @@ class FeedParser:
         out = []
         self.notice_boxes = []
         for k, (line, conf, _, row) in enumerate(lines):
-            letters = sum(ch.isalpha() for ch in line)
-            if (
-                k in skip
-                or len(line.split()) < 2
-                or letters < 4
-                or letters < 0.6 * len(line.replace(" ", ""))
-            ):
+            if k in skip or len(line.split()) < 2 or not notice_letters(line):
                 continue
             h = float(np.median([max(p[1] for p in i[0]) - min(p[1] for p in i[0]) for i in row]))
             self.notice_boxes += [i[0] for i in row]
@@ -2042,18 +2076,25 @@ def group_rows(
     Boxes shorter than ``min_h`` are ignored; boxes whose vertical centres are
     within ``tol`` of the previous row's centre join that row.
     """
-    rows: list[list[float]] = []
-    for b in sorted(boxes, key=lambda b: sum(p[1] for p in b)):
-        y0, y1 = min(p[1] for p in b), max(p[1] for p in b)
-        if min_h and y1 - y0 < min_h:
-            continue
-        cy, x0, x1 = (y0 + y1) / 2, min(p[0] for p in b), max(p[0] for p in b)
-        if rows and abs(rows[-1][0] - cy) <= tol:
-            r = rows[-1]
-            r[1], r[2], r[3], r[4] = min(r[1], x0), max(r[2], x1), min(r[3], y0), max(r[4], y1)
-        else:
-            rows.append([cy, x0, x1, y0, y1])
-    return [tuple(r) for r in rows]
+    kept = [b for b in boxes if not (min_h and _box_h(b) < min_h)]
+    return [
+        (
+            _box_cy(row[0]),
+            min(min(p[0] for p in b) for b in row),
+            max(max(p[0] for p in b) for b in row),
+            min(min(p[1] for p in b) for b in row),
+            max(max(p[1] for p in b) for b in row),
+        )
+        for row in by_centre(kept, _box_cy, tol, order=lambda b: sum(p[1] for p in b))
+    ]
+
+
+def _box_h(b: list) -> Any:
+    return max(p[1] for p in b) - min(p[1] for p in b)
+
+
+def _box_cy(b: list) -> Any:
+    return (min(p[1] for p in b) + max(p[1] for p in b)) / 2
 
 
 def keep_segments(duration: float, avoid: list[tuple[float, float]]) -> list[tuple[float, float]]:
@@ -2588,12 +2629,24 @@ def staying_lines(
     """Per frame of ``frames`` (in time order): how many :func:`staying_spans` are on
     screen at its time, and the most of them first read within
     :attr:`MenuParams.static_feed_guard_s` of each other."""
-    spans = staying_spans(frames, text_spans, text_keys, max_gap)
-    starts, ends = sorted(a for a, _ in spans), sorted(b for _, b in spans)
-    out = []
-    for f in frames:
-        t = f["t"]
-        shown = sorted(a for a, b in spans if a <= t <= b)
+    spans = sorted(staying_spans(frames, text_spans, text_keys, max_gap))
+    starts, ends = [a for a, _ in spans], sorted(b for _, b in spans)
+    out: list[tuple[int, int]] = [(0, 0)] * len(frames)
+    # one sweep over the frames in time order (#1085 A704): ``shown`` holds the starts of
+    # the spans on screen (start <= t <= end), sorted; ``on`` their (end, start)
+    shown: list[float] = []
+    on: list[tuple[float, float]] = []
+    nxt = 0
+    for k in sorted(range(len(frames)), key=lambda k: frames[k]["t"]):
+        t = frames[k]["t"]
+        while nxt < len(spans) and spans[nxt][0] <= t:
+            a, b = spans[nxt]
+            bisect.insort(shown, a)
+            heapq.heappush(on, (b, a))
+            nxt += 1
+        while on and on[0][0] < t:
+            _, a = heapq.heappop(on)
+            del shown[bisect.bisect_left(shown, a)]
         together = max(
             (
                 bisect.bisect_right(shown, a + MENU.static_feed_guard_s) - i
@@ -2601,7 +2654,7 @@ def staying_lines(
             ),
             default=0,
         )
-        out.append((bisect.bisect_right(starts, t) - bisect.bisect_left(ends, t), together))
+        out[k] = (bisect.bisect_right(starts, t) - bisect.bisect_left(ends, t), together)
     return out
 
 
@@ -2879,6 +2932,18 @@ def _plain(v: Any) -> Any:
     return v.item() if hasattr(v, "item") else v
 
 
+def ref_box(box: list, ref: tuple[float, float, float, float]) -> list[Any]:
+    """An OCR box of a crop as ``[x0, y0, x1, y1]`` in reference px (#1085 A341); ``ref``:
+    the crop's left and top in frame px and the frame-to-reference factors."""
+    rx, ry, sx, sy = ref
+    return [
+        _plain((rx + min(p[0] for p in box)) * sx),
+        _plain((ry + min(p[1] for p in box)) * sy),
+        _plain((rx + max(p[0] for p in box)) * sx),
+        _plain((ry + max(p[1] for p in box)) * sy),
+    ]
+
+
 def _band_rows(items: list[list], h: int) -> list[list[int]]:
     """The rows of a crop of height ``h`` that the boxes of OCR ``items`` cover,
     merged: all the rows the colour rules read (:func:`_box_crop` and
@@ -2969,7 +3034,7 @@ class OcrReader:
         self.params = params
         self.scale = scale
         self.newest = -1 if newest == "bottom" else 0
-        self.sx, self.sy = 1920 / size[0], 1080 / size[1]
+        self.sx, self.sy = ref_factors(*size)
         self.thumbs = any(r.gate == "det" for r in regions)  # the static-screen test
         x, y, w, h = _still_rect(regions, rects)
         self.still = (slice(y - union[1], y - union[1] + h), slice(x - union[0], x - union[0] + w))
@@ -2992,16 +3057,8 @@ class OcrReader:
         boxes = self.engine.detect(crop, r.det_scale)
         if r.kind != "feed":  # a full feed is no menu
             rx, ry, _, _ = self.rects[r.name]
-            sx, sy = self.sx, self.sy
-            rec["boxes"] = [
-                [
-                    _plain((rx + min(p[0] for p in b)) * sx),
-                    _plain((ry + min(p[1] for p in b)) * sy),
-                    _plain((rx + max(p[0] for p in b)) * sx),
-                    _plain((ry + max(p[1] for p in b)) * sy),
-                ]
-                for b in boxes
-            ]
+            ref = (rx, ry, self.sx, self.sy)
+            rec["boxes"] = [ref_box(b, ref) for b in boxes]
         rows = group_rows(boxes, r.min_text_h * self.scale, 10 * self.scale)
         q = 8 * self.scale
         layout = [tuple(round(v / q) for v in (cy, x0, x1)) for cy, x0, x1, _, _ in rows]
@@ -3224,7 +3281,7 @@ class OcrInterpretation:
         width, height = size
         self.src_name = src_name
         self.regions = regions
-        self.interp = Interpreter(params, height / 1080, preset)
+        self.interp = Interpreter(params, height / REF_H, preset)
         rects = {r.name: scaled(r, width, height) for r in regions}
         union = _union(list(rects.values()))
         self.shapes = {name: _crop_shape(rect, union) for name, rect in rects.items()}
@@ -3264,7 +3321,7 @@ class OcrInterpretation:
         # a "row_notices" feed's notice rows count in the menu test (a menu or loading
         # screen's text there), in reference px
         self.feed_notices = bool(preset and preset.feed.get("row_notices"))
-        self.ref = {n: (x, y, 1920 / width, 1080 / height) for n, (x, y, _, _) in rects.items()}
+        self.ref = {n: (x, y, *ref_factors(width, height)) for n, (x, y, _, _) in rects.items()}
 
     def _outside_scores(
         self, items: list[tuple[list, str, float]], ref: tuple[float, float, float, float]
@@ -3318,16 +3375,8 @@ class OcrInterpretation:
                 interp.handle(rec.t, r, img, items)
                 self.region_events[r.name] = [*tracker.touched, *interp.digits.touched]
                 if self.menus and self.feed_notices and r.kind == "feed":
-                    rx, ry, sx, sy = self.ref[r.name]
-                    self.det_boxes[r.name] = [
-                        [
-                            _plain((rx + min(p[0] for p in b)) * sx),
-                            _plain((ry + min(p[1] for p in b)) * sy),
-                            _plain((rx + max(p[0] for p in b)) * sx),
-                            _plain((ry + max(p[1] for p in b)) * sy),
-                        ]
-                        for b in interp.feed.notice_boxes
-                    ]
+                    ref = self.ref[r.name]
+                    self.det_boxes[r.name] = [ref_box(b, ref) for b in interp.feed.notice_boxes]
             else:
                 interp.handle(rec.t, r, img, items)
             if len(tracker.events) > n_before:
@@ -3959,7 +4008,7 @@ def detect_ocr_events(
         if engine is None:
             engine = make_engine()
         reader = OcrReader(
-            regions, rects, union, engine, params, height / 1080, newest, (width, height)
+            regions, rects, union, engine, params, height / REF_H, newest, (width, height)
         )
         # where the read goes on: segment, frame in it, frame number, decoder, read errors
         pos: dict[str, Any] = {

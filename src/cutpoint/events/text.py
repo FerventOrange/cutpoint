@@ -40,3 +40,11 @@ def _spaced(text: str) -> str:
         else:
             out.append(" ")
     return "".join(out)
+
+
+def notice_letters(text: str) -> bool:
+    """The OCR layer's rule for an unknown notice line, shared by the notice regions, the feed
+    rows' notices and discovery (#1085 A339): 4 or more letters, 60% of the characters (spaces
+    left out)."""
+    n = sum(ch.isalpha() for ch in text)
+    return n >= 4 and n >= 0.6 * len(text.replace(" ", ""))

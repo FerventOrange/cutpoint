@@ -131,6 +131,11 @@ REF_W, REF_H = 1920, 1080  # the reference frame the region rectangles are in
 _WARNED: set[tuple[Any, ...]] = set()  # region warnings given, one per region and place
 
 
+def ref_factors(width: float, height: float) -> tuple[float, float]:
+    """The factors from a ``width`` x ``height`` frame to reference px (#1085 A340)."""
+    return REF_W / width, REF_H / height
+
+
 def clamp_box(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int] | None:
     """The part of the rectangle inside the 1920x1080 reference frame, or None when
     its width or height is not positive or none of it is inside."""
@@ -324,8 +329,31 @@ _warned_invalid: set[Path] = set()  # invalid presets already warned about (once
 _warned_stale: set[Path] = set()  # stale presets already noted (once per path)
 
 
-def _read_json(path: Path) -> dict[str, Any] | None:
+# path -> ((mtime_ns, size, file id), parsed JSON): the preset and game_keys.json files read
+_parsed: dict[str, tuple[tuple[int, int, int], Any]] = {}
+
+
+def _load_json(path: Path) -> Any:
+    """:func:`cutpoint.cache.load_json` of ``path``, parsed once per version of the file
+    (#1085 A705): kept by its modification time, size and file id, so an edit or an atomic
+    replace reads it again; a file a hold keeps (:func:`cutpoint.cache.hold_outputs`) is read
+    each time. Callers must not change what it returns."""
+    if cache.is_held(path):
+        return cache.load_json(path)
+    try:
+        st = path.stat()
+    except OSError:
+        return cache.load_json(path)
+    key, hit = (st.st_mtime_ns, st.st_size, st.st_ino), _parsed.get(str(path))
+    if hit is not None and hit[0] == key:
+        return hit[1]
     data = cache.load_json(path)
+    _parsed[str(path)] = (key, data)
+    return data
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    data = _load_json(path)
     if not isinstance(data, dict):
         if path not in _warned_invalid:
             _warned_invalid.add(path)
@@ -604,7 +632,7 @@ def source_tag(path: str | Path, io_path: Path | None = None) -> str:
 
 
 def _game_keys_part(project: Path, part: str) -> dict[str, Any]:
-    data = cache.load_json(game_keys_path(project))
+    data = _load_json(game_keys_path(project))
     if not isinstance(data, dict) or data.get("version") != GAME_KEYS_VERSION:
         return {}
     got = data.get(part)
@@ -682,7 +710,7 @@ def _game_slug(name: str) -> str:
 
 def scaled(region: Region, width: int, height: int) -> tuple[int, int, int, int]:
     """Region rectangle scaled to a ``width`` x ``height`` frame (even values)."""
-    sx, sy = width / 1920, height / 1080
+    sx, sy = width / REF_W, height / REF_H
     x, y = int(region.x * sx) // 2 * 2, int(region.y * sy) // 2 * 2
     w = min(int(region.w * sx) // 2 * 2, width - x)
     h = min(int(region.h * sy) // 2 * 2, height - y)
