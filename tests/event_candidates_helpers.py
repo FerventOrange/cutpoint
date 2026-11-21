@@ -72,7 +72,7 @@ def events_of(events: list[dict[str, Any]], **extra: Any) -> dict[str, Any]:
 
 @pytest.fixture
 def no_transcript(monkeypatch):
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: [])
 
 
 def nominees(hl: dict[str, Any]) -> list[dict[str, Any]]:

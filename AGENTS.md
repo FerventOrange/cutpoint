@@ -300,9 +300,9 @@ command for theirs:
 - Tool install (the installer): run the installer again without `--lite` (`-Lite` for
   `install.ps1`) and with `CUTPOINT_LITE` unset, or it installs lite again. It picks the torch
   build for the machine and is also how to upgrade (`uv tool upgrade` drops the torch build).
-  `curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh`
+  `curl -LsSf https://github.com/FerventOrange/cutpoint/releases/latest/download/install.sh | sh`
   (Linux, macOS) or
-  `irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex`
+  `irm https://github.com/FerventOrange/cutpoint/releases/latest/download/install.ps1 | iex`
   (Windows PowerShell). A tool installed from git or a local path needs its source again; the
   hint prints both commands with it, for example
   `curl -LsSf .../install.sh | sh -s -- --source git@main` and

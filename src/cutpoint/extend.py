@@ -40,7 +40,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import boundaries, cache, folders, jsonout, runstate, srt, tsrepair
+from cutpoint import boundaries, cache, folders, jsonout, projectfiles, runstate, srt, tsrepair
 from cutpoint.clipresume import ClipResume, clip_key
 from cutpoint.color import COLOR_VERSION, AutoGrade
 from cutpoint.config import path_key, remap_source, source_path
@@ -551,7 +551,7 @@ def _plan_extend(
     # analysis (#1052); one the analysis read so is never read in place
     tsrepair.prepare_sources(
         [source_path(e["source"]) for e in by_file.values() if e.get("source")],
-        required=tsrepair.remuxed_sources(cache.load_json(project / "highlights.json")),
+        required=tsrepair.remuxed_sources(cache.load_json(project / projectfiles.HIGHLIGHTS)),
     )
     for f in files:
         e = by_file.get(f.name)

@@ -134,6 +134,7 @@ from cutpoint.utils import (
     title_slug,
 )
 from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
+from cutpoint.vision_record import vision_blend
 
 if TYPE_CHECKING:
     from cutpoint.activity import Prompts
@@ -164,7 +165,6 @@ DELIVERY_FLAT = 0.3
 # the vision band (#909): the default edit plus k below its cut, k = this share of the edit's
 # moments, at least VISION_BAND_MIN and at most VISION_BAND_MAX
 VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
-VISION_SPAN_EPS = 1e-3  # seconds: a candidate span this close to its rated one still matches
 PICK_FLOOR = 0.25  # a peak below this share of the source's reference is not a candidate ...
 LONG_LIST_FLOOR = 0.5  # ... and, past the usual count (:func:`usual_count`), not below this share
 # The reference of those shares (:func:`pick_reference`, #1085 A104): the strongest window peak
@@ -1831,16 +1831,6 @@ def transcript_text(name: str, segments: list[Segment], pause: float = 0.6) -> l
     return lines
 
 
-def vision_blend(score: float, rating: float | None, weight: float) -> float:
-    """``score`` with a 0-10 vision ``rating`` applied as a bounded multiplier
-    (``1 + weight * (rating - 5) / 5``, ``weight`` being the style's
-    ``vision_weight``), kept within 0-100; an unrated candidate (``rating``
-    None) keeps its score."""
-    if rating is None:
-        return score
-    return round(max(0.0, min(100.0, score * (1 + weight * (rating - 5) / 5))), 1)
-
-
 def prior_group(base: str) -> str:
     """The style group of the vision rating prior (#948) for a style whose built-in base is
     ``base``: ``"action"`` for :data:`ACTION_STYLES`, ``"other"`` for every other style."""
@@ -1867,57 +1857,6 @@ def rating_centres(ratings: Iterable[tuple[str, float]], group: str) -> dict[str
 def centred_rating(rating: float, centre: float) -> float:
     """``rating`` moved so its kind's ``centre`` (:func:`rating_centres`) is 5, within 0-10."""
     return max(0.0, min(10.0, 5 + rating - centre))
-
-
-def sync_vision(c: dict[str, Any]) -> float | None:
-    """Keep the vision rating of the candidate ``c`` only while it describes the clip (#802).
-
-    ``vision_rated`` (written by :func:`_rate_vision`) holds the span the frames were rated
-    over and the analysis score before and after the blend. While ``c`` has that span (within
-    :data:`VISION_SPAN_EPS`) the rating counts; once the span changes (widened, trimmed, merged
-    back) it moves to ``vision_stale`` (``score``, ``label``, ``window``): ``signals.vision``
-    becomes None and ``vision_label`` goes. The span coming back restores both. The clip's
-    ``label`` is never touched. Returns the analysis score to rank by (the
-    blended one or the one before the blend); None for a candidate without ``vision_rated``
-    (a project rated before this, or never rated), which is left as it is."""
-    rated = c.get("vision_rated")
-    if not isinstance(rated, dict):
-        return None
-    sig = c.setdefault("signals", {})
-    stale = c.get("vision_stale")
-    if (
-        abs(c["start"] - rated["start"]) <= VISION_SPAN_EPS
-        and abs(c["end"] - rated["end"]) <= VISION_SPAN_EPS
-    ):
-        if isinstance(stale, dict):
-            sig["vision"] = stale.get("score")
-            if stale.get("label"):
-                c["vision_label"] = stale["label"]
-            del c["vision_stale"]
-        return rated["blended"]
-    if not isinstance(stale, dict):
-        stale = c["vision_stale"] = {
-            "score": sig.get("vision"),
-            "label": c.pop("vision_label", None),
-            "window": [rated["start"], rated["end"]],
-        }
-        sig["vision"] = None
-    return rated["base"]
-
-
-def vision_skipped(c: dict[str, Any]) -> bool:
-    """Whether the candidate ``c`` is a moment the default edit skipped above its cut when the
-    vision step ran (too long or overlapping a pick; ``vision_skipped``, the span it had then)
-    and still has that span (within :data:`VISION_SPAN_EPS`). The vision clamp
-    (:func:`cutpoint.scorer.apply_vision_clamp`) does not count such a moment as a neighbour.
-    A re-rank (:func:`cutpoint.scorer.rescore_events`) also removes the mark once the default
-    edit of the ranking without the ratings takes the moment (#949)."""
-    span = c.get("vision_skipped")
-    return (
-        isinstance(span, list)
-        and abs(c["start"] - span[0]) <= VISION_SPAN_EPS
-        and abs(c["end"] - span[1]) <= VISION_SPAN_EPS
-    )
 
 
 def label_for(signals: Mapping[str, Any], style: Style, hint: str | None = None) -> str:
@@ -3938,10 +3877,11 @@ def _rate_vision(
     frames, :func:`~cutpoint.vision.speech_excerpt`, else ``"frames"``) are centred on their
     mean (:func:`rating_centres` with the prior of the style's :func:`prior_group`,
     :func:`centred_rating`) and blended in with
-    :func:`vision_blend` and the style's ``vision_weight``. ``signals.vision`` keeps the
-    model's rating as given; its label goes to ``vision_label``, never to ``label`` (#913).
+    :func:`~cutpoint.vision_record.vision_blend` and the style's ``vision_weight``.
+    ``signals.vision`` keeps the model's rating as given; its label goes to ``vision_label``,
+    never to ``label`` (#913).
     Each rated candidate keeps ``vision_rated`` (the span rated, the score before and after the
-    blend, the prompt kind and its centre) for :func:`sync_vision`.
+    blend, the prompt kind and its centre) for :func:`~cutpoint.vision_record.sync_vision`.
     ``activity`` words the action-cam prompt (the project's activity
     prompt set). ``batch_size``: ``--batch-size`` (#713), the model is unloaded after the
     candidates of every this many sources (:func:`_vision_batches`); the ratings are the same,

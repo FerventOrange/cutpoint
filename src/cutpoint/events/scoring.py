@@ -372,7 +372,7 @@ def set_vlm_label(c: dict[str, Any], win: dict[str, Any] | None) -> None:
         c["label_vlm"] = c["label"] = slug
 
 
-def _segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
+def segments(source: str, language: str | None = None) -> list[dict[str, Any]]:
     """:func:`cutpoint.sources.source_segments` (of the transcript ``language``), or []
     when the source has none or cannot be read."""
     try:
@@ -802,7 +802,7 @@ def nominate(
 
     def segs(src: str) -> list[dict[str, Any]]:
         if src not in heard:
-            heard[src] = _segments(src, language)
+            heard[src] = segments(src, language)
         return heard[src]
 
     def snippet(src: str, a: float, b: float) -> tuple[str, Any] | None:

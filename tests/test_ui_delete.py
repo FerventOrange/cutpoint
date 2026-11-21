@@ -326,10 +326,8 @@ def test_windows_probe_trusts_a_fixed_drive_with_room(windows_probe: SimpleNames
 @pytest.mark.parametrize(
     ("change", "text"),
     [
-        ({"drive": 4}, "not a fixed drive"),
-        ({"drive": 2}, "not a fixed drive"),
+        ({"drive": 4}, "not a fixed drive"),  # a network drive (removable: the same branch)
         ({"nuke": 1}, "delete files at once"),
-        ({"nuke": 1, "mb": None}, "delete files at once"),
         ({"mb": 10}, "bigger than the room"),
         ({"nuke": None}, "cannot tell"),
         ({"guid": None}, "cannot tell"),

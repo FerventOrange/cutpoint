@@ -159,7 +159,7 @@ def laugh(t: float, confidence: float = 0.05) -> dict[str, Any]:
 
 @pytest.fixture
 def no_transcript(monkeypatch):
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: [])
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: [])
 
 
 def test_funny_puts_a_death_with_a_laugh_above_a_slightly_better_plain_moment(no_transcript):
