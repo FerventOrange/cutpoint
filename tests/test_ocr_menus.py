@@ -340,7 +340,7 @@ def _still_records(times: list[float], grey: list[float]) -> list[dict[str, Any]
     """Frame records at ``times`` whose thumbnails are one grey level each, with
     their still run ids (:class:`StillRuns` at 3 fps)."""
     runs = killfeed.StillRuns(FPS)
-    shape = killfeed.STATIC_THUMB[::-1]
+    shape = killfeed.MENU.static_thumb[::-1]
     return [
         {"id": n, "t": t, "source": "rec.mp4", "boxes": [], "still": runs.add(t, np.full(shape, g))}
         for n, (t, g) in enumerate(zip(times, grey, strict=True))
@@ -359,7 +359,7 @@ def test_static_rule_needs_still_runs_and_feed_times() -> None:
     old = [{k: v for k, v in f.items() if k != "still"} for f in still]
     assert set(menu_rules(old, feed_times=set())[0].values()) == {"none"}
     # a small change (a cursor) stays still; a larger one starts a new run
-    diff = killfeed.STATIC_MAX_DIFF
+    diff = killfeed.MENU.static_max_diff
     grey = [90.0] * 10 + [90 + 2 * diff] * 10 + [90 + 2.5 * diff] * 5 + [90 + 2 * diff] * 15
     # 2 menu lines read as the cursor's screen opens (3.5 s), on screen to the end: 0-3 s
     # is too short; 3.3-13 s holds still with the cursor
@@ -392,14 +392,14 @@ def test_bare_static_screen_needs_menu_frames_near_it() -> None:
     records = _still_records(times, [90.0] * 40)
     everything = {f["id"] for f in records}
     assert killfeed.static_frames(records, set()) == set()
-    near = [13.0 + killfeed.STATIC_ANCHOR_S]  # another rule's menu frame after the part
+    near = [13.0 + killfeed.MENU.static_anchor_s]  # another rule's menu frame after the part
     assert killfeed.static_frames(records, set(), None, near) == everything
-    far = [13.0 + killfeed.STATIC_ANCHOR_S + 0.5]
+    far = [13.0 + killfeed.MENU.static_anchor_s + 0.5]
     assert killfeed.static_frames(records, set(), None, far) == set()
-    before = [-killfeed.STATIC_ANCHOR_S]
+    before = [-killfeed.MENU.static_anchor_s]
     assert killfeed.static_frames(records, set(), None, before) == everything
     # a very long still stretch needs none
-    n = int(killfeed.STATIC_LONG_S * 3) + 3
+    n = int(killfeed.MENU.static_long_s * 3) + 3
     long = _still_records([k / 3 for k in range(n)], [90.0] * n)
     assert killfeed.static_frames(long, set()) == {f["id"] for f in long}
     assert set(menu_rules(records, feed_times=set(), text_spans=[])[0].values()) == {"none"}
@@ -419,7 +419,7 @@ def test_still_screen_with_menu_text_is_no_evidence_for_a_bare_one() -> None:
 def test_static_goes_before_text_for_a_still_text_screen() -> None:
     times = [n / 3 for n in range(49)]  # 16 s still; 5 lines read together at 1-8 s
     records = _still_records(times, [90.0] * 49)
-    lines = [(1.0, 8.0)] * killfeed.TEXT_LINES
+    lines = [(1.0, 8.0)] * killfeed.MENU.text_lines
     texts = text_frames(records, lines)
     assert texts  # the text rule fires on 1-8 s...
     rules = menu_rules(records, feed_times=set(), text_spans=lines)[0]

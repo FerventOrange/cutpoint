@@ -36,6 +36,7 @@ One JSON file. Paths in it are relative to the manifest's folder.
 | `also` | Optional list of further categories a detection may give and still count right, for footage that honestly fits more than one (`"also": ["action"]`). An unknown category is an error |
 | `bucket` | The group it is reported in (next table) |
 | `labels` | Optional moment label file. Without it the source is scored for detection only |
+| `menus`, `menus_sha256` | Optional menu-time label file and its sha256 (see [Menu-time labels](#menu-time-labels)) |
 | `holdout` | `true` keeps the source out of tuning (see [Holdout](#holdout)) |
 | `note` | Optional free text |
 | `variants` (top level) | Optional, see [Variants](#variants-a-vs-b) |
@@ -77,6 +78,50 @@ A file with only `reference` ranges (and empty `keep` and `skip`) is fine: it is
 `keep_top10`/`keep_top20` and `skip_top10`/`skip_top20` (labels hit by the 10 or 20 best
 candidates), `keep_15`/`keep_30` and `ref_15`/`ref_30` (labels hit when the best candidates fill
 15% or 30% of the video), each against a random control ("beats noise").
+
+## Menu-time labels
+
+A source may also have a menu-time label file (`menus`): where the footage shows menus, lobbies
+and result screens. The bench then scores the menu test of the OCR layer, the menu spans it
+records in the project's `events.json` (`stats.ocr.<file name>.menu_spans`), against it. It is
+a separate file so a source can have moment labels, menu labels or both, and editing one does
+not change the hash of the other.
+
+```json
+{"schema": 1, "video": "match-3.mp4", "duration": 600.0, "reviewed": false,
+ "labelled_by": "free text",
+ "menus": [
+   {"start": 80.5, "end": "3:30.5", "category": "select", "note": "hangar"},
+   {"start": 398.5, "end": 406.5, "category": "replay", "unsure": true, "why": "free text"}
+ ]}
+```
+
+- `video` is the source's file name; the input must be one file (a folder input is refused).
+- Spans are sorted and do not overlap; times are seconds or `"mm:ss"` / `"h:mm:ss"` strings and
+  end within `duration` when it is given. `unsure` is true or false; `note`, `why`,
+  `labelled_by` and `reviewed` are for the labeller. Unsure spans are scored like the others.
+- `category` is menu time the detector should find (`lobby`, `select`, `settings`, `map`,
+  `scoreboard`, `results`, `loading`) or neutral time it is neither expected to flag nor
+  punished for flagging (`cutscene`, `replay`, `banner`, `offgame`, `overlay` for a tactical
+  overlay over the live game, such as an in-battle map). Unlabelled time is gameplay.
+- `menus_sha256` in the manifest is the file's sha256; a manifest whose hash does not match is
+  refused, and the error prints the hash to store after checking the file.
+
+Per source, in seconds, with D the detected menu time, M the menu labels and N the neutral ones,
+each label edge given 1 s of tolerance (labels are about 1 s accurate):
+
+| Metric | Meaning |
+|---|---|
+| `menu_tp_s` | Detected menu time inside menu labels |
+| `menu_fp_s` | Detected menu time outside every label (widened by 1 s): gameplay flagged as menu, which costs moments |
+| `menu_fn_s` | Menu label time (narrowed by 1 s) the detector missed |
+| `menu_precision` | tp / (tp + fp) |
+| `menu_recall` | 1 - fn / menu label time |
+
+Seconds rather than matched spans: an error costs time (a moment is dropped at half menu time
+and trimmed at menu edges), and the detector's spans are split by its read rate. Buckets sum the
+seconds and take the ratios of the sums. A source with menu labels whose project has no
+`events.json`, no OCR stats in it, or more than one source gets a problem line and no score.
 
 ## Holdout
 
@@ -195,7 +240,7 @@ there is one, `base`. `--compare A.json B.json` compares two earlier results fil
 and prints the comparison (it writes no file); a file that is not a bench results file is an
 error (exit 2). It warns when the editions, schema, overlap rule, seed or number of control runs
 differ. Each results file records per source its category, its `also` list (only when given),
-bucket, holdout flag and the sha256 of its label file: a source where these differ between the two runs was labelled differently,
+bucket, holdout flag and the sha256 of its label and menu label files: a source where these differ between the two runs was labelled differently,
 so it is named in a warning and left out of the comparison and the gate. The holdout is
 compared only with `--holdout` (and when both runs viewed it).
 
@@ -212,9 +257,11 @@ Each run writes `<bench>/results/<timestamp>-<variant>.json` per variant and
 - Per variant, ranking per bucket: `keep_top10`, `keep_top20`, `skip_top10`, `skip_top20`,
   `keep_15`, `keep_30`, `ref_30`, each summed over the labelled videos as hits/labels, and how
   many videos' `keep_30` beats noise.
+- Per variant, with menu labels, menu time per source and per bucket (menu, tp, fp and fn
+  seconds, precision, recall) and each source's false and missed spans of 1 s or more.
 - With `--holdout`, the same for the holdout, apart.
 - Per comparison, the per-bucket deltas (accuracy, ambiguous rate, sure-wrong count, the ranking
-  sums as A -> B), the sources that changed, and the gate verdict.
+  sums and the menu seconds as A -> B), the sources that changed, and the gate verdict.
 - Resources: per job the status (`ok`, `reused`, `given`, `failed`), seconds, the GPU memory peak,
   the mean GPU use and Ollama's loaded VRAM and models.
 
@@ -231,6 +278,8 @@ hand at release. B fails when, over the sources both runs scored:
 | A bucket's ambiguous rate rose more than the limit | `--gate-ambiguous-pp` (5 points) |
 | A bucket's summed `keep_top20` or `keep_30` fell by more than the larger of N ranges and a share of A's sum | `--gate-keep-drop` (1), `--gate-keep-drop-share` (0.10) |
 | A bucket's summed `skip_top20` rose by more than N | `--gate-skip-rise` (1) |
+| A bucket's summed `menu_fp_s` rose by more than the larger of N seconds and a share of A's sum | `--gate-menu-fp-rise` (5), `--gate-menu-fp-rise-share` (0.10) |
+| A bucket's `menu_recall` fell by more than N | `--gate-menu-recall-drop` (0.05) |
 | Fewer of a bucket's videos beat noise on `keep_30` | - |
 
 No gate is given (only deltas, with a warning) when the runs are of different editions (lite
