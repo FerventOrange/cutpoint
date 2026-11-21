@@ -58,7 +58,15 @@ import numpy as np
 from cutpoint import cache, memguard, state
 from cutpoint.errors import FFmpegError
 from cutpoint.events import paths
-from cutpoint.events.common import Source, free_torch, nearest_index, params_key
+from cutpoint.events.common import (
+    Source,
+    SourceGuard,
+    for_each_source,
+    free_torch,
+    nearest_index,
+    npz_cache_path,
+    npz_present,
+)
 from cutpoint.ffmpeg_utils import decode_raw, ffprobe_json, find_tool, probe
 
 if TYPE_CHECKING:
@@ -144,8 +152,7 @@ class VisualData:
 
 def cache_path(src: Source | Path, params: VisualParams) -> Path:
     """``cache/<source>/visual-<hash>.npz``."""
-    cdir = src.cdir if isinstance(src, Source) else cache.source_dir(src)
-    return cdir / f"visual-{params_key(params.key())}.npz"
+    return npz_cache_path(src, "visual", params.key())
 
 
 def load_visual(src: Source | Path, params: VisualParams | None = None) -> VisualData | None:
@@ -160,11 +167,14 @@ def load_visual(src: Source | Path, params: VisualParams | None = None) -> Visua
     return _load_npz(path)
 
 
+_VISUAL_ARRAYS = ("t", "emb", "det", "box_emb", "box_idx")  # what a visual cache must hold
+
+
 def _load_npz(path: Path) -> VisualData | None:
     """The :class:`VisualData` cached in ``path`` (and its ``.json`` meta), or None when it
     is missing, damaged or lacks an array (a cache miss)."""
     z = cache.load_npz(path)
-    if z is None or not {"t", "emb", "det", "box_emb", "box_idx"} <= z.keys():
+    if z is None or not set(_VISUAL_ARRAYS) <= z.keys():
         return None
     return VisualData(
         t=z["t"],
@@ -700,8 +710,7 @@ class LightParams:
 
 def light_cache_path(src: Source | Path, params: LightParams | None = None) -> Path:
     """``cache/<source>/visual-light-<hash>.npz``."""
-    cdir = src.cdir if isinstance(src, Source) else cache.source_dir(src)
-    return cdir / f"visual-light-{params_key((params or LightParams()).key())}.npz"
+    return npz_cache_path(src, "visual-light", (params or LightParams()).key())
 
 
 def load_visual_light(src: Source | Path, params: LightParams | None = None) -> VisualData | None:
@@ -1258,9 +1267,7 @@ def run_layer(
     (the caller decides), or without ``errors`` the last one is raised when every source
     failed. :class:`~cutpoint.errors.LowMemoryError` always propagates.
     """
-    from cutpoint.events.pipeline import SourceGuard  # noqa: PLC0415
-
-    need = [s for s in sources if force or load_visual(s, params) is None]
+    need = [s for s in sources if force or not _cached(s, params)]
     stats: dict[str, Any] = {"cached": len(sources) - len(need), "computed": 0}
     if not need:
         return stats
@@ -1280,23 +1287,28 @@ def run_layer(
             (p.person_pos, p.person_neg),
         ):
             text_embeddings(pos + neg, models)
-        guard = SourceGuard("Visual layer")
-        for s in need:
-            try:
-                got = compute_visual(
-                    s, models, params, force=True, avoid=(bad or {}).get(str(s.path))
-                )
-            except Exception as err:  # noqa: BLE001 - one bad source, logged
-                guard.skip(err, s.name, s.path)
-                continue
-            if got is not None:
-                stats["computed"] += 1
-        if errors is not None:
-            errors += guard.failed.values()
-        else:  # not one bad file: the layer failed
-            guard.raise_if_all_failed(len(sources))
+        stats["computed"] = for_each_source(
+            SourceGuard("Visual layer", log=logger),
+            need,
+            lambda s: compute_visual(
+                s, models, params, force=True, avoid=(bad or {}).get(str(s.path))
+            ),
+            errors,
+            total=len(sources),
+        )
         if handoff is not None:
             handoff(models)
     finally:
         models.close()
     return stats
+
+
+def _cached(src: Source, params: VisualParams) -> bool:
+    """Whether the visual layer of ``src`` is cached: the archive holds every array
+    :func:`load_visual` needs (read from its zip directory; no array is decompressed). An
+    offline source has no cache key: not cached."""
+    try:
+        path = cache_path(src, params)
+    except OSError:
+        return False
+    return npz_present(path, _VISUAL_ARRAYS)

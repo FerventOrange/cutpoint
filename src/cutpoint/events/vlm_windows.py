@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any
 from cutpoint import cache
 from cutpoint.config import source_path
 from cutpoint.errors import FFmpegError
+from cutpoint.events.audio_events import CHEERING, LAUGHTER, REACTION_GROUPS, SCREAM
 from cutpoint.events.common import Source, layer_cache_path, transcript_excerpt
 from cutpoint.events.eventtypes import BANNER_PAYOFFS, BANNER_SEED, EventType, first_match
 from cutpoint.events.regions import HudPreset, is_installed_path, load_preset
@@ -373,13 +374,15 @@ class Window:
 
     @property
     def key(self) -> str:
-        """Cache key within a source."""
+        """Cache key within a source. :func:`select_windows` snaps the bounds out to whole
+        seconds, so a candidate that moves by a fraction of a second keeps its window and
+        its cached description (only the source's end stays as it is)."""
         return f"{self.start:.1f}-{self.end:.1f}"
 
 
 # --------------------------------------------------------------------------- selection
 
-SEED_WEIGHTS = {"Laughter": 1.0, "Scream": 0.7, "Cheering": 0.6}
+SEED_WEIGHTS = {LAUGHTER: 1.0, SCREAM: 0.7, CHEERING: 0.6}
 TELEMETRY_SEEDS = {"crash": 2.0, "airtime": 1.0, "coverage": 0.25}
 # Stopped / lift footage (action-cam): described only where no other window exists, so
 # the mask exception (friends on the lift, banter at the top) can see it.
@@ -406,7 +409,7 @@ def resolve_counts(
                 for evs in layer1.values()
                 for e in evs
                 if (e.get("kind") == "telemetry" and e.get("type") != "coverage_masked")
-                or e.get("label") in ("Laughter", "Scream", "Cheering")
+                or e.get("label") in REACTION_GROUPS
             )
             n = max(CAM_MIN_WINDOWS, min(CAM_MAX_WINDOWS, seeds))
         params = replace(params, max_windows=n)
@@ -599,8 +602,10 @@ def select_windows(
             extra += 1
     order = {str(s.path): i for i, s in enumerate(sources)}
     chosen.sort(key=lambda w: (order.get(w.source, 0), w.start))
-    for w in chosen:
-        w.start, w.end = round(w.start, 1), round(w.end, 1)
+    for w in chosen:  # whole seconds, outwards: the cache key (Window.key) holds still
+        w.start = float(math.floor(round(w.start, 3)))
+        w.end = min(dur.get(w.source, math.inf), float(math.ceil(round(w.end, 3))))
+        w.end = round(w.end, 1)
     logger.log(
         logging.DEBUG if quiet else logging.INFO,
         "VLM windows: %d raw seeds -> %d merged -> %d kept (+%d gap-fill)",

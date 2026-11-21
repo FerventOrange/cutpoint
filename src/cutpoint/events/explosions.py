@@ -28,7 +28,8 @@ The event keeps its fields and gets ``loud_jump`` (LU), ``backing`` (the names a
 and ``confirmed`` (bool); a boom whose frames were checked also gets ``after_black`` (bool), the
 others (not loud, or the decode failed) have no ``after_black``. Nothing is game-specific: no text,
 no preset. Cheap: it reads two small cache files per source part and the OCR events already in
-memory, plus a few short decodes per source (loud booms only), so nothing is cached here.
+memory, plus a few short decodes per source (loud booms only). The decoded lumas are cached per
+source (:class:`CachedLuma`), so a re-run decodes only booms it has not seen.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import cache
+from cutpoint.events.common import layer_cache_path
 from cutpoint.ffmpeg_utils import decode_raw
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,44 @@ def luma_reader(video: Path) -> LumaFn:
             return None
 
     return read
+
+
+class CachedLuma:
+    """A :data:`LumaFn` that reads through :func:`luma_reader` once per stretch and keeps what it
+    read in ``<cdir>/events-luma-<hash>.json`` (the source's cache folder: its key holds the
+    file's size and mtime), so a re-run of the events reads no frame it read before. A stretch
+    that could not be read is not kept: the next run tries it again. :meth:`save` writes what
+    is new (a failed write is logged at DEBUG: the next run reads the frames again).
+    """
+
+    def __init__(self, video: Path, cdir: Path, read: LumaFn | None = None) -> None:
+        self.path = layer_cache_path(cdir, "luma", {"fps": _LUMA_FPS, "size": list(_LUMA_SIZE)})
+        self._read = read or luma_reader(video)
+        got = cache.load_json(self.path)
+        stored = got.get("lumas") if isinstance(got, dict) else None
+        self.lumas: dict[str, list[float]] = stored if isinstance(stored, dict) else {}
+        self._new = False
+
+    def __call__(self, t0: float, t1: float) -> list[float] | None:
+        key = f"{t0:.3f}-{t1:.3f}"
+        hit = self.lumas.get(key)
+        if isinstance(hit, list):
+            return hit
+        values = self._read(t0, t1)
+        if values:
+            self.lumas[key] = [float(v) for v in values]
+            self._new = True
+        return list(values) if values else None
+
+    def save(self) -> None:
+        """Write the cache when this reader read new stretches."""
+        if not self._new:
+            return
+        try:
+            cache.save_json(self.path, {"lumas": self.lumas})
+        except OSError as err:
+            logger.debug("%s: explosion frame cache not written: %s", self.path, err)
+        self._new = False
 
 
 def _loudness(parts: Parts) -> tuple[np.ndarray, np.ndarray] | None:

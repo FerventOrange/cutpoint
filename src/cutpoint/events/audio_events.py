@@ -65,12 +65,17 @@ class ClassGroup:
     seed: bool = True
 
 
+# The groups of people reacting, by their names in DEFAULT_GROUPS (the ``label`` of their audio
+# events): scoring, tails and the VLM window seeds read them by these names.
+LAUGHTER, SCREAM, CHEERING = "Laughter", "Scream", "Cheering"
+REACTION_GROUPS = (LAUGHTER, SCREAM, CHEERING)
+
 # Calibrated on a 1080p tactical-shooter stream (game + voice chat on one track):
 # genuine laughter peaks at only 0.04-0.13 there (0.4 in loud bursts) and the
 # local median is ~0, so the relative rule effectively becomes ``rel_floor``.
 DEFAULT_GROUPS: tuple[ClassGroup, ...] = (
     ClassGroup(
-        "Laughter",
+        LAUGHTER,
         ("Laughter", "Giggle", "Snicker", "Belly laugh", "Chuckle, chortle", "Baby laughter"),
         abs_thr=0.12,
         rel_factor=4.0,
@@ -78,7 +83,7 @@ DEFAULT_GROUPS: tuple[ClassGroup, ...] = (
         rel_floor=0.04,
     ),
     ClassGroup(
-        "Scream",
+        SCREAM,
         ("Screaming", "Shout", "Yell", "Bellow", "Battle cry", "Children shouting"),
         abs_thr=0.15,
         rel_factor=4.0,
@@ -86,7 +91,7 @@ DEFAULT_GROUPS: tuple[ClassGroup, ...] = (
         rel_floor=0.03,
     ),
     ClassGroup(
-        "Cheering",
+        CHEERING,
         ("Cheering", "Whoop", "Applause"),
         abs_thr=0.15,
         rel_factor=4.0,
