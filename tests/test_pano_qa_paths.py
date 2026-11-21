@@ -417,11 +417,8 @@ def test_director_params_config_then_cli() -> None:
     assert o == {"max_speed": "50", "min_hold_s": 4.0}
     p = D.with_params(D.DirectorParams(), o)
     assert p.max_speed == 50.0 and p.min_hold_s == 4.0
-    _config({"pano": {"director": {"dt": 0}}})
+    _config({"pano": {"director": {"dt": 0}}})  # validated up front (values: test_pano_director)
     with pytest.raises(ValueError, match="must be > 0"):
-        cli.director_params([])
-    _config({"pano": {"director": {"bogus": 1}}})
-    with pytest.raises(ValueError, match="unknown director param"):
         cli.director_params([])
 
 

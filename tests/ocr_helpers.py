@@ -10,9 +10,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
 
 from cutpoint import progress
 from cutpoint.events import ocr_raw, pipeline
+from cutpoint.events.killfeed import OcrParams
 from events_fakes import stub_run_events
 
 W, H, FPS, SECONDS = 1280, 720, 4, 60
@@ -113,9 +115,15 @@ def ocr_cache_files(folder: Path) -> dict[str, Any]:
 FEED_NAMES = ["Ash", "Boxer", "Kip", "Nova", "Quill", "Orrin", "Sable", "Tarn", "Vex", "Wren"]
 
 
-def box(text: str, x: int, y: int, w: int = 160, h: int = 20) -> dict[str, Any]:
+def box(text: str, x: int, y: int, w: int = 160, h: int = 20, score: float = 0.9) -> dict[str, Any]:
     """One OCR box record with its top left at ``(x, y)``."""
-    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": 0.9}
+    return {"x0": x, "y0": y, "x1": x + w, "y1": y + h, "text": text, "score": score}
+
+
+def quad(x: float, y: float, w: float, h: float) -> list[list[float]]:
+    """The four corners of a box with its top left at ``(x, y)``, as the OCR engine gives a
+    read's position."""
+    return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
 
 
 def text_frame(source: str, b: int, k: int, boxes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -140,6 +148,32 @@ def stub_ocr_run(
     monkeypatch.setattr(progress, "MIN_INTERVAL_S", 0.0)
     stub_run_events(monkeypatch, sources, highlights)
     monkeypatch.setattr(pipeline, "OcrEngine", lambda: None)
+
+
+class StopAtVlm(Exception):
+    """Where :func:`stub_ocr_layer`'s ``run_events`` stops: the VLM layer's first call."""
+
+
+def stub_ocr_layer(
+    monkeypatch: Any, sources: list[Any], highlights: dict[str, Any] | None = None
+) -> None:
+    """:func:`stub_ocr_run` with no preset found and a run that stops after the OCR layer
+    (:class:`StopAtVlm`); the test fakes discovery and OCR (and may set ``load_preset``)."""
+    stub_ocr_run(monkeypatch, sources, highlights)
+    monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
+
+    def stop(*a: Any, **k: Any) -> None:
+        raise StopAtVlm
+
+    monkeypatch.setattr(pipeline, "game_prompt", stop)  # the VLM layer's first call
+
+
+def run_ocr_layer(project: Path, *, stops: type[BaseException] = StopAtVlm, **kw: Any) -> Any:
+    """``run_events`` of ``project`` with the OCR layer only (game ``zonewar``, invented),
+    expected to stop with ``stops``; returns the ``pytest.raises`` info."""
+    with pytest.raises(stops) as info:
+        pipeline.run_events(project, layers=("ocr",), ocr=OcrParams(game="zonewar"), **kw)
+    return info
 
 
 def progress_lines(capsys: Any, drop: tuple[str, ...] = ()) -> list[dict]:

@@ -22,7 +22,7 @@ from cutpoint.errors import FFmpegError, LowMemoryError
 from cutpoint.ffmpeg_utils import RunCancelled
 from cutpoint.styles import get_style
 from cutpoint.transcribe import transcript_name
-from scene_helpers import fake_source_io
+from scene_helpers import scene_world
 
 ENV = "CUTPOINT_ANALYZE_SCENE_OVERLAP"
 WAIT_S = 15  # a broken implementation fails after this long instead of hanging
@@ -77,12 +77,9 @@ class FakeTr(StubTranscriber):
 def world(home, tmp_path, monkeypatch):
     """Everything around ``analyze_source`` faked but the cache folder and the code under test.
     ``w.scene`` is the fake ``scene_cuts``: it records its thread and saves its cuts file."""
-    monkeypatch.delenv(ENV, raising=False)
-    src = write(tmp_path / "videos" / "a.mp4")
+    w = scene_world(monkeypatch, tmp_path)  # 60 s, one loud burst at 20 s
     FakeTr.hook, FakeTr.calls = None, 0
-    w = type("World", (), {})()
-    w.src, w.tr, w.proj = src, FakeTr(), tmp_path / "proj"
-    w.cdir = cache.source_dir(src, 0.0)
+    src, w.tr, w.proj = w.src, FakeTr(), tmp_path / "proj"
     w.scene_calls, w.scene_threads, w.scene_error = [], [], None
     w.started = threading.Event()  # the fake scene work has begun
 
@@ -97,7 +94,6 @@ def world(home, tmp_path, monkeypatch):
 
     w.scene = scene
     w.real_scene_cuts = analyze.scene_cuts
-    fake_source_io(monkeypatch)  # 60 s, one loud burst at 20 s
     monkeypatch.setattr(analyze, "Transcriber", FakeTr)
     monkeypatch.setattr(analyze, "scene_cuts", scene)
     w.source = lambda use_scenes=True, timings=None: analyze.analyze_source(

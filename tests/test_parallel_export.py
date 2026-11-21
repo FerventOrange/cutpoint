@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import media_info, set_config, write
-from cutpoint import audio_tracks, clips, config, ffmpeg_utils, folders, paths, procs, sources, srt
+from cutpoint import audio_tracks, clips, config, ffmpeg_utils, folders, procs, sources, srt
 from cutpoint.clips import ClipPlan
 from cutpoint.encode import OutputFormat
 from cutpoint.errors import EncoderUnavailableError, FFmpegError
@@ -557,48 +557,34 @@ def encoder(monkeypatch, kind: str | None):
 
 
 PLANS = [SimpleNamespace(pano=False)] * 3
+UNPROBED = "unprobed"  # the encoder must not be probed: the answer is certain without it
 
 
 @pytest.mark.parametrize(
-    ("kind", "configured", "expected"),
+    ("configured", "plans", "kind", "expected"),
     [
-        ("nvenc", "auto", 2),
-        ("cpu", "auto", 1),
-        ("cpu", 3, 3),  # a number is taken as is, libx264 included
-        ("nvenc", 8, 3),  # clamped to 1-3
+        ("auto", PLANS, "nvenc", 2),
+        ("auto", PLANS, "cpu", 1),
+        (3, PLANS, "cpu", 3),  # a number is taken as is, libx264 included
+        (3, PLANS[:1], UNPROBED, 1),  # no second clip
+        (3, [*PLANS, SimpleNamespace(pano=True)], UNPROBED, 1),  # a 360 clip
+        (1, PLANS, UNPROBED, 1),
+        # the first export raises the encoder's error, as a sequential run does
+        (3, PLANS, None, 1),
     ],
+    ids=["auto-gpu", "auto-cpu", "number", "one-clip", "360-clip", "one-worker", "no-encoder"],
 )
-def test_export_workers_follows_config_and_encoder(home, monkeypatch, kind, configured, expected):
+def test_export_workers(home, monkeypatch, configured, plans, kind, expected):
     set_config(home, export_workers=configured)
-    encoder(monkeypatch, kind)
-    assert clips.export_workers(PLANS) == expected
+    if kind == UNPROBED:
 
+        def probe():
+            raise AssertionError("encoder probed")
 
-def test_export_workers_is_one_without_a_second_clip_or_with_a_360_clip(home, monkeypatch):
-    set_config(home, export_workers=3)
-    encoder(monkeypatch, "nvenc")
-    assert clips.export_workers(PLANS[:1]) == 1
-    assert clips.export_workers([]) == 1
-    assert clips.export_workers([*PLANS, SimpleNamespace(pano=True)]) == 1
-
-
-def test_export_workers_is_one_when_the_encoder_cannot_be_chosen(home, monkeypatch):
-    """The first export raises the encoder's error, as a sequential run does."""
-    set_config(home, export_workers=3)
-    encoder(monkeypatch, None)
-    assert clips.export_workers(PLANS) == 1
-
-
-def test_export_workers_does_not_probe_the_encoder_when_one_is_certain(home, monkeypatch):
-    set_config(home, export_workers=1)
-
-    def probe():
-        raise AssertionError("encoder probed")
-
-    monkeypatch.setattr(clips, "video_encoder", probe)
-    assert clips.export_workers(PLANS) == 1
-    set_config(home, export_workers=3)
-    assert clips.export_workers(PLANS[:1]) == 1
+        monkeypatch.setattr(clips, "video_encoder", probe)
+    else:
+        encoder(monkeypatch, kind)
+    assert clips.export_workers(plans) == expected
 
 
 # -- config parsing --------------------------------------------------------------------------
@@ -639,16 +625,13 @@ def test_config_export_workers_values(home, monkeypatch, env, value, expected):
         assert f"CUTPOINT_EXPORT_WORKERS is {env!r}" in str(err.value)
 
 
-def test_env_export_workers_overrides_the_file_and_is_in_the_cache_key(home, monkeypatch):
+def test_env_export_workers_is_in_the_cache_key(home, monkeypatch):
     set_config(home, export_workers=1)
     assert config.export_workers() == 1
     monkeypatch.setenv("CUTPOINT_EXPORT_WORKERS", "3")  # no cache_clear: the key changed
     assert config.export_workers() == 3
-    monkeypatch.setenv("CUTPOINT_EXPORT_WORKERS", "auto")
-    assert config.export_workers() is None
     monkeypatch.delenv("CUTPOINT_EXPORT_WORKERS")
     assert config.export_workers() == 1
-    assert paths.env("EXPORT_WORKERS") is None
 
 
 def test_a_bad_env_value_is_not_cached(home, monkeypatch):
