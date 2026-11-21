@@ -39,7 +39,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, NamedTuple, Protocol
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -113,6 +113,40 @@ PRESETS = {
     "openai": "OpenAI API",
     "xai": "Grok (xAI)",
 }
+
+
+class Offer(NamedTuple):
+    """What Settings offers for one provider before a model list comes."""
+
+    url: str  # the default base URL ("" for a subscription: the local proxy)
+    model: str  # the default model ("" when the user must name one)
+    models: list[str]  # the models listed
+    placeholder: str  # the Model field's placeholder
+    model_required: bool
+
+
+def offers(ollama: str, ollama_model: str) -> dict[str, Offer]:
+    """Each provider's :class:`Offer` (presets and subscriptions), with ``ollama`` the configured
+    Ollama URL and ``ollama_model`` the model of the role asking."""
+    return {
+        "ollama": Offer(ollama, ollama_model, [ollama_model], ollama_model, False),
+        "openai": Offer(OPENAI_URL, "", list(OPENAI_MODELS), "OpenAI model name", True),
+        "anthropic": Offer(
+            ANTHROPIC_URL,
+            DEFAULT_ANTHROPIC_MODEL,
+            list(ANTHROPIC_MODELS),
+            DEFAULT_ANTHROPIC_MODEL,
+            False,
+        ),
+        "xai": Offer(XAI_URL, "", list(XAI_MODELS), "xAI model name", True),
+        "claude-code": Offer(
+            "", DEFAULT_ANTHROPIC_MODEL, list(ANTHROPIC_MODELS), DEFAULT_ANTHROPIC_MODEL, False
+        ),
+        "codex": Offer("", DEFAULT_CODEX_MODEL, [DEFAULT_CODEX_MODEL], DEFAULT_CODEX_MODEL, False),
+        "antigravity": Offer("", "", [], "model name", False),
+    }
+
+
 MODELS_TTL_S = 600.0  # a provider's model list is asked again after this (or on Refresh)
 MAX_MODEL_PAGES = 10  # Anthropic's /v1/models pages read at most
 # Ids of OpenAI-compatible models this provider cannot chat with, left out of the Model list:

@@ -463,6 +463,20 @@ def test_a_flag_or_target_check_refuses_nan_infinity_and_bools() -> None:
     assert reasons == [{"flag": "sky", "text": "mostly sky"}]
 
 
+def test_number_in_checks_type_and_range_in_one_place() -> None:
+    """A415: the request checks of whole numbers and ranges go through :func:`number_in`."""
+    from cutpoint.ui.common import number_in  # noqa: PLC0415
+
+    for v in (math.nan, math.inf, 10**400, True, "0.5", None, -0.1, 1.5):
+        assert number_in(v, 0, 1) is None
+    assert number_in(1, 0, 1) == 1.0 and type(number_in(1, 0, 1)) is float
+    assert number_in(0.25, 0, 1) == 0.25
+    for v in (0, 2.0, True, "3", 51):
+        assert number_in(v, 1, 50, integer=True) is None
+    assert number_in(7, 1, integer=True) == 7 and type(number_in(7, 1, integer=True)) is int
+    assert number_in(10**30, 1, integer=True) == 10**30  # no upper bound by default
+
+
 @pytest.mark.parametrize(
     ("device", "expected"), [("cuda", "medium"), ("cpu", "small"), (None, "small")]
 )

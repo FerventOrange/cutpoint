@@ -291,6 +291,11 @@ def ranking_undo_view(p: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
     return view
 
 
+def forget_undo_view(p: Path) -> None:
+    """Drop the remembered Undo view of the project folder ``p`` (it was deleted)."""
+    _UNDO_SEEN.pop(p, None)
+
+
 def ranking_swap(p: Path, base: str) -> tuple[dict[str, Any], dict[str, Any], bool] | None:
     """Undo (or Redo) the last ranking change of ``p`` (:func:`cutpoint.rerank.swap`, its
     returns and errors); a swap forgets the page's remembered Undo view of ``p``."""

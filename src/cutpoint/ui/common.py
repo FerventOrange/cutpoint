@@ -101,6 +101,17 @@ def finite_number(v: Any) -> float | None:
     return f if math.isfinite(f) else None
 
 
+def number_in(v: Any, lo: float, hi: float = math.inf, *, integer: bool = False) -> float | None:
+    """``v`` when it is a number from ``lo`` to ``hi`` (finite; an int, not a bool, with
+    ``integer``), else None; as a float unless ``integer``. The one check of a number a request
+    or a saved file gives; each caller words its own error."""
+    if integer:
+        ok = isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+        return v if ok else None
+    f = finite_number(v)
+    return f if f is not None and lo <= f <= hi else None
+
+
 # --------------------------------------------------------------------------- processes
 def job_env() -> dict[str, str]:
     """The environment of a child ``cutpoint`` command (``spawn``, ``resume_check``)."""
