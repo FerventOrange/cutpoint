@@ -29,6 +29,9 @@ The manifest (keep it and the label files out of the repository; paths are relat
 - ``labels`` (optional): a :mod:`moment_eval` label file. Times may also be ``"mm:ss"`` or
   ``"h:mm:ss"`` strings. Without labels the source is scored for detection only. A label file's
   own ``holdout``, when present, must agree with the manifest.
+- ``menus`` (optional, with ``menus_sha256``, the file's sha256): a menu-time label file
+  (:func:`load_menu_file`); the source is then also scored on the menu time the OCR layer found
+  (:func:`score_menus`, from the project's ``events.json``).
 - ``holdout``: never analyzed or reported unless ``--holdout``. ``holdout_sha256`` is the sha256
   of the sorted holdout ids joined by newlines; a manifest whose holdout ids do not give it is
   refused (``--rehash`` prints the hash to store; the script never rewrites the manifest).
@@ -77,6 +80,8 @@ import requests
 
 from cutpoint import __version__, extras, folders, paths, reset_state
 from cutpoint.category import CATEGORIES
+from cutpoint.events.menu_spans import source_menu_spans
+from cutpoint.intervals import merge
 
 logger = logging.getLogger(__name__)
 
@@ -136,6 +141,14 @@ REPORT_METRICS = (
     "keep_30",
     "ref_30",
 )
+#: Menu-time label categories (``menus`` files): menu time the menu test should find, and
+#: neutral time it is neither expected to flag nor punished for flagging. Unlabelled time is
+#: gameplay.
+MENU_CATEGORIES = ("lobby", "select", "settings", "map", "scoreboard", "results", "loading")
+NEUTRAL_CATEGORIES = ("cutscene", "replay", "banner", "offgame", "overlay")
+MENU_TOLERANCE_S = 1.0  # label edges are about this accurate (see score_menus)
+MENU_SPAN_MIN_S = 1.0  # missed and false menu spans this long are listed per source
+MENU_METRICS = ("menu_tp_s", "menu_fp_s", "menu_fn_s")
 SMI_QUERY = [
     "nvidia-smi",
     "--query-gpu=index,memory.used,memory.total,utilization.gpu",
@@ -195,6 +208,60 @@ def load_label_file(path: Path) -> tuple[dict[str, Any], bool | None]:
     return me.parse_labels(convert_times(data, str(path)), str(path)), own
 
 
+def _time(value: Any, where: str) -> float:
+    """``value`` (seconds or a time string) as seconds; a ValueError when it is neither."""
+    t = to_seconds(value, where)
+    if isinstance(t, bool) or not isinstance(t, int | float) or t < 0:
+        raise ValueError(f"{where}: {value!r} is not seconds, mm:ss or h:mm:ss")
+    return float(t)
+
+
+def load_menu_file(path: Path, video: str) -> list[dict[str, Any]]:
+    """The spans of a menu-time label file (``"schema": 1``, ``video`` the source's file name
+    ``video``, ``menus`` sorted and not overlapping, each with a category of
+    :data:`MENU_CATEGORIES` or :data:`NEUTRAL_CATEGORIES`) as ``{"start", "end", "category",
+    "menu"}`` in seconds; ``menu`` is whether the category is menu time.
+
+    Raises:
+        ValueError: The file is not one (the first problem).
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or data.get("schema") != 1:
+        raise ValueError(f'{path}: expected a JSON object with "schema": 1')
+    if data.get("video") != video:
+        raise ValueError(f"{path}: video {data.get('video')!r} is not the source's file {video!r}")
+    if not isinstance(data.get("reviewed", False), bool):
+        raise ValueError(f"{path}: 'reviewed' must be true or false")
+    duration = _time(data["duration"], f"{path}: duration") if "duration" in data else None
+    raw = data.get("menus")
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}: 'menus' must be a list of spans")
+    out: list[dict[str, Any]] = []
+    for i, s in enumerate(raw, 1):
+        where = f"{path}: menus {i}"
+        if not isinstance(s, dict):
+            raise ValueError(f"{where}: not an object")
+        start, end = _time(s.get("start"), f"{where}: start"), _time(s.get("end"), f"{where}: end")
+        if start >= end:
+            raise ValueError(f"{where}: start {start:g} is not before end {end:g}")
+        if duration is not None and end > duration:
+            raise ValueError(f"{where}: end {end:g} is after the duration {duration:g}")
+        if out and start < out[-1]["end"]:
+            raise ValueError(
+                f"{where}: starts before the span before it ends (sort them, no overlaps)"
+            )
+        cat = s.get("category")
+        if cat not in MENU_CATEGORIES + NEUTRAL_CATEGORIES:
+            raise ValueError(
+                f"{where}: category {cat!r} is not one of "
+                f"{', '.join(MENU_CATEGORIES + NEUTRAL_CATEGORIES)}"
+            )
+        if not isinstance(s.get("unsure", False), bool):
+            raise ValueError(f"{where}: 'unsure' must be true or false")
+        out.append({"start": start, "end": end, "category": cat, "menu": cat in MENU_CATEGORIES})
+    return out
+
+
 @dataclass
 class Source:
     id: str
@@ -206,6 +273,8 @@ class Source:
     labels: dict[str, Any] | None = None
     note: str = ""
     also: tuple[str, ...] = ()  # further categories a detection may give and count right
+    menus_path: Path | None = None
+    menus: list[dict[str, Any]] | None = None  # :func:`load_menu_file` spans
 
 
 @dataclass
@@ -355,6 +424,10 @@ def load_manifest(path: Path) -> Manifest:
                         f"{str(holdout).lower()}"
                     )
                 src.labels["holdout"] = holdout
+        if s.get("menus") is not None:
+            _load_menus(src, s, base, where, errors)
+        elif "menus_sha256" in s:
+            errors.append(f"{where}: 'menus_sha256' without 'menus'")
         sources.append(src)
     variants: list[Variant] = []
     for i, v in enumerate(data.get("variants") or [], 1):
@@ -372,6 +445,31 @@ def load_manifest(path: Path) -> Manifest:
     if errors:
         raise ManifestError(f"{path}:\n  " + "\n  ".join(errors))
     return Manifest(path, sources, variants, hash_)
+
+
+def _load_menus(
+    src: Source, raw: dict[str, Any], base: Path, where: str, errors: list[str]
+) -> None:
+    """``src.menus`` from the source's ``menus`` file, pinned by its ``menus_sha256``; problems
+    go to ``errors``."""
+    if not isinstance(raw["menus"], str) or not raw["menus"]:
+        errors.append(f"{where}: 'menus' must be a file path")
+        return
+    src.menus_path = paths.absolute(base / raw["menus"])
+    if src.input.is_dir():
+        errors.append(f"{where}: 'menus' needs an input of one file, not a folder")
+        return
+    try:
+        src.menus = load_menu_file(src.menus_path, src.input.name)
+    except (OSError, ValueError) as err:
+        errors.append(f"{where}: {err}")
+        return
+    digest = file_sha256(src.menus_path)
+    if raw.get("menus_sha256") != digest:
+        errors.append(
+            f"{where}: 'menus_sha256' is {raw.get('menus_sha256')!r} but the menus file's sha256 "
+            f"is {digest}; check the file and store that"
+        )
 
 
 def holdout_hash(sources: Sequence[Source]) -> str:
@@ -885,11 +983,93 @@ def score_detection(source: Source, hl: dict[str, Any]) -> dict[str, Any] | None
     }
 
 
+def _length(spans: Sequence[tuple[float, float]]) -> float:
+    return sum((b - a for a, b in spans), 0.0)
+
+
+def _subtract(
+    spans: Sequence[tuple[float, float]], cut: Sequence[tuple[float, float]]
+) -> list[tuple[float, float]]:
+    """The parts of merged ``spans`` outside merged ``cut``."""
+    out = []
+    for a, b in spans:
+        for c, d in cut:
+            if d <= a or c >= b:
+                continue
+            if c > a:
+                out.append((a, c))
+            a = max(a, d)
+        if a < b:
+            out.append((a, b))
+    return out
+
+
+def _listed(spans: Sequence[tuple[float, float]]) -> list[list[float]]:
+    return [[round(a, 2), round(b, 2)] for a, b in spans if b - a >= MENU_SPAN_MIN_S]
+
+
+def score_menus(
+    detected: Sequence[tuple[float, float]],
+    labels: Sequence[dict[str, Any]],
+    tolerance: float = MENU_TOLERANCE_S,
+) -> dict[str, Any]:
+    """Menu time of the detector (``detected``: its menu spans) against the menu-time
+    ``labels`` (:func:`load_menu_file`), in seconds. With D the detected time, M the menu labels
+    and N the neutral ones: ``menu_tp_s`` = |D and M|, ``menu_fp_s`` = |D outside M and N, each
+    label widened by ``tolerance``|, ``menu_fn_s`` = |M narrowed by ``tolerance``, outside D|,
+    ``menu_precision`` = tp / (tp + fp) and ``menu_recall`` = 1 - fn / |M| (None when they divide
+    by 0), with the false (``fp_spans``) and missed (``fn_spans``) spans of
+    :data:`MENU_SPAN_MIN_S` or longer."""
+    d = merge(detected)
+    menu = merge((s["start"], s["end"]) for s in labels if s["menu"])
+    every = merge((s["start"], s["end"]) for s in labels)
+    wide = merge((a - tolerance, b + tolerance) for a, b in every)
+    narrow = [(a + tolerance, b - tolerance) for a, b in menu if b - a > 2 * tolerance]
+    fp, fn = _subtract(d, wide), _subtract(narrow, d)
+    menu_s = _length(menu)
+    tp_s, fp_s, fn_s = _length(d) - _length(_subtract(d, menu)), _length(fp), _length(fn)
+    return {
+        "menu_s": round(menu_s, 2),
+        "neutral_s": round(_length(every) - menu_s, 2),
+        "detected_s": round(_length(d), 2),
+        "menu_tp_s": round(tp_s, 2),
+        "menu_fp_s": round(fp_s, 2),
+        "menu_fn_s": round(fn_s, 2),
+        "menu_precision": tp_s / (tp_s + fp_s) if tp_s + fp_s > 0 else None,
+        "menu_recall": 1 - fn_s / menu_s if menu_s > 0 else None,
+        "tolerance_s": tolerance,
+        "fp_spans": _listed(fp),
+        "fn_spans": _listed(fn),
+    }
+
+
+def detected_menu_spans(project: Path) -> list[tuple[float, float]]:
+    """The menu spans the OCR layer recorded in the project's ``events.json`` (``stats.ocr``,
+    read with :func:`cutpoint.events.menu_spans.source_menu_spans`).
+
+    Raises:
+        OSError, ValueError: No events.json, no OCR stats in it, or not one source.
+    """
+    ev = json.loads((project / "events.json").read_text(encoding="utf-8"))
+    if not isinstance(ev, dict) or not (ev.get("stats") or {}).get("ocr"):
+        raise ValueError("events.json has no OCR stats (stats.ocr): the HUD read did not run")
+    if len(ev.get("sources") or []) != 1:
+        raise ValueError("events.json must list one source for menu labels")
+    return [(float(a), float(b)) for s in source_menu_spans(ev).values() for a, b in s]
+
+
 def score_source(
     source: Source, project: Path, runs: int, seed: int, min_overlap: float
 ) -> dict[str, Any]:
-    """Detection and (with labels) ranking of one analyzed project."""
+    """Detection, (with labels) ranking and (with menu labels) menu time of one analyzed
+    project."""
     out: dict[str, Any] = {"detection": None, "ranking": None, "errors": []}
+    if source.menus is not None:
+        out["menus"] = None
+        try:
+            out["menus"] = score_menus(detected_menu_spans(project), source.menus)
+        except (OSError, ValueError) as err:
+            out["errors"].append(f"menus: {err}")
     try:
         hl = json.loads((project / "highlights.json").read_text(encoding="utf-8"))
     except (OSError, ValueError) as err:
@@ -918,6 +1098,11 @@ def source_entry(source: Source) -> dict[str, Any]:
         "labels": str(source.labels_path) if source.labels_path else None,
         "labels_sha256": file_sha256(source.labels_path) if source.labels_path else None,
         **({"also": list(source.also)} if source.also else {}),  # none: as before the key
+        **(
+            {"menus": str(source.menus_path), "menus_sha256": file_sha256(source.menus_path)}
+            if source.menus_path
+            else {}
+        ),
     }
 
 
@@ -987,13 +1172,42 @@ def ranking_summary(sources: Sequence[dict[str, Any]]) -> dict[str, dict[str, An
     return out
 
 
+def menu_summary(sources: Sequence[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per bucket (and ``all``): the menu seconds of the sources with menu labels summed, and
+    precision and recall of the sums (as :func:`score_menus`)."""
+    out: dict[str, dict[str, Any]] = {}
+    for s in sources:
+        m = s.get("menus")
+        if m is None:
+            continue
+        for key in (s["bucket"], ALL):
+            b = out.setdefault(
+                key, {"sources": 0, "menu_s": 0.0, **dict.fromkeys(MENU_METRICS, 0.0)}
+            )
+            b["sources"] += 1
+            for name in ("menu_s", *MENU_METRICS):
+                b[name] = round(b[name] + m[name], 2)
+    for b in out.values():
+        tp, fp = b["menu_tp_s"], b["menu_fp_s"]
+        b["menu_precision"] = tp / (tp + fp) if tp + fp > 0 else None
+        b["menu_recall"] = 1 - b["menu_fn_s"] / b["menu_s"] if b["menu_s"] > 0 else None
+    return out
+
+
+def _split_summary(sources: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    out = {"detection": detection_summary(sources), "ranking": ranking_summary(sources)}
+    menus = menu_summary(sources)
+    return out | ({"menus": menus} if menus else {})
+
+
 def summarize(sources: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """Detection and ranking summaries of the tune split, and of the holdout when present."""
+    """Detection, ranking and (with menu labels) menu summaries of the tune split, and of the
+    holdout when present."""
     tune = [s for s in sources if not s["holdout"]]
     held = [s for s in sources if s["holdout"]]
-    out = {"tune": {"detection": detection_summary(tune), "ranking": ranking_summary(tune)}}
+    out = {"tune": _split_summary(tune)}
     if held:
-        out["holdout"] = {"detection": detection_summary(held), "ranking": ranking_summary(held)}
+        out["holdout"] = _split_summary(held)
     return out
 
 
@@ -1006,6 +1220,9 @@ class GateRules:
     keep_drop: float = 1.0  # keep_top20 / keep_30 may drop this many ranges ...
     keep_drop_share: float = 0.10  # ... or this share of the baseline, whichever is more
     skip_rise: float = 1.0  # skip_top20 may rise this many ranges
+    menu_fp_rise: float = 5.0  # menu_fp_s may rise this many seconds ...
+    menu_fp_rise_share: float = 0.10  # ... or this share of the baseline, whichever is more
+    menu_recall_drop: float = 0.05  # menu_recall may drop this much
 
 
 def compare_issues(a: dict[str, Any], b: dict[str, Any]) -> tuple[list[str], list[str]]:
@@ -1030,7 +1247,7 @@ def compare_issues(a: dict[str, Any], b: dict[str, Any]) -> tuple[list[str], lis
 
 
 #: Per source, what must be the same in both runs for them to be compared.
-LABEL_KEYS = ("category", "also", "bucket", "holdout", "labels_sha256")
+LABEL_KEYS = ("category", "also", "bucket", "holdout", "labels_sha256", "menus_sha256")
 
 
 def label_mismatches(a: dict[str, Any], b: dict[str, Any]) -> dict[str, list[str]]:
@@ -1062,11 +1279,13 @@ def split_delta(pairs: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> dict[
     changes, and the sources B lost."""
     det_pairs = [(x, y) for x, y in pairs if x.get("detection") and y.get("detection")]
     rank_pairs = [(x, y) for x, y in pairs if x.get("ranking") and y.get("ranking")]
+    menu_pairs = [(x, y) for x, y in pairs if x.get("menus") and y.get("menus")]
     lost = [
         y["id"]
         for x, y in pairs
         if (x.get("detection") and not y.get("detection"))
         or (x.get("ranking") and not y.get("ranking"))
+        or (x.get("menus") and not y.get("menus"))
     ]
     rows = []
     for x, y in pairs:
@@ -1087,6 +1306,12 @@ def split_delta(pairs: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> dict[
             deltas = {n: d for n, d in deltas.items() if d}
             if deltas:
                 row["ranking"] = deltas
+        mx, my = x.get("menus"), y.get("menus")
+        if mx and my:
+            deltas = {n: round(my[n] - mx[n], 2) for n in MENU_METRICS}
+            deltas = {n: d for n, d in deltas.items() if d}
+            if deltas:
+                row["menus"] = deltas
         if len(row) > 2:
             rows.append(row)
     return {
@@ -1097,6 +1322,10 @@ def split_delta(pairs: Sequence[tuple[dict[str, Any], dict[str, Any]]]) -> dict[
         "ranking": {
             "a": ranking_summary([x for x, _ in rank_pairs]),
             "b": ranking_summary([y for _, y in rank_pairs]),
+        },
+        "menus": {
+            "a": menu_summary([x for x, _ in menu_pairs]),
+            "b": menu_summary([y for _, y in menu_pairs]),
         },
         "sources": rows,
         "lost": lost,
@@ -1148,6 +1377,25 @@ def gate(delta: dict[str, Any], rules: GateRules) -> list[str]:
             lost = ma["keep_30"]["beats_noise"] - mb["keep_30"]["beats_noise"]
             if lost > 0:
                 fails.append(f"{bucket}: keep_30 beats noise in {lost} fewer video(s)")
+    return fails + _menu_gate(delta["menus"], rules)
+
+
+def _menu_gate(menus: dict[str, Any], rules: GateRules) -> list[str]:
+    """The failed menu-time rules per bucket: false menu time up, menu recall down."""
+    fails = []
+    for bucket, bb in menus["b"].items():
+        ba = menus["a"].get(bucket)
+        if bucket == ALL or ba is None:
+            continue
+        rise = bb["menu_fp_s"] - ba["menu_fp_s"]
+        allowed = max(rules.menu_fp_rise, rules.menu_fp_rise_share * ba["menu_fp_s"])
+        if rise > allowed:
+            fails.append(f"{bucket}: menu_fp_s up {rise:.1f} s (allowed {allowed:.1f})")
+        ra, rb = ba["menu_recall"], bb["menu_recall"]
+        if ra is not None and rb is not None and ra - rb > rules.menu_recall_drop:
+            fails.append(
+                f"{bucket}: menu_recall down {ra - rb:.2f} (allowed {rules.menu_recall_drop:g})"
+            )
     return fails
 
 
@@ -1251,6 +1499,31 @@ def _ranking_table(rank: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _menu_row(label: str, m: dict[str, Any]) -> str:
+    return (
+        f"| {label} | {_n(m['menu_s'])} | {_n(m['menu_tp_s'])} | {_n(m['menu_fp_s'])} | "
+        f"{_n(m['menu_fn_s'])} | {_pct(m['menu_precision'])} | {_pct(m['menu_recall'])} |"
+    )
+
+
+def _menu_table(menus: dict[str, Any], sources: Sequence[dict[str, Any]]) -> list[str]:
+    """Menu time per source with menu labels, then per bucket (sums), then the false and
+    missed spans."""
+    lines = [
+        "| source / bucket | menu s | tp s | fp s | fn s | precision | recall |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    lines += [_menu_row(s["id"], s["menus"]) for s in sources if s.get("menus")]
+    lines += [_menu_row(f"**{b}**", menus[b]) for b in [*[b for b in BUCKETS if b in menus], ALL]]
+    for s in sources:
+        m = s.get("menus")
+        if m and (m["fp_spans"] or m["fn_spans"]):
+            false = ", ".join(f"{a:g}-{b:g}" for a, b in m["fp_spans"]) or "-"
+            missed = ", ".join(f"{a:g}-{b:g}" for a, b in m["fn_spans"]) or "-"
+            lines.append(f"- {s['id']}: false menu {false}; missed {missed}")
+    return lines
+
+
 def _delta_lines(delta: dict[str, Any]) -> list[str]:
     lines = ["Detection (sources scored in both):", ""]
     lines += [
@@ -1284,6 +1557,18 @@ def _delta_lines(delta: dict[str, Any]) -> list[str]:
             lines.append(f"| {bucket} | " + " | ".join(cells) + " |")
     else:
         lines.append("No labelled source scored in both.")
+    ma, mb = delta["menus"]["a"], delta["menus"]["b"]
+    if mb:
+        lines += ["", "Menu time (sources with menu labels scored in both; A -> B):", ""]
+        lines += [
+            "| bucket | tp s | fp s | fn s | precision | recall |",
+            "|---|---|---|---|---|---|",
+        ]
+        for bucket in [*[b for b in BUCKETS if b in mb], ALL]:
+            x, y = ma[bucket], mb[bucket]
+            cells = [f"{_n(x[n])} -> {_n(y[n])}" for n in MENU_METRICS]
+            cells += [f"{_pct(x[n])} -> {_pct(y[n])}" for n in ("menu_precision", "menu_recall")]
+            lines.append(f"| {bucket} | " + " | ".join(cells) + " |")
     if delta["lost"]:
         lines += ["", "Scored in A, not in B: " + ", ".join(delta["lost"])]
     lines += ["", "Per source:", ""]
@@ -1294,6 +1579,7 @@ def _delta_lines(delta: dict[str, Any]) -> list[str]:
         if "detection" in row:
             parts.append(f"detection {row['detection']['old']} -> {row['detection']['new']}")
         parts += [f"{n} {d:+g}" for n, d in row.get("ranking", {}).items()]
+        parts += [f"{n} {d:+g}" for n, d in row.get("menus", {}).items()]
         lines.append(f"- {row['id']} ({row['bucket']}): " + ", ".join(parts))
     return lines
 
@@ -1364,6 +1650,9 @@ def render_report(results: Sequence[dict[str, Any]], comparisons: Sequence[dict[
         tune = r["summary"]["tune"]
         lines += ["", f"## {name}: detection (tune)", "", *_detection_table(tune["detection"])]
         lines += ["", f"## {name}: ranking (tune)", "", *_ranking_table(tune["ranking"])]
+        if tune.get("menus"):
+            tuned = [s for s in r["sources"] if not s["holdout"]]
+            lines += ["", f"## {name}: menu time (tune)", "", *_menu_table(tune["menus"], tuned)]
         held = r["summary"].get("holdout")
         if held:
             lines += [
@@ -1374,6 +1663,9 @@ def render_report(results: Sequence[dict[str, Any]], comparisons: Sequence[dict[
                 "",
                 *_ranking_table(held["ranking"]),
             ]
+            if held.get("menus"):
+                shown = [s for s in r["sources"] if s["holdout"]]
+                lines += ["", *_menu_table(held["menus"], shown)]
         errs = [(s["id"], e) for s in r["sources"] for e in s.get("errors") or []]
         if errs:
             lines += ["", f"Problems ({name}):", ""] + [f"- {i}: {e}" for i, e in errs]
@@ -1546,6 +1838,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--gate-keep-drop", type=float, default=rules.keep_drop)
     ap.add_argument("--gate-keep-drop-share", type=float, default=rules.keep_drop_share)
     ap.add_argument("--gate-skip-rise", type=float, default=rules.skip_rise)
+    ap.add_argument("--gate-menu-fp-rise", type=float, default=rules.menu_fp_rise)
+    ap.add_argument("--gate-menu-fp-rise-share", type=float, default=rules.menu_fp_rise_share)
+    ap.add_argument("--gate-menu-recall-drop", type=float, default=rules.menu_recall_drop)
     ap.add_argument("--strict-gate", action="store_true", help="exit 3 when a gate fails")
     ap.add_argument("-v", "--verbose", action="store_true", help="debug output")
     args = ap.parse_args(argv)
@@ -1555,7 +1850,13 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
     rules = GateRules(
-        args.gate_ambiguous_pp, args.gate_keep_drop, args.gate_keep_drop_share, args.gate_skip_rise
+        args.gate_ambiguous_pp,
+        args.gate_keep_drop,
+        args.gate_keep_drop_share,
+        args.gate_skip_rise,
+        args.gate_menu_fp_rise,
+        args.gate_menu_fp_rise_share,
+        args.gate_menu_recall_drop,
     )
     if args.compare:
         if args.manifest:
