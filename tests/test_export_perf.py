@@ -252,3 +252,22 @@ def test_decoder_verdict_is_kept_for_the_next_process(fake_probe, monkeypatch):
     new_process()
     assert ffmpeg_utils.decoder_error(dec) is None
     assert n == [1]
+
+
+def test_concurrent_verdict_updates_leave_valid_json(fake_probe):
+    file = paths.cache_dir() / ffmpeg_utils.PROBE_FILE
+    file.parent.mkdir(parents=True, exist_ok=True)
+    keys = [f"enc:k{i}:" for i in range(8)]
+
+    def work(i):
+        for _ in range(10):
+            ffmpeg_utils._update_probe_file(keys[i], {"stamp": "s", "error": None, "at": 1})
+            ffmpeg_utils._forget_probe(keys[(i + 1) % 8])
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert isinstance(json.loads(file.read_text(encoding="utf-8")), dict)
+    assert [p.name for p in file.parent.iterdir() if p.name.endswith(".tmp")] == []

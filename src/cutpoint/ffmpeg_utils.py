@@ -44,6 +44,7 @@ from typing import IO, Any, Literal
 import numpy as np
 
 from cutpoint import paths, procs, state
+from cutpoint.cache import atomic_path
 from cutpoint.config import get_config
 from cutpoint.errors import (
     EncoderUnavailableError,
@@ -1152,6 +1153,7 @@ def vaapi_devices() -> list[str]:
 # (find_encoder with ``refresh``).
 PROBE_FILE = "probe-verdicts.json"
 PROBE_OK_TTL_S = 7 * 86400
+_PROBE_LOCK = threading.Lock()  # around the file update only, never the probe itself
 
 
 @state.register_cache
@@ -1196,27 +1198,36 @@ def _probe_verdict(ident: str, probe: Callable[[], str | None], *, nvidia: bool)
                 return None
     error = probe()
     if stamp is not None and error is None:  # a failure may be temporary: not stored
-        data[ident] = {"stamp": stamp, "error": None, "at": time.time()}
-        tmp = file.with_name(f".{file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        _update_probe_file(ident, {"stamp": stamp, "error": None, "at": time.time()})
+    return error
+
+
+def _update_probe_file(ident: str, verdict: dict[str, Any] | None) -> None:
+    """Set (or, with None, drop) the stored verdict of ``ident``: the file is read again, changed
+    and replaced atomically under a lock, as the parallel export threads all call this."""
+    file = paths.cache_dir() / PROBE_FILE
+    with _PROBE_LOCK:
+        try:
+            loaded = json.loads(file.read_text(encoding="utf-8"))
+            data: dict[str, Any] = loaded if isinstance(loaded, dict) else {}
+        except (OSError, ValueError):
+            data = {}
+        if verdict is None:
+            if data.pop(ident, None) is None:
+                return
+        else:
+            data[ident] = verdict
         try:
             file.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(data), encoding="utf-8")
-            tmp.replace(file)
+            with atomic_path(file) as tmp:
+                tmp.write_text(json.dumps(data), encoding="utf-8")
         except OSError:  # a read-only cache folder: probed again next time
-            with suppress(OSError):
-                tmp.unlink(missing_ok=True)
-    return error
+            pass
 
 
 def _forget_probe(ident: str) -> None:
     """Drop the stored verdict of ``ident`` (a forced re-probe)."""
-    file = paths.cache_dir() / PROBE_FILE
-    try:
-        data = json.loads(file.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and data.pop(ident, None) is not None:
-            file.write_text(json.dumps(data), encoding="utf-8")
-    except (OSError, ValueError):
-        pass
+    _update_probe_file(ident, None)
 
 
 @state.register_cache
