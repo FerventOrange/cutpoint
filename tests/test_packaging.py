@@ -1,6 +1,7 @@
 """Packaging contract: ui and keyring are core dependencies, and the built wheel carries the
 files the package reads at run time."""
 
+import hashlib
 import os
 import re
 import shutil
@@ -28,6 +29,21 @@ def test_ui_and_keyring_are_core_dependencies_not_extras():
     core = {r.split(";")[0].split("[")[0].split(">")[0].split("=")[0].strip()
             for r in project["dependencies"]}  # fmt: skip
     assert {"fastapi", "uvicorn", "keyring", "telemetry-parser"} <= core
+
+
+def test_runtime_dependencies_have_an_upper_bound():
+    """`uv tool install` does not read uv.lock: every runtime dependency stops below its next
+    major (or is pinned), so a breaking release is never picked up (#1085, A809)."""
+    project = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    reqs = list(project["dependencies"])
+    for items in project["optional-dependencies"].values():
+        reqs += [r for r in items if not r.startswith("cutpoint[")]
+    unbounded = [
+        r
+        for r in reqs
+        if not re.search(r"(<|==)", r.split(";")[0]) and not r.startswith("cryptography")
+    ]
+    assert unbounded == []
 
 
 def _run_sh_version_check(version: str) -> subprocess.CompletedProcess[str]:
@@ -71,6 +87,94 @@ def test_install_ps1_has_the_same_version_floor():
     sh = (_ROOT / "install.sh").read_text(encoding="utf-8")
     msg = "is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
     assert msg in text and msg in sh
+
+
+def _install_sh_functions() -> str:
+    """install.sh without its last line (``main "$@"``), so sourcing it only defines things."""
+    text = (_ROOT / "install.sh").read_text(encoding="utf-8")
+    body, last = text.rstrip("\n").rsplit("\n", 1)
+    assert last == 'main "$@"'
+    return body + "\n"
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+def test_install_sh_refuses_a_uv_installer_with_the_wrong_sha256(tmp_path):
+    """A downloaded uv installer whose SHA256 is not the pinned one is never run (#1085)."""
+    ran = tmp_path / "ran"
+    harness = (
+        _install_sh_functions()
+        + f"""
+DRY_RUN=0; BIN_DIR={tmp_path}; TMPDIR={tmp_path}
+curl() {{ printf 'touch {ran}\\n' > "$4"; }}
+install_uv
+"""
+    )
+    done = subprocess.run(
+        ["sh", "-c", harness], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert done.returncode == 1
+    assert "has SHA256" in done.stderr and "not running it" in done.stderr
+    assert not ran.exists()
+    assert not list(tmp_path.glob("uv-install.*"))  # the download is removed
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+def test_install_sh_runs_a_uv_installer_with_the_pinned_sha256(tmp_path):
+    """The downloaded uv installer runs when its SHA256 is the pinned one; the download goes."""
+    ran = tmp_path / "ran"
+    fake = f"touch {ran}\n"
+    sha = hashlib.sha256(fake.encode()).hexdigest()
+    harness = (
+        _install_sh_functions()
+        + f"""
+DRY_RUN=0; BIN_DIR={tmp_path}; TMPDIR={tmp_path}; UV_INSTALLER_SHA256={sha}
+curl() {{ printf 'touch {ran}\\n' > "$4"; }}
+have() {{ [ "$1" = uv ] || command -v "$1" >/dev/null 2>&1; }}
+install_uv
+"""
+    )
+    done = subprocess.run(
+        ["sh", "-c", harness], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    assert "SHA256 checked" in done.stdout
+    assert ran.exists()
+    assert not list(tmp_path.glob("uv-install.*"))
+
+
+def test_installers_pin_the_uv_installer_sha256():
+    sh = (_ROOT / "install.sh").read_text(encoding="utf-8")
+    ps1 = (_ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert re.search(r'^UV_INSTALLER_SHA256="[0-9a-f]{64}"$', sh, re.M)
+    assert re.search(r'^\s*\$UV_INSTALLER_SHA256 = "[0-9a-f]{64}"\s*$', ps1, re.M)
+    # install.sh checks the hash before it runs the script; install.ps1 likewise
+    assert sh.index('if [ "$got" != "$UV_INSTALLER_SHA256" ]') < sh.index('sh "$tmp"')
+    assert ps1.index("if ($got -ne $UV_INSTALLER_SHA256)") < ps1.index("-File $tmp")
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+def test_install_sh_prints_the_ollama_linux_command_instead_of_running_it(tmp_path):
+    """Ollama's Linux script has no published checksum: --ollama prints it, never runs it."""
+    harness = (
+        _install_sh_functions()
+        + """
+DRY_RUN=0; OS=Linux; OLLAMA_CHOICE=1
+have() { [ "$1" != ollama ] && command -v "$1" >/dev/null 2>&1; }
+ollama_up() { return 1; }
+curl() { echo "curl ran" >&2; return 1; }
+sudo() { echo "sudo ran" >&2; return 1; }
+offer_ollama
+echo "status=$OLLAMA_STATUS"
+echo "hint=$OLLAMA_HINT"
+"""
+    )
+    done = subprocess.run(
+        ["sh", "-c", harness], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    assert "ran" not in done.stderr
+    assert "status=not installed (Linux: install it yourself" in done.stdout
+    assert "curl -fsSL https://ollama.com/install.sh | sh" in done.stdout
 
 
 @pytest.mark.slow
