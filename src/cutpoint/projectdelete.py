@@ -26,7 +26,7 @@ from pathlib import Path
 
 import send2trash
 
-from cutpoint import cache, folders, planning, runstate
+from cutpoint import cache, folders, planning, runstate, winvol
 from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS, RERANK_BACKUP, UI_DIR
 
 OWN_FILES = frozenset(
@@ -277,73 +277,16 @@ def in_container() -> bool:
     ) or bool(os.environ.get("container"))  # noqa: SIM112 - the name podman and systemd set
 
 
-def _drive_type(root: str) -> int:
-    import ctypes  # noqa: PLC0415
-
-    return ctypes.windll.kernel32.GetDriveTypeW(root)  # type: ignore[attr-defined]
+_drive_type = winvol.drive_type
+_mount_root = winvol.mount_root
+_volume_guid = winvol.volume_guid
+_volume_total_mb = winvol.volume_total_mb
+_bin_used = winvol.bin_used
 
 
 def _dos_target(drive: str) -> str:
-    """Where the drive letter ``drive`` (``X:``) points: ``\\Device\\HarddiskVolumeN`` for a
-    volume, ``\\??\\...`` for a ``subst`` drive. Empty when Windows cannot say."""
-    import ctypes  # noqa: PLC0415
-
-    buf = ctypes.create_unicode_buffer(1024)
-    if not ctypes.windll.kernel32.QueryDosDeviceW(drive, buf, 1024):  # type: ignore[attr-defined]
-        return ""
-    return buf.value
-
-
-def _mount_root(path: str) -> str:
-    """The mount point of the volume holding ``path`` (``C:\\``, or a folder a volume is mounted
-    on)."""
-    import ctypes  # noqa: PLC0415
-
-    buf = ctypes.create_unicode_buffer(1024)
-    if not ctypes.windll.kernel32.GetVolumePathNameW(path, buf, 1024):  # type: ignore[attr-defined]
-        raise OSError(f"no volume path for {path}")
-    return buf.value
-
-
-def _volume_guid(root: str) -> str:
-    """``{GUID}`` of the volume mounted at ``root`` (``C:\\``)."""
-    import ctypes  # noqa: PLC0415
-
-    buf = ctypes.create_unicode_buffer(64)
-    if not ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(root, buf, 64):  # type: ignore[attr-defined]
-        raise OSError(f"no volume name for {root}")
-    m = re.search(r"\{[0-9A-Fa-f-]+\}", buf.value)
-    if m is None:
-        raise OSError(f"unexpected volume name {buf.value!r}")
-    return m.group(0)
-
-
-def _volume_total_mb(root: str) -> int:
-    """Size of the volume at ``root`` in MB."""
-    import ctypes  # noqa: PLC0415
-
-    total = ctypes.c_ulonglong()
-    if not ctypes.windll.kernel32.GetDiskFreeSpaceExW(root, None, ctypes.byref(total), None):  # type: ignore[attr-defined]
-        raise OSError(f"cannot read the size of {root}")
-    return total.value // 2**20
-
-
-def _bin_used(root: str) -> int:
-    """Bytes the Recycle Bin of the volume at ``root`` already holds."""
-    import ctypes  # noqa: PLC0415
-    from ctypes import wintypes  # noqa: PLC0415
-
-    class Info(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", wintypes.DWORD),
-            ("i64Size", ctypes.c_longlong),
-            ("i64NumItems", ctypes.c_longlong),
-        ]
-
-    info = Info(ctypes.sizeof(Info))
-    if ctypes.windll.shell32.SHQueryRecycleBinW(root, ctypes.byref(info)) != 0:  # type: ignore[attr-defined]
-        raise OSError(f"cannot read the Recycle Bin of {root}")
-    return info.i64Size
+    """Where the drive letter ``drive`` (``X:``) points; empty when Windows cannot say."""
+    return winvol.dos_target(drive)
 
 
 def _bin_settings(guid: str) -> tuple[int, int | None]:
