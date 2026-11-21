@@ -51,8 +51,8 @@ from cutpoint.ui.common import (
     UI_DIR,
     bad,
     cutpoint_cmd,
-    finite_number,
     logger,
+    number_in,
 )
 from cutpoint.ui.files import (
     _highlights,
@@ -186,8 +186,8 @@ def _color_state(raw: Any) -> dict[str, Any] | None:
     None when it did not send one (or sent nonsense)."""
     if not isinstance(raw, dict) or raw.get("mode") not in COLOR_MODES:
         return None
-    strength = finite_number(raw.get("strength"))
-    if strength is None or not 0 <= strength <= 1:
+    strength = number_in(raw.get("strength"), 0, 1)
+    if strength is None:
         return None
     return {"mode": raw["mode"], "strength": strength}
 
@@ -214,8 +214,8 @@ def _color_args(body: dict[str, Any]) -> list[str]:
         raise bad("color cannot be combined with lut; use one")
     if strength is None:
         return [] if color is None else ["--color", color]
-    value = finite_number(strength)
-    if value is None or not 0 <= value <= 1:
+    value = number_in(strength, 0, 1)
+    if value is None:
         raise bad("color_strength must be a number from 0 to 1")
     if color not in ("auto", "underwater"):
         raise bad("color_strength needs color auto or underwater")
@@ -517,7 +517,7 @@ def _vision_args(st: dict[str, Any]) -> list[str]:
     args = [] if setting is None else ["--vision" if setting else "--no-vision"]
     args.append("--visual-index" if cfg.visual_index else "--no-visual-index")
     vision_top = st.get("vision_top")
-    if isinstance(vision_top, int) and not isinstance(vision_top, bool) and vision_top > 0:
+    if number_in(vision_top, 1, integer=True) is not None:
         args.append(f"--vision-top={vision_top}")
     for key, opt in (("ollama_url", "--ollama-url"), ("ollama_model", "--ollama-model")):
         if isinstance(st.get(key), str) and st[key]:
@@ -604,17 +604,11 @@ def analyze_options(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         "language": st["language"]
         if isinstance(st.get("language"), str) and st["language"]
         else None,
-        "max_candidates": mc
-        if isinstance(mc, int) and not isinstance(mc, bool) and mc > 0
-        else None,
+        "max_candidates": number_in(mc, 1, integer=True),
         "no_scenes": _no_scenes(st, ran, ps),
         "skip": _saved_skip(p, hl),
-        "must_include_crash": float(crash)
-        if default_crash is not None
-        and isinstance(crash, (int, float))
-        and not isinstance(crash, bool)
-        and 0 <= crash <= 1
-        and crash != default_crash
+        "must_include_crash": number_in(crash, 0, 1)
+        if default_crash is not None and crash != default_crash
         else None,
         "recover": st.get("recover") is True,
         "vision_detect_all": _vision_detect_all(hl),
@@ -747,18 +741,14 @@ def _analyze_args(
         args.append(f"{flag}={v}")
     mc = opts["max_candidates"]
     if mc is not None:
-        if isinstance(mc, bool) or not isinstance(mc, int) or mc < 1:
+        if number_in(mc, 1, integer=True) is None:
             raise bad("max_candidates must be a whole number above 0")
         args.append(f"--max-candidates={mc}")
     crash = opts["must_include_crash"]
     if crash is not None:
-        if (
-            isinstance(crash, bool)
-            or not isinstance(crash, (int, float))
-            or not 0 <= crash <= 1  # NaN fails this too
-        ):
+        if (value := number_in(crash, 0, 1)) is None:
             raise bad("must_include_crash must be a number from 0 to 1")
-        args.append(f"--must-include-crash={float(crash):g}")
+        args.append(f"--must-include-crash={value:g}")
     for key, flag in ANALYZE_FLAGS.items():
         if _flag(opts, key):
             args.append(flag)
@@ -847,8 +837,8 @@ def _seconds(body: dict[str, Any], key: str, hi: float, *, positive: bool = Fals
     """``body[key]`` as seconds, 0 (or above 0 with ``positive``) to ``hi``; None when not sent."""
     if body.get(key) is None:
         return None
-    v = finite_number(body[key])
-    if v is None or v > hi or v < 0 or (positive and v == 0):
+    v = number_in(body[key], 0, hi)
+    if v is None or (positive and v == 0):
         rule = f"above 0 and at most {hi:g}" if positive else f"0-{hi:g}"
         raise bad(f"{key} must be {rule} seconds")
     return v
@@ -892,7 +882,7 @@ def _auto_picks(body: dict[str, Any], hl: dict[str, Any] | None) -> list[str]:
         raise bad("give top or ids, not both")
     args: list[str] = []
     if top is not None:
-        if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= MAX_SEGMENTS:
+        if number_in(top, 1, MAX_SEGMENTS, integer=True) is None:
             raise bad(f"top must be a whole number from 1 to {MAX_SEGMENTS}")
         args += ["--top", str(top)]
     if ids is not None:

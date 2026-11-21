@@ -159,42 +159,10 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
         ollama = ai_providers.public(ollama_url())  # OLLAMA_HOST may carry user:password@
     except (ValueError, TypeError):  # a bad port or config.json: Settings still opens
         ollama = ""
-    # provider -> (default URL, default model, models offered, Model placeholder, model needed)
     is_vision = section_name == "vision_assistant"
-    dm = default_model() if is_vision else ai_providers.DEFAULT_OLLAMA_MODEL
-    offers = {
-        "ollama": (ollama, dm if is_vision else ai_providers.DEFAULT_OLLAMA_MODEL, [dm], dm, False),
-        "openai": (
-            ai_providers.OPENAI_URL,
-            "",
-            list(ai_providers.OPENAI_MODELS),
-            "OpenAI model name",
-            True,
-        ),
-        "anthropic": (
-            ai_providers.ANTHROPIC_URL,
-            ai_providers.DEFAULT_ANTHROPIC_MODEL,
-            list(ai_providers.ANTHROPIC_MODELS),
-            ai_providers.DEFAULT_ANTHROPIC_MODEL,
-            False,
-        ),
-        "xai": (ai_providers.XAI_URL, "", list(ai_providers.XAI_MODELS), "xAI model name", True),
-        "claude-code": (
-            "",
-            ai_providers.DEFAULT_ANTHROPIC_MODEL,
-            list(ai_providers.ANTHROPIC_MODELS),
-            ai_providers.DEFAULT_ANTHROPIC_MODEL,
-            False,
-        ),
-        "codex": (
-            "",
-            ai_providers.DEFAULT_CODEX_MODEL,
-            [ai_providers.DEFAULT_CODEX_MODEL],
-            ai_providers.DEFAULT_CODEX_MODEL,
-            False,
-        ),
-        "antigravity": ("", "", [], "model name", False),
-    }
+    offers = ai_providers.offers(
+        ollama, default_model() if is_vision else ai_providers.DEFAULT_OLLAMA_MODEL
+    )
     hosts = key_hosts(data, section_name=section_name)
 
     def key_env(p: str) -> list[str]:
@@ -224,11 +192,11 @@ def assistant_view(data: dict[str, Any], section_name: str = "assistant") -> dic
             {
                 "name": p,
                 "title": title,
-                "default_url": offers[p][0],
-                "default_model": offers[p][1],
-                "models": offers[p][2],
-                "placeholder": offers[p][3],
-                "model_required": offers[p][4],
+                "default_url": offers[p].url,
+                "default_model": offers[p].model,
+                "models": offers[p].models,
+                "placeholder": offers[p].placeholder,
+                "model_required": offers[p].model_required,
                 "key_env": key_env(p),
                 "subscription": p in cliproxy.PROVIDERS,  # logs in (Settings > Subscriptions)
             }

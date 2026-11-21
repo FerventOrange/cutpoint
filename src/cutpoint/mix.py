@@ -65,7 +65,7 @@ from cutpoint.clips import (
 )
 from cutpoint.config import is_absolute_any, remap_source, source_path
 from cutpoint.crash import crash_floor, load_crashes
-from cutpoint.dsp import mask_runs
+from cutpoint.dsp import bin_of, mask_runs
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
 from cutpoint.pano import views
@@ -386,7 +386,7 @@ def _fit(c: Cand, lo: float, hi: float, duration: float) -> Cand:
 
 
 def _mean(x: np.ndarray, a: float, b: float) -> float:
-    s = x[int(a / DT) : max(int(a / DT) + 1, int(b / DT))]
+    s = x[bin_of(a, DT) : max(bin_of(a, DT) + 1, bin_of(b, DT))]
     return float(s.mean()) if len(s) else 0.0
 
 
@@ -398,7 +398,7 @@ def _spans(mask: np.ndarray, min_s: float) -> list[tuple[float, float]]:
 def _paint(n: int, spans: list[tuple[float, float]]) -> np.ndarray:
     x = np.zeros(n)
     for a, b in spans:
-        x[int(a / DT) : int(b / DT)] = 1.0
+        x[bin_of(a, DT) : bin_of(b, DT)] = 1.0
     return x
 
 
@@ -449,7 +449,7 @@ def part_candidates(d: dict[str, Any], max_picks: int = 30) -> list[Cand]:
             out.append(cand("social", p, "laughter", "laugh"))
     for a, b in _spans(lift, LIFT_MIN_S):
         outside = np.ones(n)
-        outside[int(a / DT) : int(b / DT)] = 0.0
+        outside[bin_of(a, DT) : bin_of(b, DT)] = 0.0
         for p in picks(LIFT_W, outside, k=1):
             beauty = LIFT_W["beauty"] * p.signals.get("beauty", 0)
             kind = "beauty" if beauty >= LIFT_W["people"] * p.signals.get("people", 0) else "social"

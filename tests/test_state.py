@@ -107,6 +107,10 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.stage._stage_index": lambda t, m: stage._stage_index(),
     "cutpoint.stage.staged_path": lambda t, m: stage.staged_path("-"),
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
+    "cutpoint.ffmpeg_utils._probe_stamp": lambda t, m: (
+        _fill_find_tool(t, m),
+        ffmpeg_utils._probe_stamp(False),
+    ),
     "cutpoint.ffmpeg_utils.encoder_error": _fill_encoder,
     "cutpoint.ffmpeg_utils.decoder_error": _fill_decoder,
     "cutpoint.ffmpeg_utils.gpu_decoder": _fill_decoder,

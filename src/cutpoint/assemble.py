@@ -1018,13 +1018,18 @@ def post_process(
     dst: Path | None = None,
     limit: bool = False,
     language: str | None = None,
+    gain: str | None = None,
+    video_from: Path | None = None,
 ) -> Path | None:
     """Apply loudness normalisation (+ true-peak limiter) and/or burned-in captions.
 
     ``limit`` without ``loudnorm`` runs the limiter alone (compressed peaks, see
     :func:`peak_filters`). ffmpeg writes ``dst`` (default ``out``); the caption files are
     named after ``out``. ``language`` forces the captions' transcription language (None:
-    detected).
+    detected). ``gain`` is the :func:`loudnorm_filter` of ``stage`` when already measured.
+    ``video_from`` is an earlier result of this function whose video (captions burned in) is
+    stream-copied, so only the audio is processed again from ``stage``; ``captions`` is then
+    ignored.
 
     Returns:
         The caption ASS file (reuse it via ``ass`` when re-running), if any.
@@ -1032,7 +1037,9 @@ def post_process(
     args = ["ffmpeg", "-y", "-v", "error", "-i", str(stage.resolve())]
     cwd, vf, tags = None, None, []
     info = probe(stage)
-    if captions:
+    if video_from is not None:
+        args += ["-i", str(video_from.resolve()), "-map", "1:v:0", "-map", "0:a:0"]
+    elif captions:
         if ass is None:
             wav = out.with_name(f".{out.stem}.captions.wav")
             extract_audio(stage, wav, info)
@@ -1059,7 +1066,7 @@ def post_process(
         # 0.1 s seen, #473): it is trimmed back to where the video it was joined to ends.
         af = limiter_chain(limit_db, has_soxr())  # soxr when the ffmpeg build has it
         if loudnorm:
-            af = f"{loudnorm_filter(stage)},{af}"
+            af = f"{gain or loudnorm_filter(stage)},{af}"
         end = info.vstart + info.vduration
         a_args = ["-af", f"{af},atrim=end={end:.6f}", *FINAL_AUDIO_OUT]
     else:
@@ -1093,20 +1100,43 @@ def normalize_with_ceiling(
         Measured (integrated LUFS, true peak dBTP) of the final file.
     """
     limit_db, ass = LIMIT_START_DB, None
+    final = dst or out
+    gain = loudnorm_filter(stage) if loudnorm else None  # measured once for every pass
     for attempt in range(1, LIMIT_PASSES + 1):
-        ass = post_process(
-            stage,
-            out,
-            loudnorm,
-            captions,
-            model,
-            limit_db,
-            ass,
-            dst,
-            limit=not loudnorm,
-            language=language,
-        )
-        lufs, tp = measure_loudness(dst or out)
+        if attempt > 1 and captions:
+            # The captions are burned in already: keep that video and redo only the audio.
+            redo = final.with_name(f".{final.stem}.relimit{final.suffix}")
+            try:
+                post_process(
+                    stage,
+                    out,
+                    loudnorm,
+                    False,
+                    model,
+                    limit_db,
+                    dst=redo,
+                    limit=not loudnorm,
+                    gain=gain,
+                    video_from=final,
+                )
+                redo.replace(final)
+            finally:
+                redo.unlink(missing_ok=True)
+        else:
+            ass = post_process(
+                stage,
+                out,
+                loudnorm,
+                captions,
+                model,
+                limit_db,
+                ass,
+                dst,
+                limit=not loudnorm,
+                language=language,
+                gain=gain,
+            )
+        lufs, tp = measure_loudness(final)
         logger.info(
             "Loudness pass %d: %.1f LUFS, true peak %+.2f dBTP (limiter %.1f dBFS)",
             attempt,

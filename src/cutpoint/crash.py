@@ -65,6 +65,7 @@ from typing import Any
 import numpy as np
 
 from cutpoint import activity, cache, jsonout, memguard, progress
+from cutpoint.dsp import bin_of
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -522,11 +523,16 @@ class ClipEncoder:
         enc.on_device = False
         return enc
 
+    @property
+    def clip(self) -> Any:
+        """The CLIP model, under the name ``VisualModels`` gives it (for its ``_embed``)."""
+        return self.model
+
     def embed(self, frames: np.ndarray, batch: int = 32, centre: bool = False) -> np.ndarray:
         """``(N, 3, 768)`` L2-normalised embeddings of left / centre / right crops; with
         ``centre`` ``(N, 1, 768)`` of the centre crop alone (the light frame index, #989).
         Portrait frames are cropped top / centre / bottom, as the visual layer does."""
-        from cutpoint.events.visual import square_crops  # noqa: PLC0415
+        from cutpoint.events.visual import VisualModels, square_crops  # noqa: PLC0415
 
         torch = self.torch
         if not self.on_device:
@@ -547,13 +553,8 @@ class ClipEncoder:
             b = x.shape[0]
             sq = square_crops(x)
             c = sq[1] if centre else torch.cat(sq, 0)
-            c = torch.nn.functional.interpolate(
-                c, size=(224, 224), mode="bicubic", antialias=True, align_corners=False
-            )
-            c = ((c.clamp(0, 1) - self.mean) / self.std).to(self.dtype)
-            with torch.inference_mode():
-                e = self.model.encode_image(c).float()
-            e = e / e.norm(dim=-1, keepdim=True)
+            # the visual layer's resize, normalisation and CLIP pass (#1085 A357)
+            e = VisualModels._embed(self, c)  # same attributes: one implementation
             out.append(e.view(crops, b, -1).permute(1, 0, 2).cpu().numpy())
         return np.concatenate(out) if out else np.zeros((0, crops, 768), np.float32)
 
@@ -736,7 +737,7 @@ def _seg(x: np.ndarray | None, a: float, b: float) -> np.ndarray:
     """Finite values of a 0.1 s grid between ``a`` and ``b`` seconds."""
     if x is None:
         return np.zeros(0)
-    i, j = max(0, int(a / DT)), min(len(x), int(b / DT) + 1)
+    i, j = max(0, bin_of(a, DT)), min(len(x), bin_of(b, DT) + 1)
     s = np.asarray(x[i:j], float) if j > i else np.zeros(0)
     return s[np.isfinite(s)]
 
@@ -1031,15 +1032,15 @@ def plan_clip(inp: SourceInputs, c: dict[str, Any], p: CrashParams) -> dict[str,
     words = inp.words or []
     why = "min aftermath"
     # grid indices: a GPS gap (NaN) must not shift the stop earlier (#1085 A181)
-    i0 = max(0, int(t1 / DT))
+    i0 = max(0, bin_of(t1, DT))
     still = np.zeros(0, bool)
     if speed is not None:
-        i1 = min(len(speed), int((t1 + 12.0) / DT) + 1)
+        i1 = min(len(speed), bin_of(t1 + 12.0, DT) + 1)
         still = np.nan_to_num(np.asarray(speed[i0:i1], float), nan=np.inf) <= p.still_kmh + 1.0
     if still.any():
         i_stop = i0 + int(np.argmax(still))
         t_stop = i_stop * DT
-        x = np.nan_to_num(speed[i_stop : int(hard_end / DT)], nan=0.0)
+        x = np.nan_to_num(speed[i_stop : bin_of(hard_end, DT)], nan=0.0)
         go = np.convolve(x > 5.0, np.ones(20), mode="valid") >= 20  # moving for 2 s
         t_go = t_stop + float(np.argmax(go)) * DT if go.any() else hard_end
         after = [k for k, wd in enumerate(words) if t_stop <= wd["start"] < hard_end]
@@ -1555,22 +1556,7 @@ def detect_project(
     from cutpoint.sources import settings_language  # noqa: PLC0415
 
     hl = load_highlights(project)  # the analysis in progress when analyze runs this step
-    sources = []
-    for src, dur in _project_sources(hl):
-        try:
-            cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
-        except OSError as err:
-            if not warn_unreachable:  # the caller already logged and warned
-                logger.debug("%s: footage not reachable (%s); skipped", src, err)
-                continue
-            logger.warning("%s: footage not reachable (%s); skipped", src, err)
-            jsonout.warn(
-                "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
-            )
-            continue
-        sources.append((src, dur))
-    if not sources:
-        raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
+    sources = _reachable_sources(project, hl, warn_unreachable)
     p = params or CrashParams()
     prof = full_prof = None
     t_profile = time.perf_counter()
@@ -1602,24 +1588,12 @@ def detect_project(
     for inp in inputs.values():
         cands += [score_candidate(inp, c, p) for c in candidate_events(inp, p)]
     cands.sort(key=lambda c: -c["pre_score"])
-    w = dict(p.weights)
     t0 = time.perf_counter()
     bypass, dense_failed = _dense_confirm(
         cands, inputs, p, dense=dense, force=force, encoder=encoder, batch_size=batch_size
     )
     timings["dense_s"] = round(time.perf_counter() - t0, 1)
-    for c in cands:
-        d = c.get("dense")
-        before = _confidence(c, w)
-        if d is not None:
-            c["scores"]["dense"] = d["score"]
-        conf = _confidence(c, w)
-        c["confidence"] = round(max(before, conf) if id(c) in bypass else conf, 3)
-        c["confirmed"] = d is not None
-        c["clip"] = plan_clip(inputs[c["source"]], c, p)
-    cands = _absorb(sorted(cands, key=lambda c: -c["confidence"]))
-    for k, c in enumerate(cands, 1):
-        c["id"] = f"c{k:03d}"
+    cands = _rank(cands, inputs, p, bypass)
     t0 = time.perf_counter()
     progress.start("result")  # the contact sheets and crashes.json
     written = _write_sheets(cands, project / CHECK_DIR, sheets, dense_failed)
@@ -1633,6 +1607,67 @@ def detect_project(
     }
     out = project / CRASHES_FILE
     cache.save_json(out, data)
+    _log_result(out, cands, len(written), timings["total_s"])
+    return out
+
+
+def _reachable_sources(
+    project: Path, hl: dict[str, Any], warn_unreachable: bool
+) -> list[tuple[Path, float]]:
+    """``(source, duration)`` of the project's footage (``hl``, its highlights) that can be
+    read; an unreachable
+    source is skipped with a WARNING and a ``footage_unreachable`` JSON warning (DEBUG only
+    without ``warn_unreachable``: the caller did both).
+
+    Raises:
+        ValueError: No source is reachable.
+    """
+    sources = []
+    for src, dur in _project_sources(hl):
+        try:
+            cache.source_dir(src)  # every cached layer is keyed by the file's size and mtime
+        except OSError as err:
+            if not warn_unreachable:  # the caller already logged and warned
+                logger.debug("%s: footage not reachable (%s); skipped", src, err)
+                continue
+            logger.warning("%s: footage not reachable (%s); skipped", src, err)
+            jsonout.warn(
+                "footage_unreachable", f"{src}: footage not reachable ({err}); skipped", [src]
+            )
+            continue
+        sources.append((src, dur))
+    if not sources:
+        raise ValueError(f"No footage of {project.name} is reachable; reconnect it and rerun")
+    return sources
+
+
+def _rank(
+    cands: list[dict[str, Any]],
+    inputs: dict[str, SourceInputs],
+    p: CrashParams,
+    bypass: set[int],
+) -> list[dict[str, Any]]:
+    """The candidates after the dense confirm, each with its ``confidence`` (a ``bypass``
+    candidate's never lowered by the dense score), ``confirmed`` and ``clip``, best first,
+    overlapping ones absorbed and numbered ``c001``...."""
+    w = dict(p.weights)
+    for c in cands:
+        d = c.get("dense")
+        before = _confidence(c, w)
+        if d is not None:
+            c["scores"]["dense"] = d["score"]
+        conf = _confidence(c, w)
+        c["confidence"] = round(max(before, conf) if id(c) in bypass else conf, 3)
+        c["confirmed"] = d is not None
+        c["clip"] = plan_clip(inputs[c["source"]], c, p)
+    cands = _absorb(sorted(cands, key=lambda c: -c["confidence"]))
+    for k, c in enumerate(cands, 1):
+        c["id"] = f"c{k:03d}"
+    return cands
+
+
+def _log_result(out: Path, cands: list[dict[str, Any]], sheets: int, total_s: float) -> None:
+    """INFO lines of a finished crash detection: the ten best candidates and the summary."""
     for c in cands[:10]:
         logger.info(
             "%s %s %6.1f-%6.1fs conf %.2f (tel %.2f vis %.2f dense %s aud %.2f words %.2f)",
@@ -1656,7 +1691,6 @@ def detect_project(
         held,
         len(cands),
         sum(c["confirmed"] for c in cands),
-        len(written),
-        timings["total_s"],
+        sheets,
+        total_s,
     )
-    return out

@@ -92,7 +92,7 @@ def test_report_probes_torch_before_transcription(monkeypatch):
     for name in ("_torch", "_transcription", "_insta360_sdk"):
         monkeypatch.setattr(capabilities, name, lambda *a, n=name: calls.append(n) or {})
     monkeypatch.setattr(capabilities, "_compiled_encoders", lambda: set())
-    monkeypatch.setattr(capabilities, "find_encoder", lambda kind: (None, []))
+    monkeypatch.setattr(capabilities, "find_encoder", lambda kind, **kw: (None, []))
     monkeypatch.setattr(
         capabilities, "video_encoder", lambda: SimpleNamespace(kind="cpu", codec="x", device=None)
     )

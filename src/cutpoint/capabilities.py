@@ -185,7 +185,7 @@ def report() -> dict[str, Any]:
     compiled = _compiled_encoders()
     encoders: dict[str, Any] = {}
     for kind, codec in VIDEO_CODECS.items():
-        enc, errors = find_encoder(kind)
+        enc, errors = find_encoder(kind, refresh=True)
         encoders[kind] = {
             "codec": codec,
             "listed_by_ffmpeg": codec in compiled,

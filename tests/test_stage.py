@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 import pytest
 
 from conftest import remap, set_config, write
-from cutpoint import config, paths, projectdelete, stage
+from cutpoint import config, paths, stage, winvol
 from cutpoint.config import remap_source
 from cutpoint.errors import FolderBusyError
 from cutpoint.stage import clear_stage, reload_stage_index, stage_sources, staged_path
@@ -441,7 +441,7 @@ def test_a_verbatim_path_is_not_unc(monkeypatch):
     """A verbatim ``C:`` path is judged by its drive; a verbatim UNC path is remote."""
     monkeypatch.setattr(stage.sys, "platform", "win32")
     seen = []
-    monkeypatch.setattr(projectdelete, "_drive_type", lambda d: seen.append(d) or 3)
+    monkeypatch.setattr(winvol, "drive_type", lambda d: seen.append(d) or 3)
     assert not stage.is_remote(PureWindowsPath(r"\\?\C:\x\a.mp4"))
     assert seen == ["C:\\"]
     assert stage.is_remote(PureWindowsPath(r"\\?\UNC\srv\share\a.mp4"))

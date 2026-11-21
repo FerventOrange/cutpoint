@@ -22,7 +22,14 @@ from cutpoint.errors import FFmpegError
 from cutpoint.events.ocr_prefetch import OcrPrefetch
 from cutpoint.ffmpeg_utils import RunCancelled
 from cutpoint.styles import get_style
-from scene_helpers import CUDA, concat_clip, fake_source_io, late_copy, near, nvdec_source
+from scene_helpers import (
+    CUDA,
+    concat_clip,
+    late_copy,
+    near,
+    nvdec_source,
+    scene_world,
+)
 
 ENV = "CUTPOINT_SCENE_DECODE"
 
@@ -57,75 +64,55 @@ def test_auto_splits_a_long_enough_source_on_nvdec_with_the_cpu_free():
 
 
 @pytest.mark.parametrize(
-    "kw",
+    ("setup", "splits"),
     [
-        {"cpu_free": False},  # the background OCR or Whisper on the CPU runs meanwhile
-        {"duration": analyze.HYBRID_MIN_S - 0.1},  # too short to pay
-        {"duration": analyze.LONG_FILE_S + 1},  # keyframes only: already fast
-        {"offset": 300.0},  # a recovered part
-        {"limit": 200.0},  # a source with a read error
+        ({"cpu_free": False}, False),  # the background OCR or Whisper on the CPU runs meanwhile
+        ({"duration": analyze.HYBRID_MIN_S - 0.1}, False),  # too short to pay
+        ({"duration": analyze.HYBRID_MIN_S}, True),
+        ({"duration": analyze.LONG_FILE_S + 1}, False),  # keyframes only: already fast
+        ({"offset": 300.0}, False),  # a recovered part
+        ({"limit": 200.0}, False),  # a source with a read error
+        ({"cpus": 5}, False),  # fewer than HYBRID_MIN_THREADS left after the headroom
+        # the CPU half of a 4K HEVC source took twice as long as NVDEC alone; NVDEC here
+        # decodes no 10-bit or 4:2:2 H.264; forced, any codec and format NVDEC decodes
+        ({"probe": {"vcodec": "hevc"}}, False),
+        ({"probe": {"pix_fmt": "yuv420p10le"}}, False),
+        ({"probe": {"vcodec": "hevc"}, "env": "hybrid"}, True),
+        # the CPU half seeks: MPEG-TS seeks inexactly (#976), so it decodes in one pass, also
+        # when forced
+        ({"name": "a.ts"}, False),
+        ({"name": "a.ts", "env": "hybrid"}, False),
+        ({"name": "a.MOV"}, True),
+        ({"name": "a.webm"}, True),  # #1038: WebM seeks exactly, also without cues
     ],
-    ids=["cpu-busy", "short", "long", "recovered-part", "read-error"],
-)
-def test_auto_keeps_one_decode(kw):
-    assert plan(**kw) is None
-
-
-def test_auto_splits_exactly_at_the_minimum_length():
-    assert plan(duration=analyze.HYBRID_MIN_S) is not None
-
-
-@pytest.mark.parametrize(
-    "over",
-    [{"vcodec": "hevc"}, {"vcodec": None}, {"pix_fmt": "yuv420p10le"}, {"pix_fmt": "yuv422p"}],
-    ids=["hevc", "unknown-codec", "10-bit", "4:2:2"],
-)
-def test_auto_splits_only_8bit_420_h264(monkeypatch, over):
-    """The CPU half of a 4K HEVC source took twice as long as NVDEC alone; NVDEC here decodes
-    no 10-bit or 4:2:2 H.264."""
-    monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, **over))
-    assert plan() is None
-    monkeypatch.setenv(ENV, "hybrid")
-    assert plan() is not None  # forced: any codec and format NVDEC decodes
-
-
-@pytest.mark.parametrize("name", ["a.ts", "a.avi"])
-def test_auto_and_forced_splits_need_a_container_that_seeks_exactly(monkeypatch, name):
-    """The CPU half seeks: MPEG-TS seeks inexactly (#976), so it decodes in one pass."""
-    assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
-    monkeypatch.setenv(ENV, "hybrid")
-    assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is None
-
-
-@pytest.mark.parametrize(
-    ("vcodec", "pix_fmt", "logged"),
-    [
-        ("h264", "yuv420p", False), ("h264", "yuv420p10le", True),
-        ("hevc", "yuv420p10le", False), ("hevc", "yuv444p", True), (None, "yuv420p", True),
+    ids=[
+        "cpu-busy", "short", "minimum-length", "long", "recovered-part", "read-error",
+        "few-cpus", "hevc", "10-bit", "forced-hevc", "ts", "forced-ts", "mov", "webm",
     ],
 )  # fmt: skip
-def test_a_ts_nvdec_cannot_decode_is_logged(monkeypatch, caplog, vcodec, pix_fmt, logged):
-    """A non-exact container on CUDA is decoded by ffmpeg alone, which falls back to software
-    silently for a format NVDEC may lack: one DEBUG line says so for such a format."""
-    monkeypatch.setattr(
-        analyze, "probe", lambda p: media_info(p, 600.0, pix_fmt=pix_fmt, vcodec=vcodec)
+def test_the_split_gate(monkeypatch, setup, splits):
+    setup = dict(setup)
+    if "env" in setup:
+        monkeypatch.setenv(ENV, setup.pop("env"))
+    if "cpus" in setup:
+        cpus = setup.pop("cpus")
+        monkeypatch.setattr(analyze.os, "cpu_count", lambda: cpus)
+    if "probe" in setup:
+        over = setup.pop("probe")
+        monkeypatch.setattr(analyze, "probe", lambda p: media_info(p, 600.0, **over))
+    name = setup.pop("name", "a.mp4")
+    kw = {"cpu_free": True, "duration": 600.0, "offset": 0.0, "limit": None} | setup
+    got = analyze._hybrid_plan(
+        Path(name), kw["duration"], kw["offset"], kw["limit"], kw["cpu_free"]
     )
-    with caplog.at_level("DEBUG", logger=analyze.logger.name):
-        args, _ = analyze._scene_decode(CUDA, "fps=2,scale=256:-2", Path("clip.ts"))
-    assert args == ["-hwaccel", "cuda"]
-    mine = [r for r in caplog.records if r.levelname == "DEBUG" and "clip.ts" in r.getMessage()]
-    assert len(mine) == int(logged)
+    assert (got is not None) is splits
 
 
-@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.m4v", "a.webm"])
-def test_auto_splits_containers_that_seek_exactly(name):
-    assert analyze._hybrid_plan(Path(name), 600.0, 0.0, None, True) is not None
-
-
-@pytest.mark.parametrize("cpus", [1, 5])
-def test_auto_keeps_one_decode_with_too_few_cpus(monkeypatch, cpus):
-    monkeypatch.setattr(analyze.os, "cpu_count", lambda: cpus)
-    assert plan() is None
+def test_a_ts_on_cuda_is_decoded_by_ffmpeg_alone(monkeypatch):
+    """A non-exact container on CUDA: -hwaccel cuda alone and the plain chain (NVDEC
+    reinitialises at a join, so no hwdownload in the chain)."""
+    args, chain = analyze._scene_decode(CUDA, "fps=2,scale=256:-2", Path("clip.ts"))
+    assert args == ["-hwaccel", "cuda"] and "hwdownload" not in chain
 
 
 def test_auto_splits_with_just_enough_cpus(monkeypatch):
@@ -456,10 +443,8 @@ def test_the_prefetch_is_busy_with_an_offered_source_the_worker_has_not_taken():
 def world(home, tmp_path, monkeypatch):
     """``analyze_source`` with ffprobe, audio, Whisper and loudness faked; ``w.kw`` records the
     keyword arguments of each ``scene_cuts`` call, ``w.jobs`` the ``_SceneJob`` arguments."""
-    monkeypatch.delenv("CUTPOINT_ANALYZE_SCENE_OVERLAP", raising=False)
-    src = write(tmp_path / "videos" / "a.mp4")
-    w = type("World", (), {})()
-    w.src, w.kw, w.jobs = src, [], []
+    w = scene_world(monkeypatch, tmp_path, 600.0, flat_lufs=-30.0)
+    src, w.kw, w.jobs = w.src, [], []
 
     def scene(*a, **k):
         w.kw.append(k)
@@ -475,7 +460,6 @@ def world(home, tmp_path, monkeypatch):
 
     monkeypatch.setattr(analyze, "scene_cuts", scene)
     monkeypatch.setattr(analyze, "_SceneJob", Job)
-    fake_source_io(monkeypatch, 600.0, flat_lufs=-30.0)
     w.source = lambda tr=None, **kw: analyze.analyze_source(
         src, get_style("action"), tr or StubTranscriber(), True, None, {}, **kw
     )

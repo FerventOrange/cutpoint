@@ -137,22 +137,18 @@ def _with_unreachable(ski: tuple[Path, Path], tmp_path: Path) -> tuple[Path, Pat
     return project, gone
 
 
-@pytest.mark.parametrize("warn_unreachable, expected", [(True, 1), (False, 0)])
-def test_detect_project_warns_once_for_an_unreachable_source(
-    ski, tmp_path, capsys, caplog, warn_unreachable, expected
-):
-    """``crashes`` gives one WARNING line and one JSON warning for an unreachable source; the
-    events and analyze paths (which already warned, ``warn_unreachable=False``) neither. The
-    profile is detected from the footage, so the keyframe read skips the source too."""
+def test_detect_project_warns_once_for_an_unreachable_source(ski, tmp_path, capsys, caplog):
+    """``crashes`` gives one WARNING line and one JSON warning for an unreachable source. The
+    profile is detected from the footage, so the keyframe read skips the source too. (The
+    events path, which already warned: test_json_events.py
+    test_events_crash_layer_one_warning_line_per_unreachable_source.)"""
     project, gone = _with_unreachable(ski, tmp_path)
     with caplog.at_level(logging.DEBUG), jsonout.run("crashes") as result:
-        crash.detect_project(
-            project, dense=False, sheets=0, llm=False, warn_unreachable=warn_unreachable
-        )
+        crash.detect_project(project, dense=False, sheets=0, llm=False)
     capsys.readouterr()
-    assert warning_codes(result.warnings).count("footage_unreachable") == expected
+    assert warning_codes(result.warnings).count("footage_unreachable") == 1
     warns = warned_about(caplog, str(gone))
-    assert len(warns) == expected, warns
+    assert len(warns) == 1, warns
 
 
 def test_crashes_json_reanalyze_failure_keeps_outputs(ski, monkeypatch, capsys):

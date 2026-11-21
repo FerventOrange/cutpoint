@@ -843,14 +843,25 @@ def export_workers(plans: list[ClipPlan]) -> int:
     an encoder that cannot be chosen leaves its error to the first export, exported alone).
     1 for fewer than two clips or a run with a 360 clip.
     """
+    return parallel_workers(len(plans), any(p.pano for p in plans))
+
+
+def parallel_workers(count: int, has_pano: bool) -> int:
+    """:func:`export_workers` for ``count`` clips, ``has_pano`` when one is a 360 clip."""
     n = configured_workers()
-    if len(plans) < 2 or any(p.pano for p in plans) or n == 1:
+    if count < 2 or has_pano or n == 1:
         return 1
     try:
         cpu = video_encoder().kind == "cpu"
     except FFmpegError:
         return 1
     return n or (1 if cpu else 2)
+
+
+def export_pool(jobs: list[Callable[[], Any]], workers: int) -> _ExportPool:
+    """An :class:`_ExportPool` over ``jobs`` (for :mod:`cutpoint.extend`); ``result(i)`` is the
+    return value of job ``i``."""
+    return _ExportPool(jobs, workers)
 
 
 class _ExportPool:
@@ -865,14 +876,14 @@ class _ExportPool:
     worker has removed its partial file before the exception leaves, as sequentially.
     """
 
-    def __init__(self, jobs: list[Callable[[], dict[str, Any] | None]], workers: int) -> None:
+    def __init__(self, jobs: list[Callable[[], Any]], workers: int) -> None:
         self.scope = ChildScope()
         self.failure: BaseException | None = None
         self._lock = threading.Lock()
         self._pool = ThreadPoolExecutor(workers, "cutpoint-export")
         self.futures = [self._pool.submit(self._run, job) for job in jobs]
 
-    def _run(self, job: Callable[[], dict[str, Any] | None]) -> dict[str, Any] | None:
+    def _run(self, job: Callable[[], Any]) -> Any:
         with child_scope(self.scope):
             self.scope.check()  # not started after a failure or Ctrl+C
             try:
@@ -888,8 +899,9 @@ class _ExportPool:
                     self.scope.kill()
                 raise
 
-    def result(self, i: int) -> dict[str, Any] | None:
-        """The read-error record of encode ``i`` (see :func:`export_clip_checked`).
+    def result(self, i: int) -> Any:
+        """The result of job ``i``: the read-error record of an encode (see
+        :func:`export_clip_checked`).
 
         Raises:
             BaseException: The first failure of any encode; a KeyboardInterrupt of this
@@ -925,7 +937,7 @@ class _ExportPool:
         self._pool.shutdown()
 
 
-def _warm_source_checks(plans: list[ClipPlan]) -> None:
+def warm_source_checks(plans: list[Any]) -> None:
     """Run the once-per-source checks of an export (the audio track comparison and the
     log/flat footage check) on this thread, before the encodes run in parallel (#464), so
     each runs and logs once and a Ctrl+C stops them as in a sequential export. The color
@@ -1003,7 +1015,7 @@ def render_clips(
 
     pool = None
     if workers > 1 and not any(p.pano for p in plans):
-        _warm_source_checks(plans)
+        warm_source_checks(plans)
         pool = _ExportPool([lambda p=p: encode(p) for p in plans], workers)
     with pool or nullcontext():
         for i, plan in enumerate(plans):
@@ -1079,6 +1091,8 @@ def peak_filters(plans: list[ClipPlan], preset: str) -> tuple[list[str], list[fl
             return []
         return clip_momentary(p.src, p.info.audio_streams, p.start, p.end - p.start, chain)
 
+    for p in {(q.src, q.info.audio_streams) for q, f in zip(plans, flat, strict=True) if f}:
+        export_tracks(*p)  # compared once here, not by the measuring threads
     plan = plan_set(preset, measure, [p.end - p.start for p in plans], flat)
     if plan is None:
         return [""] * len(plans), none

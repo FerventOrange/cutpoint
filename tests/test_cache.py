@@ -40,7 +40,7 @@ def test_params_hash_is_pinned(params, digest10, digest16):
     [
         (crash.CrashParams().with_profile(_GENERIC).key(), "94bd9ff1d6"),  # the default profile
         (crash.CrashParams().with_profile(_GENERIC).dense_key(), "ccbc2d50ef"),
-        (telemetry.TelemetryParams().key(), "f60a858f09"),
+        (telemetry.TelemetryParams().key(), "7f1993ba30"),
         (common.params_key({"fps": 3.0, "game": "boxfeed", "tags": ["x"]}), "4183f1e1b3"),
     ],
     ids=["crash", "crash-dense", "telemetry", "events"],
@@ -155,6 +155,24 @@ def test_atomic_path_failure_removes_the_temp_file_and_keeps_the_target(tmp_path
         raise KeyboardInterrupt
     assert target.read_bytes() == b"old"
     assert [p.name for p in tmp_path.iterdir()] == ["f.bin"]
+
+
+def test_atomic_path_sweep_removes_only_the_temp_files_of_dead_processes(tmp_path, monkeypatch):
+    target = tmp_path / "f.bin"
+    host, me = cache.host_tag(), os.getpid()
+    dead = tmp_path / f"f.bin.{me + 1}.{host}.abcd1234.tmp"
+    live = tmp_path / f"f.bin.{me}.{host}.abcd1234.tmp"
+    other_host = tmp_path / f"f.bin.{me + 1}.{'0' * 8}.abcd1234.tmp"
+    partial = tmp_path / "f.bin.partial"
+    for p in (dead, live, other_host, partial):
+        p.write_bytes(b"x")
+    monkeypatch.setattr(cache.procs, "pid_alive", lambda pid, not_after=None: pid == me)
+    with cache.atomic_path(target, sweep=True) as tmp:
+        tmp.write_bytes(b"new")
+    assert target.read_bytes() == b"new"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        ["f.bin", live.name, other_host.name]
+    )
 
 
 def test_save_json_other_error_not_retried_no_tmp(tmp_path, monkeypatch):

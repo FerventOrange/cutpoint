@@ -33,7 +33,8 @@ import fnmatch
 import logging
 import os
 import shutil
-from contextlib import ExitStack
+from collections.abc import Callable
+from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -270,6 +271,17 @@ def _reusable(
     )
 
 
+@dataclass(frozen=True)
+class ParallelExport:
+    """The parallel export of :mod:`cutpoint.clips`, handed in by the caller (this module does
+    not import ``clips``): ``workers(count, has_pano)`` clips at once, ``warm(plans)`` the
+    once-per-source checks, ``pool(jobs, workers)`` the pool whose ``result(i)`` is job ``i``."""
+
+    workers: Callable[[int, bool], int]
+    warm: Callable[[list[Any]], None]
+    pool: Callable[[list[Callable[[], Any]], int], Any]
+
+
 def extend_clips(
     clips_dir: Path,
     padding: Padding,
@@ -282,6 +294,7 @@ def extend_clips(
     pano_cmd_every: int | None = None,
     clip_overrides: dict[str, dict[str, Any]] | None = None,
     reuse_dir: Path | None = None,
+    parallel: ParallelExport | None = None,
 ) -> Path:
     """Re-export the clips in ``clips_dir`` with extra padding (``cutpoint extend``).
 
@@ -368,6 +381,7 @@ def extend_clips(
                 pano_source=pano_source,
                 audio_fade=audio_fade,
                 reuse=reuse,
+                parallel=parallel,
             )
             if not entries:
                 raise ValueError(f"No clips with manifest entries in {clips_dir}")
@@ -703,6 +717,7 @@ def _render(
     pano_source: str | None,
     audio_fade: float,
     reuse: _Reuse | None,
+    parallel: ParallelExport | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Re-export ``job.plans`` into ``work`` (``out_dir`` itself, or its staging folder) with
     their ``.srt`` subtitles.
@@ -740,8 +755,9 @@ def _render(
     entries = []
     pano_recs: list[tuple[str, dict[str, Any] | None]] = []
     reused = 0
-    for plan in job.plans:
-        read_err, pano_rec, copied = _export_one(
+
+    def export(plan: ExtendPlan) -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
+        return _export_one(
             plan,
             work,
             job,
@@ -752,15 +768,30 @@ def _render(
             audio_fade=audio_fade,
             reuse=reuse,
         )
-        reused += copied
-        pano_recs.append((plan.name, pano_rec))
-        end = plan.end
-        if read_err and read_err["end"] < end:
-            end = read_err["end"]
-        sub = subs.write(work / plan.name, plan.entry["source"], plan.start, end)
-        entries.append(
-            _clip_entry(plan, work, end, speech_recs, audio_fade, pano_rec, read_err, sub)
-        )
+
+    # As in render_clips: GPU encoders take two clips at once (never with a 360 clip); results,
+    # logs and subtitles stay in plan order.
+    pool = None
+    workers = (
+        parallel.workers(len(job.plans), any(p.entry.get("pano") for p in job.plans))
+        if parallel is not None
+        else 1
+    )
+    if parallel is not None and workers > 1:
+        parallel.warm(job.plans)
+        pool = parallel.pool([lambda p=p: export(p) for p in job.plans], workers)
+    with pool or nullcontext():
+        for i, plan in enumerate(job.plans):
+            read_err, pano_rec, copied = pool.result(i) if pool is not None else export(plan)
+            reused += copied
+            pano_recs.append((plan.name, pano_rec))
+            end = plan.end
+            if read_err and read_err["end"] < end:
+                end = read_err["end"]
+            sub = subs.write(work / plan.name, plan.entry["source"], plan.start, end)
+            entries.append(
+                _clip_entry(plan, work, end, speech_recs, audio_fade, pano_rec, read_err, sub)
+            )
     subs.report(len(job.plans))
     warn_pano_sources(pano_recs, out_dir)
     return entries, reused

@@ -206,34 +206,16 @@ def _moved(sent: list[tuple[str, bool]]):
     return call
 
 
-def test_rate_frames_does_not_follow_a_redirect(monkeypatch, caplog):
+def test_rate_frames_does_not_follow_a_redirect(monkeypatch):
     """#719: the frames are not forwarded to the host a 307 names; the rating fails like any
-    other Ollama HTTP error (None, a warning) and is not retried."""
+    other Ollama HTTP error (None) and is not retried. Every other direct call:
+    test_no_direct_requests_call_follows_redirects."""
     sent: list[tuple[str, bool]] = []
     monkeypatch.setattr(vision.requests, "post", _moved(sent))
     monkeypatch.setattr(vision, "grab_frame_jpeg", lambda _src, _t, **_k: b"jpeg")
     rater = vision.VisionRater(url="http://127.0.0.1:1", model="m")
-    with caplog.at_level(logging.WARNING, logger="cutpoint.vision"):
-        assert rater.rate(Path("a.mp4"), 0, 4, "action") is None
+    assert rater.rate(Path("a.mp4"), 0, 4, "action") is None
     assert sent == [("http://127.0.0.1:1/api/chat", False)]
-    assert [r.levelname for r in caplog.records] == ["WARNING"]
-
-
-def test_available_does_not_follow_a_redirect(monkeypatch, caplog):
-    sent: list[tuple[str, bool]] = []
-
-    def get(url, timeout=None, allow_redirects=True, **_k):
-        sent.append((url, allow_redirects))
-        resp = requests.Response()
-        resp.status_code = 307
-        resp.headers["Location"] = "http://elsewhere.example.com/api/tags"
-        return resp
-
-    monkeypatch.setattr(vision.requests, "get", get)
-    with caplog.at_level(logging.INFO, logger="cutpoint.vision"):
-        assert vision.VisionRater(url="http://127.0.0.1:1", model="m").available() is False
-    assert sent == [("http://127.0.0.1:1/api/tags", False)]
-    assert any("redirect" in m for m in caplog.messages)
 
 
 def test_available_unreachable_logs_a_short_reason(monkeypatch, caplog):

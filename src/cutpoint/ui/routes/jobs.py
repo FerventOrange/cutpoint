@@ -68,6 +68,7 @@ from cutpoint.ui.common import (
     UI_DIR,
     bad,
     cutpoint_cmd,
+    number_in,
 )
 from cutpoint.ui.files import (
     _highlights,
@@ -350,11 +351,7 @@ def _clips_job(r: _JobRequest) -> JobSpec:
         if not segments:
             raise bad("choose at least one moment before exporting clips")
     extend = body.get("extend", 0)
-    if (
-        isinstance(extend, bool)
-        or not isinstance(extend, (int, float))
-        or not 0 <= extend <= MAX_EXTEND_S
-    ):
+    if number_in(extend, 0, MAX_EXTEND_S) is None:
         raise bad(f"extend must be 0-{MAX_EXTEND_S:g} seconds")
     extend_start = _seconds(body, "extend_start", MAX_EXTEND_S)
     extend_end = _seconds(body, "extend_end", MAX_EXTEND_S)

@@ -22,7 +22,7 @@ def _post(monkeypatch, reply) -> list[dict]:
     sent: list[dict] = []
 
     def post(url, json=None, timeout=None, allow_redirects=True, **_k):
-        sent.append({"url": url, "json": json, "timeout": timeout, "redir": allow_redirects})
+        sent.append({"url": url, "json": json, "timeout": timeout})
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -33,7 +33,7 @@ def _post(monkeypatch, reply) -> list[dict]:
 
 def _get(monkeypatch, reply) -> None:
     def get(url, timeout=None, allow_redirects=True, **_k):
-        assert url == f"{URL}/api/ps" and allow_redirects is False
+        assert url == f"{URL}/api/ps"
         if isinstance(reply, Exception):
             raise reply
         return reply
@@ -50,7 +50,6 @@ def test_load_success_sends_a_promptless_generate(monkeypatch, rater):
             "url": f"{URL}/api/generate",
             "json": {"model": "qwen-test"},
             "timeout": (backends.CONNECT_TIMEOUT_S, 30),
-            "redir": False,
         }
     ]
 
