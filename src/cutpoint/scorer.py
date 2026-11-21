@@ -257,6 +257,8 @@ def rescore_events(
     for e in ev.get("events", []):
         by_src.setdefault(e["source"], []).append(e)
     windows = ev.get("windows", [])
+    event_index = {src: scoring.SpanIndex(evs) for src, evs in by_src.items()}
+    window_index = scoring.span_index_by_source(windows)
     types = resolve(project, ev)
     style = analysis_names(hl)
     language = settings_language(hl)
@@ -287,8 +289,9 @@ def rescore_events(
             style=style,
             segments=segments[src],
             repeat=repeat[src],
+            index=event_index.get(src),
         )
-        win = scoring.best_window(c, windows)
+        win = scoring.best_window(c, windows, window_index)
         vlm = None
         if win:
             vlm = max(win.get("highlight_score", 0), win.get("funny_score", 0)) * 10
