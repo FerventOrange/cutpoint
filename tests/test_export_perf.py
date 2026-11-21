@@ -146,7 +146,7 @@ def fake_probe(monkeypatch, tmp_path):
 
     def probe(enc):
         calls.append(enc.kind)
-        return "no device"
+        return None
 
     monkeypatch.setattr(ffmpeg_utils, "_encoder_probe", probe)
 
@@ -161,9 +161,9 @@ def fake_probe(monkeypatch, tmp_path):
 def test_encoder_verdict_is_kept_for_the_next_process(fake_probe):
     _exe, calls, new_process = fake_probe
     enc = ffmpeg_utils.VideoEncoder("amf")
-    assert ffmpeg_utils.encoder_error(enc) == "no device"
+    assert ffmpeg_utils.encoder_error(enc) is None
     new_process()
-    assert ffmpeg_utils.encoder_error(enc) == "no device"
+    assert ffmpeg_utils.encoder_error(enc) is None
     assert calls == ["amf"]
     assert (paths.cache_dir() / ffmpeg_utils.PROBE_FILE).is_file()
 
@@ -178,14 +178,14 @@ def test_encoder_verdict_is_probed_again_for_another_ffmpeg_build(fake_probe):
     assert calls == ["amf", "amf"]
 
 
-def test_failed_verdict_expires(fake_probe):
+def test_working_verdict_expires(fake_probe):
     _exe, calls, new_process = fake_probe
     enc = ffmpeg_utils.VideoEncoder("amf")
     ffmpeg_utils.encoder_error(enc)
     file = paths.cache_dir() / ffmpeg_utils.PROBE_FILE
     data = json.loads(file.read_text("utf-8"))
     for v in data.values():
-        v["at"] -= ffmpeg_utils.PROBE_FAIL_TTL_S + 1
+        v["at"] -= ffmpeg_utils.PROBE_OK_TTL_S + 1
     file.write_text(json.dumps(data), encoding="utf-8")
     new_process()
     ffmpeg_utils.encoder_error(enc)
@@ -207,8 +207,40 @@ def test_a_corrupt_verdict_file_is_probed_again(fake_probe):
     file = paths.cache_dir() / ffmpeg_utils.PROBE_FILE
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text("{not json", encoding="utf-8")
-    assert ffmpeg_utils.encoder_error(ffmpeg_utils.VideoEncoder("amf")) == "no device"
+    assert ffmpeg_utils.encoder_error(ffmpeg_utils.VideoEncoder("amf")) is None
     assert calls == ["amf"]
+
+
+def test_a_failed_verdict_is_not_stored(fake_probe, monkeypatch):
+    _exe, calls, new_process = fake_probe
+    monkeypatch.setattr(ffmpeg_utils, "_encoder_probe", lambda enc: calls.append("x") or "busy")
+    enc = ffmpeg_utils.VideoEncoder("amf")
+    assert ffmpeg_utils.encoder_error(enc) == "busy"
+    assert ffmpeg_utils.encoder_error(enc) == "busy"  # this process remembers it
+    assert calls == ["x"]
+    assert not (paths.cache_dir() / ffmpeg_utils.PROBE_FILE).exists()
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    assert calls == ["x", "x"]  # the next process probes again
+
+
+def test_cpu_retry_success_forgets_the_stored_working_verdict(fake_probe, monkeypatch):
+    _exe, calls, new_process = fake_probe
+    enc = ffmpeg_utils.VideoEncoder("amf")
+    assert ffmpeg_utils.encoder_error(enc) is None  # stored as working
+    monkeypatch.setattr(ffmpeg_utils, "_GPU_ENCODE_FAILED", set())
+    monkeypatch.setattr(ffmpeg_utils, "_GPU_ENCODE_SUSPECT", {})
+    monkeypatch.setattr(ffmpeg_utils, "video_encoder", lambda: enc)
+    monkeypatch.setattr(ffmpeg_utils, "_gpu_off", lambda: False)
+
+    def encode_once(e):
+        if e.kind != "cpu":
+            raise ffmpeg_utils.FFmpegError("out of memory")
+
+    ffmpeg_utils.encode_with_fallback(encode_once, "001_a.mp4")
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    assert calls == ["amf", "amf"]  # probed again, not read from the file
 
 
 def test_decoder_verdict_is_kept_for_the_next_process(fake_probe, monkeypatch):

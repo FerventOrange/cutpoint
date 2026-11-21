@@ -1147,11 +1147,11 @@ def vaapi_devices() -> list[str]:
 # Encoder and decoder probes really encode and decode a test clip, and `cutpoint ui` starts one
 # process per job, so their verdicts are kept in the cache folder (A737). A verdict is used while
 # the ffmpeg build (path, size, modification time) and, for NVIDIA, the driver version are the
-# same: a working one for a week, a failing one for an hour (a busy GPU can fail once).
-# `cutpoint capabilities` probes again (find_encoder with ``refresh``).
+# same, for a week. Only a working verdict is stored: a failure (a busy GPU, a timeout) may be
+# temporary, so it is kept for this process only. `cutpoint capabilities` probes again
+# (find_encoder with ``refresh``).
 PROBE_FILE = "probe-verdicts.json"
 PROBE_OK_TTL_S = 7 * 86400
-PROBE_FAIL_TTL_S = 3600
 
 
 @state.register_cache
@@ -1175,7 +1175,7 @@ def _probe_stamp(nvidia: bool) -> str | None:
 
 def _probe_verdict(ident: str, probe: Callable[[], str | None], *, nvidia: bool) -> str | None:
     """``probe()``, or the verdict an earlier process stored for ``ident`` with the same stamp
-    (see :data:`PROBE_FILE`); a fresh verdict is stored."""
+    (see :data:`PROBE_FILE`); a fresh "works" verdict is stored, a failure is not."""
     stamp = _probe_stamp(nvidia)
     file = paths.cache_dir() / PROBE_FILE
     data: dict[str, Any] = {}
@@ -1187,21 +1187,24 @@ def _probe_verdict(ident: str, probe: Callable[[], str | None], *, nvidia: bool)
             data = {}
         hit = data.get(ident)
         if isinstance(hit, dict) and hit.get("stamp") == stamp:
-            error, at = hit.get("error"), hit.get("at")
-            ttl = PROBE_OK_TTL_S if error is None else PROBE_FAIL_TTL_S
-            valid = (error is None or isinstance(error, str)) and isinstance(at, (int, float))
-            if valid and 0 <= time.time() - at < ttl:
-                return error
+            at = hit.get("at")
+            if (
+                hit.get("error") is None
+                and isinstance(at, (int, float))
+                and 0 <= time.time() - at < PROBE_OK_TTL_S
+            ):
+                return None
     error = probe()
-    if stamp is not None:
-        data[ident] = {"stamp": stamp, "error": error, "at": time.time()}
-        tmp = file.with_name(f".{file.name}.{os.getpid()}.tmp")
+    if stamp is not None and error is None:  # a failure may be temporary: not stored
+        data[ident] = {"stamp": stamp, "error": None, "at": time.time()}
+        tmp = file.with_name(f".{file.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         try:
             file.parent.mkdir(parents=True, exist_ok=True)
             tmp.write_text(json.dumps(data), encoding="utf-8")
             tmp.replace(file)
         except OSError:  # a read-only cache folder: probed again next time
-            tmp.unlink(missing_ok=True)
+            with suppress(OSError):
+                tmp.unlink(missing_ok=True)
     return error
 
 
@@ -1628,6 +1631,8 @@ def encode_with_fallback[T](encode: Callable[[VideoEncoder], T], what: str) -> T
         _unmark_suspect(enc.codec)
         first = enc.codec not in _GPU_ENCODE_FAILED
         _GPU_ENCODE_FAILED.add(enc.codec)
+    # The CPU worked where the GPU failed: a stored "works" verdict is wrong, so probe again.
+    _forget_probe(f"enc:{enc.kind}:{enc.device or ''}")
     if first:
         logger.info("Encoding the rest of this run with libx264 instead of %s", enc.codec)
     return result
