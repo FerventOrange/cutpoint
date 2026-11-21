@@ -55,9 +55,9 @@ def role_of(value: Any) -> str:
     return role
 
 
-def key_section(body: dict[str, Any]) -> str:
-    """The config section whose base URL names a key's host: ``role`` ``assistant`` (the
-    default) or ``vision``."""
+def role_section(body: dict[str, Any]) -> str:
+    """The config section of the request's ``role`` (:func:`role_of`): ``assistant`` or
+    ``vision_assistant``; its base URL names a key's host, its ``consent`` the role's."""
     return "vision_assistant" if role_of(body.get("role")) == "vision" else "assistant"
 
 
@@ -210,7 +210,7 @@ def save_key(body: dict[str, Any]):
     OpenRouter is never sent to OpenAI. The answer says only where each key now comes from,
     never a key."""
     name = keyed_provider(body)
-    section = key_section(body)
+    section = role_section(body)
     data = config_data()
     try:
         vision = section == "vision_assistant"
@@ -233,7 +233,7 @@ def clear_key(body: dict[str, Any]):
     """Remove ``provider``'s keyring key for its configured host (of ``role``'s section);
     a key from the environment stays."""
     name = keyed_provider(body)
-    section = key_section(body)
+    section = role_section(body)
     data = config_data()
     try:
         ai_keys.clear(name, key_hosts(data, section)[name])
@@ -247,8 +247,7 @@ def give_consent(body: dict[str, Any]):
     """Record that the user agreed to send project data to the provider in use for ``role``
     (``assistant``, the default, or ``vision``), named by its ``key``, in that role's own
     ``consent`` list; 409 when the provider in use is another one by now, or is local."""
-    role = role_of(body.get("role"))
-    section_name = "vision_assistant" if role == "vision" else "assistant"
+    role, section_name = role_of(body.get("role")), role_section(body)
     provider = vision_provider() if role == "vision" else assistant_provider()
     want = ai_providers.consent_key(provider, role)
     if want is None or body.get("key") != want:

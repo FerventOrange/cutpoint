@@ -48,6 +48,7 @@ from cutpoint.ui.projects import (
     analysis_stats,
     analysis_took,
     current_export,
+    forget_network,
     inputs_problem,
     inspect_source,
     moments_view,
@@ -63,7 +64,7 @@ from cutpoint.ui.projects import (
     validate_joins,
     validate_segments,
 )
-from cutpoint.ui.ranking import PlainJSON, ranking_key, ranking_undo_view
+from cutpoint.ui.ranking import PlainJSON, forget_undo_view, ranking_key, ranking_undo_view
 from cutpoint.ui.routes.shared import pano_views, url, window_url
 
 owned = APIRouter()
@@ -437,6 +438,22 @@ def delete_blocker(app: FastAPI, pid: str, p: Path) -> str | None:
     return None
 
 
+def forget_project(app: FastAPI, p: Path) -> None:
+    """Drop everything this run keeps per project for the folder ``p`` (it was deleted), so a
+    project made later under the same name starts clean: the media lookups and source lists,
+    proxies and 360 previews, the AI Chat's turns and edge planner, the remembered Undo view
+    and the network-drive check. Its running chat turn, if any, is cancelled."""
+    st = app.state
+    st.lookups.forget(p)
+    st.sources.forget(p)
+    st.media.forget(p)
+    st.previews.forget(p)
+    st.planners.pop(p, None)
+    st.assistant.clear(str(p))
+    forget_undo_view(p)
+    forget_network(p)
+
+
 @owned_delete.get("/projects/{pid}/delete-plan")
 def delete_plan(pid: str):
     """What deleting the project removes (``size`` bytes in ``files`` files; ``deleted``, the
@@ -460,13 +477,7 @@ def delete_project(request: Request, pid: str, body: dict[str, Any] | None = Non
     """Delete the project's own files (:mod:`cutpoint.projectdelete`) to the Recycle Bin /
     Trash, or for good with ``permanent``. 409 with ``code`` ``no_trash`` when the trash
     cannot be trusted with them, for the page to ask before it sends ``permanent``."""
-    app, jobs, lookups, media, turns = (
-        request.app,
-        request.app.state.jobs,
-        request.app.state.lookups,
-        request.app.state.media,
-        request.app.state.assistant,
-    )
+    app, jobs, lookups = request.app, request.app.state.jobs, request.app.state.lookups
     permanent = _flag(body or {}, "permanent")
     project_dir(pid)
     protected = protected_sources()  # before the lock: a slow path must not hold it
@@ -510,8 +521,5 @@ def delete_project(request: Request, pid: str, body: dict[str, Any] | None = Non
         lookups.forget(p)  # before the 409 ends: the media routes check it again
         with jobs.lock:
             DELETING.discard(p)
-    media.forget(p)
-    app.state.previews.forget(p)
-    app.state.planners.pop(p, None)
-    turns.clear(str(p))
+    forget_project(app, p)
     return {"deleted": pid, "kept": len(plan.kept)}

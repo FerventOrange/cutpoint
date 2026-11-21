@@ -281,6 +281,11 @@ class Sources:
                 del self.kept[next(iter(self.kept))]
         return entries, None
 
+    def forget(self, p: Path) -> None:
+        """Drop the kept list of the project folder ``p`` (it was deleted)."""
+        with self.lock:
+            self.kept.pop(str(p), None)
+
 
 class MediaLookups:
     """The project folder (:func:`project_dir`) and source list (:class:`Sources`) the media
@@ -364,19 +369,29 @@ def on_network(p: Path) -> bool:
     other than C: to E: is not named; elsewhere, or if Windows cannot say,
     :func:`cutpoint.stage.is_remote`."""
     key = str(p)
-    if key not in _REMOTE:
-        try:
-            if sys.platform == "win32":
-                try:
-                    kind = projectdelete._drive_type(p.anchor)
-                    _REMOTE[key] = kind in (DRIVE_REMOVABLE, DRIVE_REMOTE)
-                    return _REMOTE[key]
-                except OSError:
-                    pass
-            _REMOTE[key] = stage.is_remote(p)
-        except (OSError, ValueError):
-            _REMOTE[key] = False
-    return _REMOTE[key]
+    # read and return locals: a delete may drop the entry meanwhile (forget_network)
+    if (hit := _REMOTE.get(key)) is not None:
+        return hit
+    remote = False
+    try:
+        if sys.platform == "win32":
+            try:
+                kind = projectdelete._drive_type(p.anchor)
+                remote = kind in (DRIVE_REMOVABLE, DRIVE_REMOTE)
+                _REMOTE[key] = remote
+                return remote
+            except OSError:
+                pass
+        remote = stage.is_remote(p)
+    except (OSError, ValueError):
+        remote = False
+    _REMOTE[key] = remote
+    return remote
+
+
+def forget_network(p: Path) -> None:
+    """Drop what :func:`on_network` found for the project folder ``p`` (it was deleted)."""
+    _REMOTE.pop(str(p), None)
 
 
 def source_folder(p: Path) -> Path | None:

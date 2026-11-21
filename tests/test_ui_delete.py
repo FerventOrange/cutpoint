@@ -17,8 +17,9 @@ pytest.importorskip("httpx")
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from conftest import link_dir, link_file, write
+from conftest import link_dir, link_file, patch_ui, write
 from cutpoint import folders, projectdelete, projectfiles, runstate, ui
+from cutpoint.ui import ranking as ui_ranking
 from cutpoint.ui.routes import jobs as jobs_routes
 
 REAL_TRASH_BLOCKER = projectdelete.trash_blocker
@@ -117,14 +118,23 @@ def test_permanent_deletes_without_the_trash(ui_client: TestClient, bin_dir: Pat
 
 
 def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_one(
-    ui_client: TestClient,
+    ui_client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     make()
     make("other")
     app = ui_client.app
     old, other = ui.project_dir("trip"), ui.project_dir("other")
     previews, planners = app.state.previews, app.state.planners
+    sources, turns = app.state.sources, app.state.assistant
+    undo_seen: dict[Path, object] = {}
+    remote: dict[str, bool] = {}
+    monkeypatch.setattr(ui_ranking, "_UNDO_SEEN", undo_seen)
+    patch_ui(monkeypatch, "_REMOTE", remote)
     for q in (old, other):
+        sources.kept[str(q)] = (0.0, [], [], None, [{"path": "x.mp4"}])
+        undo_seen[q] = (("k", 1, 1), {"action": "undo", "style": "gaming"})
+        remote[str(q)] = True
+        turns.turns[f"t-{q.name}"] = (str(q), SimpleNamespace(status="done", cancel=lambda: None))
         previews.outcomes[(q, "h001")] = {"state": "failed", "reason": "x", "ident": "h001-a"}
         previews.done[(q, "h001")] = {"ident": "h001-a", "name": "h001-a"}
         previews.memo[q] = ("sig", {})
@@ -137,10 +147,14 @@ def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_o
     assert (p, "h001") not in previews.outcomes and (p, "h001") not in previews.done
     assert p not in previews.memo and p not in previews.ready_memo
     assert p not in previews.pruned and p not in planners
+    assert str(p) not in sources.kept and p not in undo_seen and str(p) not in remote
+    assert turns.of(str(p)) == []
     # another project keeps what this run knows of it
     assert (other, "h001") in previews.outcomes and (other, "h001") in previews.done
     assert other in previews.memo and other in previews.ready_memo
     assert other in previews.pruned and other in planners
+    assert str(other) in sources.kept and other in undo_seen and str(other) in remote
+    assert len(turns.of(str(other))) == 1
 
 
 def test_permanent_must_be_a_boolean(ui_client: TestClient) -> None:
