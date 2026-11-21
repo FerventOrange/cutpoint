@@ -62,7 +62,8 @@ def test_no_vibration_before_an_impact_at_the_start_is_not_moving():
     am[(t >= 0.2) & (t < 0.23)] = 6.0  # no bins before it: no reading, not "0 g"
     grav = np.tile([0.0, 0.0, 1.0], (len(t), 1))
     grav[t > 0.7] = [1.0, 0.0, 0.0]
-    vib = np.zeros(100)
+    vib = np.full(100, 0.5)  # moving later in the clip: a negative window end must not read it
+    vib[15:45] = 0.0
     speed = np.full(100, np.nan)
     assert telemetry._crash_events(t, am, grav, speed, vib, TelemetryParams()) == []
 

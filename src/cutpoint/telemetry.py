@@ -64,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 DT = 0.1
 G = 9.80665
-TELEMETRY_VERSION = 2
+TELEMETRY_VERSION = 3
 # A crash event always ends in a stop (:func:`_crash_events` skips the others): the stop's
 # share of its score.
 STOP_SHARE = 0.4
@@ -504,7 +504,7 @@ def _crash_events(
         tp = float(t[i_pk])
 
         def med(lo: float, hi: float, arr: np.ndarray = speed) -> float | None:
-            a0, a1 = max(0, bin_of(lo, DT)), min(n, bin_of(hi, DT))
+            a0, a1 = max(0, bin_of(lo, DT)), min(n, max(0, bin_of(hi, DT)))
             seg = arr[a0:a1]
             seg = seg[np.isfinite(seg)]
             return float(np.median(seg)) if seg.size else None
