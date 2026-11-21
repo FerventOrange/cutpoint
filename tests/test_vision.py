@@ -22,7 +22,7 @@ import requests
 
 import cutpoint.analyze
 from conftest import HOP, SLED, needs_ffmpeg
-from cutpoint import activity, backends, cache, cli, errors, vision
+from cutpoint import activity, backends, cache, cli, errors, vision, vision_record
 from cutpoint.styles import get_style
 from vision_helpers import Resp
 
@@ -292,14 +292,14 @@ def test_no_direct_requests_call_follows_redirects():
 def test_vision_blend_is_a_bounded_multiplier(weight, high, low):
     """#284: 5/10 is neutral, 10/10 lifts by ``weight`` (the style's vision_weight), 0/10
     lowers by as much."""
-    blend = cutpoint.analyze.vision_blend
+    blend = vision_record.vision_blend
     assert blend(40.0, 5.0, weight) == 40.0
     assert blend(40.0, 10.0, weight) == high
     assert blend(40.0, 0.0, weight) == low
 
 
 def test_vision_blend_keeps_an_unrated_score():
-    assert cutpoint.analyze.vision_blend(23.4, None, 0.3) == 23.4
+    assert vision_record.vision_blend(23.4, None, 0.3) == 23.4
 
 
 @pytest.mark.parametrize(
@@ -307,7 +307,7 @@ def test_vision_blend_keeps_an_unrated_score():
     [(0.0, 0.0, 0.45), (100.0, 10.0, 0.45), (0.1, 10.0, 0.2), (99.9, 0.0, 0.2)],
 )
 def test_vision_blend_stays_within_0_100(score, rating, weight):
-    assert 0.0 <= cutpoint.analyze.vision_blend(score, rating, weight) <= 100.0
+    assert 0.0 <= vision_record.vision_blend(score, rating, weight) <= 100.0
 
 
 NO_CAP = float("inf")  # a deadline that never passes: these tests are not about the time cap
