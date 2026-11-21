@@ -35,6 +35,10 @@ function Invoke-CutpointInstaller {
 
     # uv is installed from this pinned installer when missing (keep in step with install.sh and the Dockerfile pin).
     $UV_VERSION = "0.13.7"
+    # SHA256 of that version's installer script (https://astral.sh/uv/$UV_VERSION/install.ps1),
+    # checked before it runs. Bump it with UV_VERSION; `python scripts/check_uv_pin.py --urls`
+    # prints the new one.
+    $UV_INSTALLER_SHA256 = "d9e70de578ea2653b631a5933c0296368fca4c91f412b46680661b81bbc399e0"
     # Oldest uv that has `uv tool install --torch-backend`.
     $UV_MIN_MAJOR = 0
     $UV_MIN_MINOR = 13
@@ -439,7 +443,8 @@ Optional prompts (default No; with no interactive console the answer is No unles
     function Install-Uv {
         $url = "https://astral.sh/uv/$UV_VERSION/install.ps1"
         if ($S.DryRun) {
-            Say "+ `$env:UV_INSTALL_DIR='$($S.BinDir)'; `$env:UV_NO_MODIFY_PATH='1'; irm $url | iex"
+            Say "+ Invoke-WebRequest $url -OutFile <tmp>, check its SHA256 is $UV_INSTALLER_SHA256"
+            Say "+ `$env:UV_INSTALL_DIR='$($S.BinDir)'; `$env:UV_NO_MODIFY_PATH='1'; powershell -File <tmp>"
             return
         }
         try {
@@ -452,7 +457,12 @@ Optional prompts (default No; with no interactive console the answer is No unles
             Remove-Item -Force -ErrorAction SilentlyContinue $tmp
             Die "Could not download $url"
         }
-        Say "+ powershell <uv installer $UV_VERSION>"
+        $got = (Get-FileHash -LiteralPath $tmp -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($got -ne $UV_INSTALLER_SHA256) {
+            Remove-Item -Force -ErrorAction SilentlyContinue $tmp
+            Die "The uv installer from $url has SHA256 $got, expected ${UV_INSTALLER_SHA256}: not running it. Install uv yourself (https://docs.astral.sh/uv/) and run again."
+        }
+        Say "+ powershell <uv installer $UV_VERSION, SHA256 checked>"
         $psExe = (Get-Process -Id $PID).Path
         $oldDir = $env:UV_INSTALL_DIR
         $oldMod = $env:UV_NO_MODIFY_PATH

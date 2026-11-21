@@ -1602,7 +1602,7 @@ def test_a_widened_candidate_gets_the_transcript_of_its_new_span_and_gives_it_ba
         for t in range(100, 180, 5)
     ]
     segs = [{"start": 100.0, "end": 180.0, "text": "x", "words": words}]
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: segs)
     cand = own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w160"}
     hl = highlights([cand])
     scoring.nominate(hl, events_of([talk_event(100.0, 180.0)]), tmp_path, [grid()])
@@ -1872,7 +1872,7 @@ def test_trim_silence_cuts_a_silent_head_up_to_the_first_word():
 
 
 def widened(tmp_path, monkeypatch, segs, stretch=(100.0, 178.0), **extra):
-    monkeypatch.setattr(scoring, "_segments", lambda src, language=None: segs)
+    monkeypatch.setattr(scoring, "segments", lambda src, language=None: segs)
     hl = widen_hl(own("h001", 150.0, 60.0, end=158.0) | {"transcript": "w150"})
     scoring.nominate(hl, events_of([talk_event(*stretch)]), tmp_path, [grid()])
     return hl
@@ -1905,7 +1905,7 @@ def test_a_trim_back_to_the_moment_itself_widens_nothing_and_nominates_nothing(
 
 def test_a_trimmed_widened_candidate_keeps_the_stretch_title_and_its_type(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        scoring, "_segments", lambda src, language=None: words_at((100, 116), (140, 178))
+        scoring, "segments", lambda src, language=None: words_at((100, 116), (140, 178))
     )
     stretch = talk_event(100.0, 178.0) | {"title": "Grandpa And The Ladder"}
     hl = widen_hl(own("h001", 150.0, 60.0, end=158.0))
@@ -1921,7 +1921,7 @@ def test_a_trimmed_widened_candidate_keeps_the_stretch_title_and_its_type(tmp_pa
 
 def test_a_stretch_over_the_cap_is_not_trimmed_and_stays_a_moment_of_its_own(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        scoring, "_segments", lambda src, language=None: words_at((100, 116), (300, 400))
+        scoring, "segments", lambda src, language=None: words_at((100, 116), (300, 400))
     )
     hl = widen_hl(own("h001", 320.0, 60.0, end=328.0))
     assert scoring.nominate(hl, events_of([talk_event(100.0, 400.0)]), tmp_path, [grid()]) == 1

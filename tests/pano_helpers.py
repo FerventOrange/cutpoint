@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 
-from cutpoint import activity, cache
+from cutpoint import activity, cache, insta360
+from cutpoint.events import visual as V
+from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
 from cutpoint.pano.x3 import X3Clip
+from pano_fakes import FAKE_TORCH, Models, Sampler, frames
 
 INSV = ["VID_20260101_100000_00_001.insv", "VID_20260101_100000_10_001.insv"]
 LRV = "LRV_20260101_100000_11_001.lrv"
@@ -176,3 +182,47 @@ def write_activity(proj: Path, name: str, raw: dict) -> None:
     }
     proj.mkdir(parents=True, exist_ok=True)
     (proj / activity.ACTIVITY_FILE).write_text(json.dumps(rec), encoding="utf-8")
+
+
+def stub_view_scores(monkeypatch: Any, n: int) -> dict[str, Any]:
+    """Stub the CLIP view scores of ``n`` view frames (all 0, every selfie usable), the voice
+    (``talk``) and the forward yaw (0); tests may edit the returned dict."""
+    st: dict[str, Any] = {
+        "group": np.zeros((n, 9), np.float32),
+        "beauty": np.zeros((n, 9), np.float32),
+        "occl_zs": np.zeros((n, 8), np.float32),
+        "selfie_ok": np.ones(n, np.float32),
+        "talk": 0.0,
+    }
+    monkeypatch.setattr(
+        VW, "view_scores", lambda pv: {"group_zs": st["group"], "beauty": st["beauty"]}
+    )
+    monkeypatch.setattr(
+        VW,
+        "occlusion_scores",
+        lambda pv: {"occl_zs": st["occl_zs"], "selfie_ok": st["selfie_ok"]},
+        raising=False,
+    )
+    monkeypatch.setattr(VW, "forward_yaw", lambda pv: 0.0)
+    monkeypatch.setattr(D, "_voice_at", lambda src, times: np.full(len(times), st["talk"]))
+    return st
+
+
+def fake_view_layer(monkeypatch: Any, tmp_path: Path) -> SimpleNamespace:
+    """The view layer of one 20 s clip with fake torch, sampler, frames and models
+    (:mod:`pano_fakes`) and the default orientation track; returns the models' record with
+    ``clip``, ``lrv`` and the view params ``p``."""
+    lrv = tmp_path / "LRV_001.lrv"
+    lrv.write_bytes(b"x")
+    clip = X3Clip("001", "2026-01-01", "5.7k", str(lrv), [], frames=600, duration=20.0)
+    rec = SimpleNamespace(built=[], closed=0, det_calls=0, embeds=[], clip=clip, lrv=lrv)
+    monkeypatch.setitem(sys.modules, "torch", FAKE_TORCH)
+    monkeypatch.setattr(G, "FisheyeSampler", Sampler)
+    monkeypatch.setattr(G, "orientation", lambda *a: orientation())
+    monkeypatch.setattr(V, "iter_frames", frames)
+    monkeypatch.setattr(V, "VisualModels", lambda **kw: Models(rec, **kw))
+    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
+    monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
+    monkeypatch.setattr(insta360, "imu_source", lambda src: src)
+    rec.p = VW.ViewParams(view_px=4, eq_width=32)
+    return rec

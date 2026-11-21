@@ -15,6 +15,7 @@ from cutpoint.events.killfeed import (
     merge_kill_reads,
 )
 from cutpoint.events.regions import Region, preset_from_dict
+from ocr_helpers import quad
 
 FEED = Region("feed", 1500, 0, 400, 400, "feed")
 BANNER = Region("banner", 600, 400, 600, 200, "banner")
@@ -61,10 +62,6 @@ def _banner(t: float, text: str = "ROUND WON", raw: str | None = None) -> dict[s
     }
 
 
-def _box(row: int) -> list[list[int]]:
-    return [[0, 40 * row], [300, 40 * row], [300, 40 * row + 20], [0, 40 * row + 20]]
-
-
 def _interpret(
     regions: tuple[Region, ...],
     frames: dict[float, dict[str, list[str]]],
@@ -86,7 +83,7 @@ def _interpret(
         recs = {}
         for r in regions:
             lines = frames.get(float(n), {}).get(r.name, [])
-            items = [(_box(i), line, 0.95) for i, line in enumerate(lines)]
+            items = [(quad(0, 40 * i, 300, 20), line, 0.95) for i, line in enumerate(lines)]
             recs[r.name] = {"g": "read", "items": items}
         interp.add(FrameRec(n=n, t=float(n), regions=recs))
     return interp.finish()

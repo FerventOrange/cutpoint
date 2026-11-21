@@ -18,7 +18,7 @@ import pytest
 from conftest import StubTranscriber, media_info, write
 from cutpoint import analyze, cache
 from cutpoint.styles import STYLES, get_style
-from scene_helpers import fake_source_io
+from scene_helpers import scene_world
 
 WINDOWS = analyze.SCENE_WINDOWS_FILE
 PAD = analyze.WINDOW_PAD_S
@@ -251,11 +251,8 @@ def test_a_window_counts_as_ffmpeg_does_also_at_the_part_start(tmp_path, monkeyp
 def world(home, tmp_path, monkeypatch, decodes):
     """``analyze_source`` with ffprobe, the audio, Whisper and the loudness faked: one loud burst
     at 20 s of a 60 s source. ``w.full`` records full scene passes."""
-    monkeypatch.delenv("CUTPOINT_ANALYZE_SCENE_OVERLAP", raising=False)
-    src = write(tmp_path / "videos" / "a.mp4")
-    w = type("World", (), {})()
-    w.src, w.decodes, w.full = src, decodes, []
-    w.cdir = cache.source_dir(src, 0.0)
+    w = scene_world(monkeypatch, tmp_path)  # 60 s, one loud burst at 20 s
+    src, w.decodes, w.full = w.src, decodes, []
 
     def full(src_, cdir, duration, offset=0.0, limit=None, cancel=None, cpu_free=False):
         w.full.append(threading.current_thread())
@@ -263,7 +260,6 @@ def world(home, tmp_path, monkeypatch, decodes):
         return [16.4]
 
     monkeypatch.setattr(analyze, "scene_cuts", full)
-    fake_source_io(monkeypatch)  # 60 s, one loud burst at 20 s
     w.timings = {}
     w.source = lambda style: analyze.analyze_source(
         src, style, StubTranscriber(), True, None, w.timings

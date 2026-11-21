@@ -37,9 +37,11 @@ TORCH_EXTRAS = ("events", "all")
 TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
 # The one-step installers. They pick the torch build for the machine, so re-running one is also
 # how a tool install adds the full edition or upgrades (`uv tool upgrade` drops the torch backend).
-_RAW = "https://raw.githubusercontent.com/FerventOrange/cutpoint/main"
-INSTALL_SH = f"curl -LsSf {_RAW}/install.sh | sh"
-INSTALL_PS1 = f"irm {_RAW}/install.ps1 | iex"
+# The newest release's copies (release assets, with SHA256SUMS), not `main`'s, so a hint never
+# installs unreleased code; `--source git@REF` still installs any branch.
+_RELEASE = "https://github.com/FerventOrange/cutpoint/releases/latest/download"
+INSTALL_SH = f"curl -LsSf {_RELEASE}/install.sh | sh"
+INSTALL_PS1 = f"irm {_RELEASE}/install.ps1 | iex"
 # What a clone runs: its default `full` group installs every extra.
 UV_SYNC = (
     "uv sync (without --no-group full or UV_NO_GROUP=full: a clone installs every extra by "

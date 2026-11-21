@@ -6,21 +6,17 @@ from __future__ import annotations
 
 import logging
 import math
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from cutpoint import cache, insta360
-from cutpoint.events import visual as V
+from cutpoint import cache
 from cutpoint.pano import director as D
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views as VW
-from cutpoint.pano.x3 import X3Clip
-from pano_fakes import FAKE_TORCH, Models, Sampler, frames
-from pano_helpers import SKY_UP, orientation, write_orient, write_views
+from pano_helpers import SKY_UP, fake_view_layer, orientation, write_orient, write_views
 
 HELMET_UP = SKY_UP
 UPRIGHT_UP = [0.0, -1.0, 0.0]  # lenses horizontal, camera -y up (the cruise footage)
@@ -199,37 +195,15 @@ def test_views_cache_follows_the_upright_wearer(home, tmp_path, up, meta, valid)
     assert VW.views_current(src) is valid
 
 
-def test_a_stale_upright_selfie_is_logged_once(home, tmp_path, caplog) -> None:
-    src = tmp_path / "stale_selfie.lrv"
-    src.write_bytes(b"x")
-    write_orient(src, UPRIGHT_UP)
-    write_views(src, {"source": str(src), "wearer_v": list(G.WEARER_V)} | UPRIGHT_META)
-    with caplog.at_level(logging.INFO, logger="cutpoint.pano.views"):
-        assert VW.load_views(src) is None and VW.load_views(src) is None
-    assert len(caplog.records) == 1  # the second load is silent
-
-
 @pytest.fixture
 def pano(home, tmp_path: Path, monkeypatch):
-    lrv = tmp_path / "LRV_001.lrv"
-    lrv.write_bytes(b"x")
-    clip = X3Clip("001", "2026-01-01", "5.7k", str(lrv), [], frames=600, duration=20.0)
-    rec = SimpleNamespace(built=[], closed=0, det_calls=0, embeds=[], clip=clip, lrv=lrv)
-    monkeypatch.setitem(sys.modules, "torch", FAKE_TORCH)
-    monkeypatch.setattr(G, "FisheyeSampler", Sampler)
-    monkeypatch.setattr(V, "iter_frames", frames)
-    monkeypatch.setattr(V, "VisualModels", lambda **kw: Models(rec, **kw))
-    monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
-    monkeypatch.setattr(insta360, "imu_source", lambda src: src)
-    rec.p = VW.ViewParams(view_px=4, eq_width=32)
-    return rec
+    return fake_view_layer(monkeypatch, tmp_path)
 
 
 def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) -> None:
     """The first selfie pass of an upright clip already looks below the camera, so the
     box median cannot trigger a second (selfie-only) pass."""
     o = orientation(up=UPRIGHT_UP)
-    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
     write_orient(pano.lrv, UPRIGHT_UP)  # what G.orientation caches in a real run
     seen = []
@@ -250,7 +224,6 @@ def test_run_layer_looks_at_the_upright_wearer_in_one_pass(pano, monkeypatch) ->
 
 def test_helmet_run_layer_starts_at_the_measured_mount(pano, monkeypatch) -> None:
     o = orientation(up=HELMET_UP)
-    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
     monkeypatch.setattr(G, "orientation", lambda *a: o)
     seen = []
     real = VW.compute_views

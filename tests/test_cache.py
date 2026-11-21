@@ -157,6 +157,24 @@ def test_atomic_path_failure_removes_the_temp_file_and_keeps_the_target(tmp_path
     assert [p.name for p in tmp_path.iterdir()] == ["f.bin"]
 
 
+def test_atomic_path_sweep_removes_only_the_temp_files_of_dead_processes(tmp_path, monkeypatch):
+    target = tmp_path / "f.bin"
+    host, me = cache.host_tag(), os.getpid()
+    dead = tmp_path / f"f.bin.{me + 1}.{host}.abcd1234.tmp"
+    live = tmp_path / f"f.bin.{me}.{host}.abcd1234.tmp"
+    other_host = tmp_path / f"f.bin.{me + 1}.{'0' * 8}.abcd1234.tmp"
+    partial = tmp_path / "f.bin.partial"
+    for p in (dead, live, other_host, partial):
+        p.write_bytes(b"x")
+    monkeypatch.setattr(cache.procs, "pid_alive", lambda pid, not_after=None: pid == me)
+    with cache.atomic_path(target, sweep=True) as tmp:
+        tmp.write_bytes(b"new")
+    assert target.read_bytes() == b"new"
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+        ["f.bin", live.name, other_host.name]
+    )
+
+
 def test_save_json_other_error_not_retried_no_tmp(tmp_path, monkeypatch):
     calls = []
 

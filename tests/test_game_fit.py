@@ -15,6 +15,7 @@ import pytest
 from cutpoint.events import game_fit
 from cutpoint.events.game_fit import Profile, against_ref, profile, split_group
 from cutpoint.events.regions import Region, misfit_key
+from ocr_helpers import box
 
 MIN_SCORE = 0.5
 TOP_LEFT = Region("feed", 0, 0, 400, 200, "feed")
@@ -28,7 +29,8 @@ AT = {
 
 
 def _box(cx: int, cy: int, text: str = "ab12", score: float = 0.9) -> dict:
-    return {"x0": cx - 20, "y0": cy - 8, "x1": cx + 20, "y1": cy + 8, "text": text, "score": score}
+    """A 40 x 16 px OCR box centred on ``(cx, cy)``."""
+    return box(text, cx - 20, cy - 8, 40, 16, score)
 
 
 def _frames(corner: str, n: int = 8, per: int = 3) -> list[dict]:

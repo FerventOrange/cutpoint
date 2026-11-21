@@ -24,7 +24,7 @@ from cutpoint.events import ocr_prefetch, pipeline, vlm_windows
 from cutpoint.events.common import Source
 from cutpoint.events.killfeed import OcrCancelled, OcrParams
 from cutpoint.styles import get_style
-from ocr_helpers import progress_lines, stub_ocr_run
+from ocr_helpers import StopAtVlm, progress_lines, run_ocr_layer, stub_ocr_layer
 
 
 class _Stop(Exception):
@@ -265,34 +265,22 @@ def ocr_run(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake):
     """``run_events`` with the OCR layer only on the fake's two sources; it stops at the
     VLM layer."""
     hl = {"sources": [{"path": str(p), "duration": 60.0} for p in fake.paths]}
-    stub_ocr_run(monkeypatch, [fake.source(i) for i in range(len(fake.paths))], hl)
-    monkeypatch.setattr(pipeline, "load_preset", lambda *a: None)
+    stub_ocr_layer(monkeypatch, [fake.source(i) for i in range(len(fake.paths))], hl)
     monkeypatch.setattr(pipeline, "_discover", lambda *a, **k: {})
     monkeypatch.setattr(pipeline, "detect_ocr_events", ocr_prefetch.detect_ocr_events)
-
-    def stop(*a, **k):
-        raise _Stop
-
-    monkeypatch.setattr(pipeline, "game_prompt", stop)  # the VLM layer's first call
     seen: list = []
     fake.seen = seen
     monkeypatch.setattr(pipeline, "link_teamkills", lambda evs, **k: seen.append(evs))
 
-    def run(pre=None, stage=None, batch_size=0, stops=_Stop) -> list[dict]:
+    def run(pre=None, stage=None, batch_size=0, stops=StopAtVlm) -> list[dict]:
         """``stops``: the error the run stops with (``fake.stopped`` gets it)."""
         with progress.run(("keyframes", "ranking")) as steps:
             hook = stage(steps) if stage else None
             if hook is None:
                 steps.start("keyframes")
-            with pytest.raises(stops) as fake.stopped:
-                pipeline.run_events(
-                    fake.project,
-                    layers=("ocr",),
-                    ocr=OcrParams(game="zonewar"),
-                    prefetch=pre,
-                    stage=hook,
-                    batch_size=batch_size,
-                )
+            fake.stopped = run_ocr_layer(
+                fake.project, stops=stops, prefetch=pre, stage=hook, batch_size=batch_size
+            )
         return seen
 
     fake.run = run
@@ -573,7 +561,7 @@ def test_the_sources_read_before_a_failure_keep_their_menu_spans(ocr_run, monkey
 
     def write_outputs(project, sources, events, results, transcript, settings, timings, stats):
         written.append(stats["ocr"])
-        raise _Stop
+        raise StopAtVlm  # where the ocr_run fixture expects the run to stop
 
     ocr_run.read = read
     monkeypatch.setattr(pipeline, "game_prompt", lambda *a: "")

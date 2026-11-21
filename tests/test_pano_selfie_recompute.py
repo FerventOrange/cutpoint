@@ -4,40 +4,23 @@ recompute (#376 item 2). Torch, CLIP, the detector and the fisheye sampler are n
 from __future__ import annotations
 
 import math
-import sys
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-from cutpoint import insta360
 from cutpoint.events import visual as V
 from cutpoint.pano import geometry as G
 from cutpoint.pano import views
-from cutpoint.pano.x3 import X3Clip
-from pano_fakes import FAKE_TORCH, Models, Sampler, frames
-from pano_helpers import orientation
+from pano_fakes import Models
+from pano_helpers import fake_view_layer, orientation
 
 TIMING = ("elapsed_s", "gpu_s")
 
 
 @pytest.fixture
 def pano(tmp_path: Path, monkeypatch):
-    lrv = tmp_path / "LRV_001.lrv"
-    lrv.write_bytes(b"x")
-    clip = X3Clip("001", "2026-01-01", "5.7k", str(lrv), [], frames=600, duration=20.0)
-    rec = SimpleNamespace(built=[], closed=0, det_calls=0, embeds=[], clip=clip, lrv=lrv)
-    monkeypatch.setitem(sys.modules, "torch", FAKE_TORCH)
-    monkeypatch.setattr(G, "FisheyeSampler", Sampler)
-    monkeypatch.setattr(G, "orientation", lambda *a: orientation())
-    monkeypatch.setattr(V, "iter_frames", frames)
-    monkeypatch.setattr(V, "VisualModels", lambda **kw: Models(rec, **kw))
-    monkeypatch.setattr(V, "require_detector", lambda: None)  # the fake models need no file
-    monkeypatch.setattr(V, "text_embeddings", lambda prompts, models=None: None)
-    monkeypatch.setattr(insta360, "imu_source", lambda src: src)
-    rec.p = views.ViewParams(view_px=4, eq_width=32)
-    return rec
+    return fake_view_layer(monkeypatch, tmp_path)
 
 
 def _angle(a: np.ndarray, b: np.ndarray) -> float:

@@ -24,7 +24,7 @@ from importlib.resources import files
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, NoReturn
 
-from cutpoint import __version__, cache, jsonout, paths, runstate, stage
+from cutpoint import __version__, cache, jsonout, paths, projectfiles, runstate, stage
 from cutpoint.config import (
     AUDIO_TRANSITIONS,
     COLOR_MODES,
@@ -641,7 +641,7 @@ def _cmd_crashes(a: argparse.Namespace) -> None:
                 "highlights_not_updated",
                 "a source could not be found or reached; highlights.json left unchanged, "
                 "rerun once it is back",
-                [project / "highlights.json"],
+                [project / projectfiles.HIGHLIGHTS],
             )
 
 
@@ -1042,7 +1042,7 @@ def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
             )
         return project
     for candidate in candidates:
-        if (candidate / "highlights.json").is_file():
+        if (candidate / projectfiles.HIGHLIGHTS).is_file():
             return candidate
     folder = next((c for c in candidates if c.is_dir()), None)
     if folder is not None and not (folder / "manifest.json").exists():

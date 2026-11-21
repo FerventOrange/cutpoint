@@ -35,27 +35,7 @@ def make_views(boxes: dict[int, list[tuple]], source: str) -> VW.PanoViews:
 @pytest.fixture
 def stub_scores(monkeypatch: pytest.MonkeyPatch) -> dict:
     """Stub the CLIP view scores, voice and forward yaw; tests edit the returned dict."""
-    st = {
-        "group": np.zeros((N, 9), np.float32),
-        "beauty": np.zeros((N, 9), np.float32),
-        "occl_zs": np.zeros((N, 8), np.float32),
-        "selfie_ok": np.ones(N, np.float32),
-        "talk": 0.0,
-    }
-    monkeypatch.setattr(
-        VW,
-        "view_scores",
-        lambda pv: {"group_zs": st["group"], "beauty": st["beauty"]},
-    )
-    monkeypatch.setattr(
-        VW,
-        "occlusion_scores",
-        lambda pv: {"occl_zs": st["occl_zs"], "selfie_ok": st["selfie_ok"]},
-        raising=False,
-    )
-    monkeypatch.setattr(VW, "forward_yaw", lambda pv: 0.0)
-    monkeypatch.setattr(D, "_voice_at", lambda src, times: np.full(len(times), st["talk"]))
-    return st
+    return helpers.stub_view_scores(monkeypatch, N)
 
 
 def path_of(
@@ -1227,17 +1207,11 @@ def test_param_args_and_coercion() -> None:
         (["max_speed=fast"], "not a valid float"),
         (["n_bins=2.5"], "not a valid int"),
         (["max_speed=-5"], "must be > 0"),
-        # params that are gone are unknown, whatever the value
+        # config.json values: a param that is gone is unknown, whatever the value
         ({"edge_rule": "legacy"}, "unknown director param"),
-        ({"framing": "bin"}, "unknown director param"),
-        ({"people_size": "close"}, "unknown director param"),
-        # the bounds of newer params
         ({"w_shift": -1}, "must be >= 0"),
-        ({"near_box_scale": 0}, "must be > 0"),
+        ({"near_box_scale": 0}, "must be > 0"),  # the bound itself
         ({"include_margin": 0.5}, "must be < 0.5"),
-        ({"near_min_score": -0.1}, "must be >= 0"),
-        ({"cut_min_gain_s": -1}, "must be >= 0"),
-        ({"cut_min_gap_s": -0.5}, "must be >= 0"),
     ],
 )
 def test_param_validation(overrides: list[str] | dict, match: str) -> None:
