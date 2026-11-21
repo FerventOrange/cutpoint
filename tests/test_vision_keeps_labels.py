@@ -14,7 +14,7 @@ import pytest
 
 import cutpoint.analyze
 from conftest import needs_ffmpeg
-from cutpoint import analyze, cli, scorer, vision
+from cutpoint import analyze, cli, scorer, vision, vision_record
 from cutpoint.styles import get_style
 from cutpoint.utils import slugify
 from event_candidates_helpers import events_of, grid, highlights, own
@@ -152,7 +152,7 @@ def test_an_old_project_with_label_before_and_renamed_loads_and_rescores(tmp_pat
     hl = highlights([old])
     json.loads(json.dumps(hl))  # round-trips as saved JSON
 
-    assert analyze.sync_vision(old) == BLENDED
+    assert vision_record.sync_vision(old) == BLENDED
     assert old["label"] == "big-jump"
 
     scorer.rescore_events(hl, events_of([talk(100.0, 180.0)]), tmp_path, [grid()])
@@ -164,5 +164,5 @@ def test_an_old_project_with_label_before_and_renamed_loads_and_rescores(tmp_pat
 
     stale = {**c, "vision_stale": {**c["vision_stale"], "renamed": True}}  # an old stale block
     stale["start"], stale["end"] = 150.0, 158.0
-    assert analyze.sync_vision(stale) == BLENDED
+    assert vision_record.sync_vision(stale) == BLENDED
     assert stale["label"] == "big-jump" and "vision_stale" not in stale

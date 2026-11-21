@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from cutpoint import analyze, scorer
+from cutpoint import analyze, scorer, vision_record
 from cutpoint.events import scoring
 from event_candidates_helpers import events_of, feed, grid, highlights, own
 from test_vision_stale import STYLE, _Rater, talk
@@ -382,7 +382,7 @@ def test_a_skipped_moment_with_another_span_is_a_neighbour_again():
     the edit skipped, so it bounds the rated moments again."""
     s, r = _skipped("s", 0.0, 80.0), _cand("r", 99.0)  # r was 70
     s["end"] += 5.0
-    assert not analyze.vision_skipped(s)
+    assert not vision_record.vision_skipped(s)
     assert scorer.apply_vision_clamp([s, r], [None, 70.0]) == 1
     assert r["score"] == 79.9  # held under S: level, R's span (0-8) would sort before S's (0-13)
 
