@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 import zipfile
 from email.parser import Parser
@@ -97,7 +98,10 @@ def _install_sh_functions() -> str:
     return body + "\n"
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason="install.sh is POSIX-only (Git Bash mangles the sh -c script on Windows)",
+)
 def test_install_sh_refuses_a_uv_installer_with_the_wrong_sha256(tmp_path):
     """A downloaded uv installer whose SHA256 is not the pinned one is never run (#1085)."""
     ran = tmp_path / "ran"
@@ -118,7 +122,10 @@ install_uv
     assert not list(tmp_path.glob("uv-install.*"))  # the download is removed
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason="install.sh is POSIX-only (Git Bash mangles the sh -c script on Windows)",
+)
 def test_install_sh_runs_a_uv_installer_with_the_pinned_sha256(tmp_path):
     """The downloaded uv installer runs when its SHA256 is the pinned one; the download goes."""
     ran = tmp_path / "ran"
@@ -152,7 +159,10 @@ def test_installers_pin_the_uv_installer_sha256():
     assert ps1.index("if ($got -ne $UV_INSTALLER_SHA256)") < ps1.index("-File $tmp")
 
 
-@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("sh") is None,
+    reason="install.sh is POSIX-only (Git Bash mangles the sh -c script on Windows)",
+)
 def test_install_sh_prints_the_ollama_linux_command_instead_of_running_it(tmp_path):
     """Ollama's Linux script has no published checksum: --ollama prints it, never runs it."""
     harness = (
