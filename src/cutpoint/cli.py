@@ -489,8 +489,9 @@ def _set_clips_project(clips_dir: Path) -> None:
 
 
 def _cmd_extend(a: argparse.Namespace) -> None:
+    from cutpoint import clips  # noqa: PLC0415 - the export stack
     from cutpoint.boundaries import SpeechSettings  # noqa: PLC0415
-    from cutpoint.extend import extend_clips  # noqa: PLC0415 - the export stack
+    from cutpoint.extend import ParallelExport, extend_clips  # noqa: PLC0415
     from cutpoint.planning import Padding  # noqa: PLC0415
 
     clips_dir = resolve_project_path(a.clips_dir, bare_names=False)
@@ -508,6 +509,9 @@ def _cmd_extend(a: argparse.Namespace) -> None:
         pano_cmd_every=a.pano_cmd_every,
         clip_overrides=_clip_overrides(a.clip_override),
         reuse_dir=resolve_project_path(a.reuse, bare_names=False) if a.reuse else None,
+        parallel=ParallelExport(
+            clips.parallel_workers, clips.warm_source_checks, clips.export_pool
+        ),
     )
 
 

@@ -445,6 +445,7 @@ def test_burned_in_captions_transcribe_in_the_analysis_language(tmp_path, monkey
     monkeypatch.setattr(assemble, "peak_filters", lambda _d, files, *_a: [""] * len(files))
     monkeypatch.setattr(assemble, "_join", join)
     monkeypatch.setattr(assemble, "extract_audio", lambda *a, **k: None)
+    monkeypatch.setattr(assemble, "loudnorm_filter", lambda stage: "volume=0dB")
     monkeypatch.setattr(assemble, "Transcriber", transcriber)
     with pytest.raises(_Transcribed):
         assemble.assemble(clips_dir, join=assemble.JoinOptions(captions=True, loudnorm=True))
@@ -614,6 +615,7 @@ def _loudness_passes(monkeypatch, measured: list[tuple[float, float]]) -> list[f
         return None
 
     monkeypatch.setattr(assemble, "post_process", post_process)
+    monkeypatch.setattr(assemble, "loudnorm_filter", lambda stage: "volume=0dB")
     monkeypatch.setattr(assemble, "measure_loudness", lambda path: next(results))
     return ceilings
 
