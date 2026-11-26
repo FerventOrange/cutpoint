@@ -99,6 +99,7 @@ class OcrFailure(NamedTuple):
     not_read: list[str]  # the paths of the sources it did not read, the failing one first
     discovery: bool  # in HUD region discovery: it read none
     games: int  # discovery: the games it was to discover (0: not known yet)
+    fit: bool = False  # in the HUD fit check after discovery (not a discovery failure)
 
 
 def _mark_ocr_failure(
@@ -107,10 +108,11 @@ def _mark_ocr_failure(
     *,
     discovery: bool,
     games: int = 0,
+    fit: bool = False,
 ) -> None:
     """Note on ``err`` (re-raised unchanged) the sources the OCR layer did not read."""
     paths = [str(s.path) for s in not_read]
-    setattr(err, _FAILURE, OcrFailure(paths, discovery, games))
+    setattr(err, _FAILURE, OcrFailure(paths, discovery, games, fit))
 
 
 def ocr_failure(err: BaseException) -> OcrFailure | None:

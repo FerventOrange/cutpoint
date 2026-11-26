@@ -7,9 +7,10 @@ Its lines are logged under the pipeline's logger, as before the move (#1085 A161
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +28,7 @@ from cutpoint.events.pipeline import (
     _mark_ocr_failure,
     check_game_key,
     logger,
+    ocr_failure,
 )
 
 
@@ -161,9 +163,10 @@ class DiscoverRun:
             self.decided[str(tested[0].path)] = (game, None)
             self._persist()
             return
-        got = self._fit_frames(game, proposal, srcs, tested)
-        fits, _ = self._split(srcs, got)
-        misfits = self._decide(game, tested, fits)
+        with self._fit_check():
+            got = self._fit_frames(game, proposal, srcs, tested)
+            fits, _ = self._split(srcs, got)
+            misfits = self._decide(game, tested, fits)
         # several sources, some tested: split. The preset from the sources that fit only, or
         # as discovered
         if misfits:
@@ -187,18 +190,19 @@ class DiscoverRun:
                 ref = (proposal.get("discovery") or {}).get("fit_ref")
                 self._add_fit_ref(game, existing.path, ref)
             return
-        got = self._fit_frames(game, proposal, srcs, tested)
-        if proposal is not None:
-            fits = self._refit(game, srcs, tested, existing, got)
-        else:  # against the preset found
-            ref = self._fit_ref(existing)  # none, or an earlier version's: no decision, no split
-            fits = {
-                str(s.path): game_fit.against_ref(
-                    game_fit.profile(got.get(str(s.path), []), self.params.min_score), ref
-                )
-                for s in tested
-            }
-        misfits = self._decide(game, tested, fits)
+        with self._fit_check():
+            got = self._fit_frames(game, proposal, srcs, tested)
+            if proposal is not None:
+                fits = self._refit(game, srcs, tested, existing, got)
+            else:  # against the preset found
+                ref = self._fit_ref(existing)  # none, or an earlier version's: no decision
+                fits = {
+                    str(s.path): game_fit.against_ref(
+                        game_fit.profile(got.get(str(s.path), []), self.params.min_score), ref
+                    )
+                    for s in tested
+                }
+            misfits = self._decide(game, tested, fits)
         self._persist()
         self._place_misfits(game, misfits, fits, got)
 
@@ -604,6 +608,20 @@ class DiscoverRun:
             if discover._src(f) in paths:
                 got.setdefault(paths[discover._src(f)], []).append(f)
         return got
+
+    @contextlib.contextmanager
+    def _fit_check(self) -> Iterator[None]:
+        """The HUD fit check's steps: an error (not out of memory) is noted as a fit-check
+        failure, not a discovery one, so the run's WARNING names the right step."""
+        try:
+            yield
+        except LowMemoryError:
+            raise
+        except Exception as err:
+            memguard.raise_if_out_of_memory(err, "the HUD fit check", "this game")
+            if ocr_failure(err) is None:
+                _mark_ocr_failure(err, [], discovery=False, fit=True)
+            raise
 
     def _fit_frames(
         self, game: str, proposal: dict[str, Any] | None, srcs: list[Any], tested: list[Any]
