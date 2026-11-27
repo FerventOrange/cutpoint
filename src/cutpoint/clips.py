@@ -82,6 +82,7 @@ from cutpoint.planning import (
     warn_kept,
     warn_pano_sources,
 )
+from cutpoint.projectfiles import EVENTS_JSON, MANIFEST
 from cutpoint.styles import Style, analysis_style, recorded_name
 from cutpoint.tail import TailResult, TailSettings, smart_tail
 from cutpoint.utils import seconds_keys, slugify
@@ -1196,7 +1197,7 @@ def write_manifest(
     tails_on = _smart_tail_used(tail, [p.entry for p in plans])
     speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
     cache.save_json(
-        out_dir / "manifest.json",
+        out_dir / MANIFEST,
         {
             "generator": MANIFEST_GENERATOR,
             "created": datetime.now().isoformat(timespec="seconds"),
@@ -1251,7 +1252,7 @@ def _warn_dropped_grade(out_dir: Path) -> None:
     """WARNING (and a ``grade_dropped`` --json warning) when the manifest.json ``--force``
     replaces graded clips (a ``lut`` or ``color`` key, :data:`~cutpoint.encode.GRADE_KEYS`)
     and this run grades none: the grade is not carried over, the flags of this run decide."""
-    manifest = cache.load_json(out_dir / "manifest.json")
+    manifest = cache.load_json(out_dir / MANIFEST)
     listed = manifest.get("clips") if isinstance(manifest, dict) else None
     graded = [e for e in listed or [] if _graded_keys(e)]
     if graded:
@@ -1262,8 +1263,7 @@ def _warn_dropped_grade(out_dir: Path) -> None:
             f"({', '.join(keys)}); this run grades none, so the new clips are ungraded (give "
             f"{again} again to keep the grade)"
         )
-        logger.warning("%s", message)
-        jsonout.warn("grade_dropped", message, [out_dir / "manifest.json"])
+        jsonout.log_warn("grade_dropped", message, [out_dir / MANIFEST], logger=logger)
 
 
 def _color_mode(
@@ -1312,8 +1312,7 @@ def _color_mode(
                 f"--color {color} on gaming footage (style {style.name}): game graphics are "
                 "graded too; check the clips"
             )
-        logger.warning("%s", message)
-        jsonout.warn("color_on_gaming", message)
+        jsonout.log_warn("color_on_gaming", message, logger=logger)
     return color
 
 
@@ -1473,8 +1472,7 @@ def _event_tails(
             f"--event-tails: {project} has no events.json (run `cutpoint events`); "
             "continuing without event tails"
         )
-        logger.warning("%s", message)
-        jsonout.warn("event_tails_no_events", message, [project / "events.json"])
+        jsonout.log_warn("event_tails_no_events", message, [project / EVENTS_JSON], logger=logger)
     ev_settings = EventTailSettings(
         enabled=project_events is not None,
         **({"window": event_window} if event_window is not None else {}),
@@ -1822,7 +1820,7 @@ def export_clips(
             edges=setup.edges,
         )
         if work != out_dir:  # staged, not exported into directly
-            folders.swap_in(work, out_dir, [*replaced.replace, "manifest.json"])
+            folders.swap_in(work, out_dir, [*replaced.replace, MANIFEST])
     warn_kept(
         out_dir,
         replaced,

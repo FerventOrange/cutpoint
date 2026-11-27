@@ -76,7 +76,7 @@ def test_only_the_keyframes_of_the_first_seconds_of_the_video_stream_are_probed(
     V.keyframe_spacing(Path("a.mp4"))
     V.keyframe_spacing(Path("a.mp4"), probe_s=30.0)
     first, second = calls
-    assert first["streams"] == "v:0" and first["entries"] == "frame=pts_time"
+    assert first["streams"] == "V:0" and first["entries"] == "frame=pts_time"
     assert first["options"] == ("-skip_frame", "nokey", "-read_intervals", "%+12")
     assert second["options"][-1] == "%+30"
     assert first["path"] == Path("a.mp4")

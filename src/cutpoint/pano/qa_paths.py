@@ -51,6 +51,7 @@ from cutpoint import cache, folders
 from cutpoint.pano import boxes as B
 from cutpoint.pano import geometry as G
 from cutpoint.pano import qa as Q
+from cutpoint.projectfiles import MANIFEST
 from cutpoint.utils import natural_key
 
 logger = logging.getLogger(__name__)
@@ -364,7 +365,7 @@ def find_path_inputs(qa_dir: Path) -> list[dict[str, Any]]:
     """
     from cutpoint.pano.director import validate_path  # noqa: PLC0415
 
-    manifest = cache.load_json(qa_dir / "manifest.json")
+    manifest = cache.load_json(qa_dir / MANIFEST)
     out = []
     if manifest is not None:
         for e in manifest.get("clips", []):

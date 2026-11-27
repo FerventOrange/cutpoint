@@ -64,6 +64,7 @@ from cutpoint.config import is_absolute_any, source_path
 from cutpoint.crash import load_crashes
 from cutpoint.pano.qa import runs_of
 from cutpoint.pano.render import free_backup_name
+from cutpoint.projectfiles import MANIFEST, MIX_REPORT
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +143,7 @@ def _match(
     checked against the path's ``segment``. Stale clips (no match, missing or newer
     than the QA at ``qa_time``) are skipped.
     """
-    manifest = cache.load_json(src_dir / "manifest.json")
+    manifest = cache.load_json(src_dir / MANIFEST)
     entries = {e["file"]: e for e in (manifest or {}).get("clips", [])}
     by_id = {s["id"]: s for s in segments}
     out, skipped = [], 0
@@ -432,10 +433,10 @@ def _repair(
     new_excl, findings, skipped, bounds = plan(
         segs.keyed, qa, src_dir, qa_file.stat().st_mtime, impacts, key
     )
-    manifest = cache.load_json(src_dir / "manifest.json")
+    manifest = cache.load_json(src_dir / MANIFEST)
     out = out or segments_file
     same = out.resolve() == segments_file.resolve()
-    report = cache.load_json(segments_file.with_name("mix_report.json")) or {}
+    report = cache.load_json(segments_file.with_name(MIX_REPORT)) or {}
     rep: dict[str, Any] = {
         "segments": str(out),
         "written": False,

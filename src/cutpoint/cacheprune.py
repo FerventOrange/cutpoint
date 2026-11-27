@@ -47,6 +47,7 @@ from typing import Any
 from cutpoint import cache, folders, jsonout, paths, projectfiles, runstate, stage
 from cutpoint.config import projects_dir
 from cutpoint.errors import FolderBusyError
+from cutpoint.projectfiles import PANO
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,7 @@ def _project_sources(project: Path) -> list[str]:
     rec = cache.load_json(project / runstate.FILE)
     if isinstance(rec, dict) and isinstance(rec.get("sources"), list):
         out += rec["sources"]
-    pano = cache.load_json(project / "pano.json")
+    pano = cache.load_json(project / PANO)
     if isinstance(pano, dict) and isinstance(pano.get("clips"), list):
         for c in pano["clips"]:
             if isinstance(c, dict):

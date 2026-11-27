@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -35,6 +36,80 @@ def test_windows_open_distinguishes_missing_credentials_from_denied_access(
     )
     with pytest.raises(expected):
         private_files._win_open(tmp_path / "credential.json", False)
+
+
+def _fake_ancestor_api(monkeypatch: pytest.MonkeyPatch, refused: Path, failure: str | None) -> None:
+    """Every ancestor opens as a folder, except `refused`, which fails at the chosen step."""
+    opened: dict[int, str] = {}
+
+    def create_file(path: str, *args: object) -> int:
+        if failure == "create" and path == str(refused):
+            return ctypes.c_void_p(-1).value
+        opened[len(opened) + 1] = path
+        return len(opened)
+
+    def get_file_information(handle: int, info: object) -> int:
+        if failure == "read" and opened[handle] == str(refused):
+            return 0
+        attributes = 0x10
+        if opened[handle] == str(refused):
+            attributes = {"reparse": 0x410, "file": 0x20}.get(failure or "", 0x10)
+        info._obj.attributes = attributes  # type: ignore[attr-defined]
+        return 1
+
+    monkeypatch.setattr(
+        private_files,
+        "_windows_api",
+        lambda: (
+            SimpleNamespace(
+                get_last_error=lambda: 5, byref=ctypes.byref, Structure=ctypes.Structure
+            ),
+            SimpleNamespace(HANDLE=ctypes.c_void_p, DWORD=ctypes.c_ulong),
+            SimpleNamespace(
+                CreateFileW=create_file,
+                GetFileInformationByHandle=get_file_information,
+                CloseHandle=lambda handle: 1,
+            ),
+            None,
+        ),
+    )
+
+
+def test_windows_ancestor_error_names_the_refused_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Bug #1283: a refused ancestor (such as on a scratch drive) must be named in the error."""
+    target = tmp_path / "scratch" / "credential.json"
+    _fake_ancestor_api(monkeypatch, target.parent, "create")
+    with (
+        caplog.at_level(logging.DEBUG, logger="cutpoint.assistant.private_files"),
+        pytest.raises(PermissionError, match="cannot safely inspect") as excinfo,
+    ):
+        private_files._win_check_ancestors(target)
+    assert str(target.parent) in str(excinfo.value)
+    assert str(excinfo.value) == (
+        f'cannot safely inspect private path: cannot open "{target.parent}"'
+    )
+    assert "Windows error 5" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("read", 'cannot safely inspect private path: cannot read "{folder}"'),
+        ("reparse", 'unsafe private path: "{folder}" is a reparse point'),
+        ("file", 'unsafe private path: "{folder}" is not a folder'),
+    ],
+)
+def test_windows_ancestor_checks_name_the_refused_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str, message: str
+) -> None:
+    """Bug #1283: each refused ancestor check names the folder that failed."""
+    target = tmp_path / "scratch" / "credential.json"
+    _fake_ancestor_api(monkeypatch, target.parent, failure)
+    with pytest.raises(PermissionError) as excinfo:
+        private_files._win_check_ancestors(target)
+    assert str(excinfo.value) == message.format(folder=target.parent)
 
 
 @pytest.mark.parametrize(

@@ -1558,7 +1558,7 @@ def decoder_for(path: Path | str) -> HwDecoder | None:
     if hit is not None and stamp is not None and hit[0] == stamp:
         return dec if hit[1] else None
     try:
-        streams = ffprobe_json(path, entries="stream=codec_name,pix_fmt", streams="v:0")
+        streams = ffprobe_json(path, entries="stream=codec_name,pix_fmt", streams="V:0")
     except FFmpegError:
         return None  # the CPU decode reports the unreadable source
     info = (streams.get("streams") or [{}])[0]
