@@ -78,7 +78,8 @@ def installer_url(version: str, script: str) -> str:
 
 
 def installer_urls(version: str) -> list[str]:
-    return [installer_url(version, "install.sh"), installer_url(version, "install.ps1")]
+    """The installer URLs for `version`, in the order of SHA_FILES."""
+    return [installer_url(version, script) for _name, _pattern, script in SHA_FILES]
 
 
 def fetch_sha256(
@@ -104,8 +105,7 @@ def fetch_sha256(
 def url_problems(version: str, shas: dict[str, str | None], fetch=fetch_sha256) -> list[str]:
     """Download each pinned installer script and compare its SHA256 with the pin."""
     problems = []
-    for name, _pattern, script in SHA_FILES:
-        url = installer_url(version, script)
+    for (name, _pattern, _script), url in zip(SHA_FILES, installer_urls(version), strict=True):
         got = fetch(url)
         if got is None:
             problems.append(
