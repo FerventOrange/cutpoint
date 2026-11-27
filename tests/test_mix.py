@@ -395,7 +395,7 @@ def test_content_qa_max_share_follows_the_available_categories() -> None:
     ]
     two = _timed(["scenery", "social"], 60)
     assert content_qa(two, available={"scenery", "social"})["checks"]["max_share"]["ok"]
-    assert not content_qa(two)["checks"]["max_share"]["ok"]  # all categories: 40%
+    assert not content_qa(two)["checks"]["max_share"]["ok"]  # all categories: 48%
 
 
 def test_content_qa_two_categories_accept_up_to_sixty_percent() -> None:
