@@ -868,7 +868,7 @@ def _encode(
     ]
     color = bt709_filter(info)
     chain = ",".join(f for f in (color, grade.filter() if grade else "") if f)
-    vf = f"[0:v:0]{enc.chain(fmt.video_filter(vertical, crop, chain))}[v]"
+    vf = f"[0:V:0]{enc.chain(fmt.video_filter(vertical, crop, chain))}[v]"
     audio = None if info.audio_duration is None else min(end, info.audio_duration) - start
     a_fmt = A_FMT + peaks + audio_fade_filter(dur, audio_fade, audio)
     if peaks:

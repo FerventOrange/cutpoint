@@ -218,7 +218,7 @@ def _video_chain(i: int, info: MediaInfo, ref: MediaInfo, trim: str = "") -> str
     w, h, fps = ref.width, ref.height, ref.fps
     color = bt709_filter(info) or (TAG_BT709 if info.color_space == "bt709" else "")
     return (
-        f"[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,"
+        f"[{i}:V:0]scale={w}:{h}:force_original_aspect_ratio=decrease:out_range=tv,"
         f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},{trim}"
         f"{color + ',' if color else ''}format=yuv420p,"
         f"settb=AVTB,setpts=PTS-STARTPTS[v{i}]"
@@ -292,7 +292,7 @@ def concat_copy(
         "-filter_complex",
         f"{graph}concat=n={len(files)}:v=0:a=1[a]",
         "-map",
-        "0:v:0",
+        "0:V:0",
         "-map",
         "[a]",
         "-c:v",
@@ -509,7 +509,7 @@ def _video_packets(path: Path, fps: Fraction) -> VideoPackets | None:
     """
     data = ffprobe_json(
         path,
-        streams="v:0",
+        streams="V:0",
         entries="packet=pts,flags:stream=time_base,extradata_hash:format=start_time,duration",
         options=("-show_data_hash", "MD5"),
         timeout=None,  # lists every packet: a long clip on slow storage takes its time
@@ -714,7 +714,7 @@ def _extract_body(file: Path, body: Body, p: VideoPackets, fps: Fraction, out: P
     cuts = cuts or [p.duration + 1]  # a whole clip between two Cut joins: one piece
     # Relative pattern run in out's folder: a % in the project path is no template field.
     run([
-        "ffmpeg", "-y", "-v", "error", "-i", str(file.resolve()), "-map", "0:v:0", "-c", "copy",
+        "ffmpeg", "-y", "-v", "error", "-i", str(file.resolve()), "-map", "0:V:0", "-c", "copy",
         "-f", "segment", "-segment_times", ",".join(f"{t:.6f}" for t in cuts),
         "-reset_timestamps", "1", "-segment_format", "mp4",
         "-segment_format_options", f"video_track_timescale={timescale}:movie_timescale={timescale}",

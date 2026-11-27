@@ -308,7 +308,10 @@ def _tags(stream_or_format: Mapping[str, Any]) -> dict[str, str]:
 def _metadata(data: Mapping[str, Any]) -> dict[str, Any]:
     """Handler, encoder, make and model of ``ffprobe`` output."""
     streams = data.get("streams") or []
-    video = next((s for s in streams if s.get("codec_type") == "video"), {})
+    videos = [s for s in streams if s.get("codec_type") == "video"]
+    # cover art (an attached picture) is not the video; its tags only when it is all there is
+    video = next((s for s in videos if not (s.get("disposition") or {}).get("attached_pic")), None)
+    video = video or next(iter(videos), {})
     vtags, ftags = _tags(video), _tags(data.get("format") or {})
     make = model = ""
     for key, value in {**ftags, **vtags}.items():

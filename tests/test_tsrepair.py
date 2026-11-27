@@ -148,7 +148,7 @@ def test_a_recording_without_audio_is_scanned_on_its_video(media, scans):
     tsrepair.check(media["back"])
 
     maps = [c[c.index("-map") + 1] for c in scans.scans]
-    assert maps == ["0:v:0", "0:a:0"]
+    assert maps == ["0:V:0", "0:a:0"]
 
 
 @pytest.mark.parametrize("name", ["normal", "small", "gap5"])

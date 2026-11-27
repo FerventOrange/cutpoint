@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import struct
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -340,7 +341,7 @@ def test_hdr_export_with_vaapi_converts_before_the_upload(monkeypatch):
 @pytest.mark.parametrize("tags", [BT709, FULL_BT709, {"color_space": "bt709"}, {**SD, **BT709}])
 def test_bt709_export_command_is_unchanged(monkeypatch, tags):
     args = _export_args(monkeypatch, media_info(**tags))
-    assert args[args.index("-filter_complex") + 1].startswith(f"[0:v:0]{TODAY}[v];")
+    assert args[args.index("-filter_complex") + 1].startswith(f"[0:V:0]{TODAY}[v];")
     assert not {"-color_primaries", "-color_trc", "-colorspace"} & set(args)
     assert args[args.index("-color_range") : args.index("-color_range") + 3] == [
         "-color_range", "tv", "-fps_mode",
@@ -352,7 +353,7 @@ def test_bt601_export_converts_and_tags_the_output_bt709(monkeypatch, tags, matr
     args = _export_args(monkeypatch, media_info(**tags))
     graph = args[args.index("-filter_complex") + 1]
     conv = f"colorspace=all=bt709:iall={matrix}:irange=tv:range=tv:fast=1"
-    assert graph.startswith(f"[0:v:0]{TODAY.replace('format=', conv + ',format=')}[v];")
+    assert graph.startswith(f"[0:V:0]{TODAY.replace('format=', conv + ',format=')}[v];")
     i = args.index("-color_range")
     assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
 
@@ -360,7 +361,7 @@ def test_bt601_export_converts_and_tags_the_output_bt709(monkeypatch, tags, matr
 def test_untagged_hd_export_is_only_tagged_bt709(monkeypatch):
     args = _export_args(monkeypatch, media_info())
     graph = args[args.index("-filter_complex") + 1]
-    assert graph.startswith(f"[0:v:0]{TODAY.replace('format=', encode.TAG_BT709 + ',format=')}[v];")
+    assert graph.startswith(f"[0:V:0]{TODAY.replace('format=', encode.TAG_BT709 + ',format=')}[v];")
     i = args.index("-color_range")
     assert args[i : i + 8] == ["-color_range", "tv", *encode.BT709_TAGS]
 
@@ -661,7 +662,7 @@ def test_real_untagged_hd_export_changes_no_pixel(tmp_path, monkeypatch):
 def test_assemble_normalises_each_input_to_bt709():
     infos = [media_info(Path(f"00{i}.mp4"), 2.0, **t) for i, t in enumerate((BT709, {}, BT601))]
     chains, _ = assemble._normalize_inputs(infos)
-    video = [c for c in chains if c.startswith("[") and ":v:0]" in c]
+    video = [c for c in chains if c.startswith("[") and ":V:0]" in c]
     assert f"fps=30,{encode.TAG_BT709},format=yuv420p," in video[0]  # BT.709: tags only
     assert f"fps=30,{encode.TAG_BT709},format=yuv420p," in video[1]
     conv = "colorspace=all=bt709:iall=smpte170m:irange=tv:range=tv:fast=1"
@@ -1632,3 +1633,57 @@ def test_an_underwater_mix_puts_red_from_green_before_the_levels():
 
     both = color.AutoGrade("underwater", black=0.05, mix=0.3).filter()
     assert both.index("colorchannelmixer") < both.index("colorlevels")
+
+
+def _cover_art_first(tmp_path: Path) -> Path:
+    """A 1 s blue 320x180 mp4 whose red 64x64 cover picture is its first stream: ffmpeg writes
+    the picture last, so the moov box's children are reordered (the size stays, so does every
+    offset)."""
+    cover, video, tmp, src = (tmp_path / n for n in ("c.png", "v.mp4", "t.mp4", "src.mp4"))
+    lavfi = ("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i")
+    ffmpeg_utils.run([*lavfi, "color=c=red:s=64x64", "-frames:v", "1", str(cover)])
+    ffmpeg_utils.run([*lavfi, "color=c=blue:s=320x180:d=1:r=30", "-pix_fmt", "yuv420p", str(video)])
+    ffmpeg_utils.run(
+        [
+            *("ffmpeg", "-y", "-v", "error", "-i", str(cover), "-i", str(video)),
+            *("-map", "0:v", "-map", "1:v", "-c:v:0", "mjpeg", "-c:v:1", "copy"),
+            *("-disposition:v:0", "attached_pic", str(tmp)),
+        ]
+    )
+    data = bytearray(tmp.read_bytes())
+
+    def boxes(lo: int, hi: int):
+        while lo < hi:
+            size, kind = struct.unpack(">I4s", data[lo : lo + 8])
+            yield kind, lo, size
+            lo += size
+
+    ((_, lo, size),) = [b for b in boxes(0, len(data)) if b[0] == b"moov"]
+    kids = [(k, bytes(data[o : o + n])) for k, o, n in boxes(lo + 8, lo + size)]
+    kids.sort(key=lambda kid: kid[0] != b"udta")  # the box holding the cover goes first
+    data[lo + 8 : lo + size] = b"".join(body for _, body in kids)
+    src.write_bytes(data)
+    return src
+
+
+@needs_ffmpeg
+def test_real_export_of_a_source_with_cover_art_first_is_the_video(tmp_path, monkeypatch):
+    """#1274: an attached picture listed before the video must not be what is exported."""
+    monkeypatch.setenv("CUTPOINT_VIDEO_ENCODER", "cpu")
+    src = _cover_art_first(tmp_path)
+    first = json.loads(
+        ffmpeg_utils.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(src)])
+    )["streams"][0]
+    assert first["disposition"]["attached_pic"] == 1  # the setup puts the still first
+    info = ffmpeg_utils.probe(src)
+    out = tmp_path / "001.mp4"
+
+    encode.export_clip_checked(src, info, 0.0, 1.0, out, encode.OutputFormat(320, 180, 30), False)
+
+    got = ffmpeg_utils.probe(out)
+    assert got.duration > 0.5  # the still would be a single frame
+    frames = ffmpeg_utils.decode_raw(
+        out, size=(64, 36), vf="scale=64:36,format=rgb24", hwaccel=None
+    )
+    r, _g, b = next(iter(frames))[1].reshape(-1, 3).mean(0)
+    assert b > 150 and r < 80  # blue video, not the red cover

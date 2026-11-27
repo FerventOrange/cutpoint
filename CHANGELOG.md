@@ -161,6 +161,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A hand-edited camera path without keys, or with a key missing `t`, `yaw`, `pitch` or `fov`, keys out of time order or a `fov` of 0, is named with its problem: `extend` and 360 exports stop with an error naming the file, `360 qa` skips it with a WARNING, and `360 director` plans it again (keeping it as `.bak`); before, it failed with a Python or numpy error mid-export (#1085, A215).
 - `cutpoint 360 stitch` refuses `--top` or `--max-total` with `--clips`, `--from-clips` or `--segments` and unknown `--clips` names (`bad_args`, as `clips --ids`), and names the moments of `--from-clips` / `--segments` that are not 360 clips (`not_a_360_clip`); `cutpoint 360 qa` refuses `--size` and `--json-only` with `--paths`, and `--fps`, `--size` and `--json-only` with `--compare`, instead of ignoring them (#1085, A219).
 - The `--vl-check` of `cutpoint 360 director` asks the vision model through the same request path as the other vision steps (consent, hosted Vision role, memory guard, loaded context, no redirect followed); an Ollama that does not answer now fails within 10 s, as the other vision requests (#1085, A368).
+- Clips, previews and the final video use the real video of a source whose first video stream is cover art (an attached picture), instead of the still picture; footage detection reads the real video's camera tags (#1274).
 
 ### Changed
 
