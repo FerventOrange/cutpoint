@@ -368,6 +368,26 @@ def test_run_mix_of_three_categories_keeps_the_forty_percent_cap(
     assert rep["content_qa"]["checks"]["max_share"]["ok"]
 
 
+def test_run_mix_underfilled_three_categories_pass_max_share_in_the_length_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Jump runs out (4 clips): selection caps each category at 40% of the budget, and
+    the QA allows that share of the shortest accepted length, not of the total."""
+    durs = {"run": 6.0, "social": 6.0, "jump": 4.0}
+    counts = {"run": 60, "social": 60, "jump": 4}
+    cands = [
+        _c(cat, 100, 1.0 + i, src=f"{cat}{i}", dur=durs[cat])
+        for cat in durs
+        for i in range(counts[cat])
+    ]
+    _fake_day(monkeypatch, cands)
+    rep = mix.run_mix(tmp_path, target_s=240.0, sheet=False)
+    checks = rep["content_qa"]["checks"]
+    assert checks["length_s"]["ok"]
+    assert checks["max_share"]["value"] > 0.4  # over the selection cap, under the QA one
+    assert checks["max_share"]["ok"]
+
+
 def test_content_qa_max_share_follows_the_available_categories() -> None:
     segs = _timed(["scenery", "social", "scenery"], 40)  # scenery 2/3 of the length
     assert not content_qa(segs, available={"scenery", "social", "jump"})["checks"]["max_share"][

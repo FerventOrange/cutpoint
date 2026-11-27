@@ -168,7 +168,7 @@ cutpoint assemble projects/trip/clips_mix --loudnorm
 `mix` picks runs, jumps, crashes with reactions, lift rides, views and social moments under
 per-category quotas (`--quotas run=.35,...`, `--target` seconds). The arc order opens with a
 lift or scenery shot, follows the day, and ends on the best crash, run or jump. `mix_report.json`
-holds content checks: at least four categories, none over 40% of the length (with fewer than three categories that have candidates, selection holds each to 1 / n of the budget, 40% minimum, and the check accepts up to 60% with two and 100% with one), no near-duplicates,
+holds content checks: at least four categories, none over 48% of the length (selection holds each to 40% of the budget, or 1 / n with fewer than three categories that have candidates; the check accepts what that guarantees at the shortest accepted length: 48% with three or more, 60% with two and 100% with one), no near-duplicates,
 a scenic opener, and a total of 0.75-1.25 times `--target` (180-300 s for the default 240 s; the
 window is `content_qa.length_window_s`, and `360 repair` caps the rendered edit at its upper end).
 Categories with no candidates in the footage are not required: with fewer than four, all of them
