@@ -133,7 +133,7 @@ def check(src: Path, info: MediaInfo | None = None) -> Verdict | None:
             info = probe(io)
         if not scanned(info):
             return None
-        stream = "0:a:0" if info.audio_streams else "0:v:0"
+        stream = "0:a:0" if info.audio_streams else "0:V:0"
         # -v debug: ffmpeg 5.1 logs the jump only at debug level (6.1 and later at warning);
         # a stream copy logs no line per packet, so this stays short (about 150 lines for 2 h)
         args = ["ffmpeg", "-nostdin", "-v", "debug", "-i", str(io), "-map", stream,
@@ -239,7 +239,7 @@ def _make_copy(
         return None
     part = cdir / f"timeline.{os.getpid()}.{uuid.uuid4().hex[:8]}.part.mkv"
     logger.info("%s: remuxing a stream copy (%s) into the cache", src.name, _size(st.st_size))
-    args = ["ffmpeg", "-nostdin", "-y", "-v", "warning", "-i", str(io), "-map", "0:v",
+    args = ["ffmpeg", "-nostdin", "-y", "-v", "warning", "-i", str(io), "-map", "0:V",
             "-map", "0:a?", "-c", "copy", "-ignore_unknown", "-f", "matroska", str(part)]  # fmt: skip
     try:
         with stage.unrepaired():

@@ -292,7 +292,7 @@ WINDOW_BYTES = b"0123456789"
 
 def test_proxy_args_defaults_are_the_whole_source_command() -> None:
     assert ui.proxy_args(Path("in.mkv"), Path("out.mp4"), 1) == [
-        *("ffmpeg", "-y", "-nostdin", "-v", "error", "-i", "in.mkv", "-map", "0:v:0"),
+        *("ffmpeg", "-y", "-nostdin", "-v", "error", "-i", "in.mkv", "-map", "0:V:0"),
         *("-map", "0:a:0?", "-vf", "scale=-2:min(720\\,ih)"),
         *("-c:v", "libx264", "-preset", "veryfast", "-crf", "27", "-pix_fmt", "yuv420p"),
         *("-g", "30", "-fpsmax", "30", "-c:a", "aac", "-b:a", "128k"),

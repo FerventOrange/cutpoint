@@ -118,7 +118,7 @@ def proxy_args(
     start = ["-ss", f"{lo:.3f}"] if lo is not None else []
     length = ["-t", f"{hi - (lo or 0.0):.3f}"] if hi is not None else []
     return [
-        "ffmpeg", "-y", "-nostdin", "-v", "error", *start, "-i", str(real), "-map", "0:v:0",
+        "ffmpeg", "-y", "-nostdin", "-v", "error", *start, "-i", str(real), "-map", "0:V:0",
         *audio, "-vf", vf, *video,
         *(BT709_TAGS if color and color != TV_RANGE else []), *length,
         "-g", str(PROXY_GOP), "-fpsmax", str(PROXY_FPS_MAX),

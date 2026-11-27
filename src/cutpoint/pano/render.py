@@ -585,10 +585,10 @@ class _Runs:
         are not)."""
         dl = gpu_chain(dec, None)
         if not (self.src.projection == "dfisheye" and len(self.src.inputs) == 2):
-            return f"[0:v]{dl}," if dl else "[0:v]"
+            return f"[0:V]{dl}," if dl else "[0:V]"
         if not dl:
-            return "[0:v][1:v]hstack=inputs=2,"
-        return f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,"
+            return "[0:V][1:V]hstack=inputs=2,"
+        return f"[0:V]{dl}[d0];[1:V]{dl}[d1];[d0][d1]hstack=inputs=2,"
 
     def args_for(
         self, enc: VideoEncoder, dec: HwDecoder | None, dst: Path, prog: Path | None = None

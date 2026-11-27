@@ -405,6 +405,21 @@ def test_camera_tag_reason_names_the_maker():
         assert reason == [f"camera tags ({maker.lower()})"]
 
 
+def test_metadata_reads_the_video_tags_not_the_cover_art_first_in_the_list():
+    cover = {
+        "codec_type": "video",
+        "disposition": {"attached_pic": 1},
+        "tags": {"handler_name": "CoverHandler"},
+    }
+    video = {
+        "codec_type": "video",
+        "disposition": {"attached_pic": 0},
+        "tags": {"handler_name": "VideoHandle"},
+    }
+    assert category._metadata({"streams": [cover, video]})["handler"] == "VideoHandle"
+    assert category._metadata({"streams": [cover]})["handler"] == "CoverHandler"  # all there is
+
+
 @pytest.fixture
 def faked_probe(home, tmp_path, monkeypatch):
     """``probe_source`` of a tiny file with ffprobe, the telemetry check and the frame probe
