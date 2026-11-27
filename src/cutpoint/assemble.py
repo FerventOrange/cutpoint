@@ -89,6 +89,7 @@ from cutpoint.ffmpeg_utils import (
     run,
 )
 from cutpoint.planning import EXACT_AUDIO_FADE_S, manifest_entries
+from cutpoint.projectfiles import FINAL_VERTICAL, FINAL_VIDEO
 from cutpoint.timeline import clip_offsets, per_join, write_timeline
 from cutpoint.transcribe import Transcriber, split_markers
 from cutpoint.utils import clip_files
@@ -1745,7 +1746,7 @@ def assemble_project(
         raise jsonout.ArgumentError(
             "--force replaces kept clips; assembling a project into an mp4 keeps none"
         )
-    out = out or project / ("final_vertical.mp4" if export.vertical else "final.mp4")
+    out = out or project / (FINAL_VERTICAL if export.vertical else FINAL_VIDEO)
     with temporary_clips(project) as tmp:
         export_clips(project, selection=selection, options=export, out_dir=tmp, temporary=True)
         return assemble(tmp, out, join=join)

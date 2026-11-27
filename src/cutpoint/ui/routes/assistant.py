@@ -26,6 +26,7 @@ from cutpoint.config import (
     vision_assistant_settings,
 )
 from cutpoint.pano import project as pano_project
+from cutpoint.projectfiles import EVENTS_JSON, TRANSCRIPT
 from cutpoint.ui.analysis import ProjectStyle, _color_after, _color_state, _flag, _seconds
 from cutpoint.ui.common import EVENT_TAILS, MAX_EXTEND_S, MAX_TIMING_S, REVERT, UI_DIR, bad
 from cutpoint.ui.files import _highlights, _inside, _load, _own, _ui_folder, read_meta
@@ -225,11 +226,11 @@ def start_turn(request: Request, pid: str, body: dict[str, Any]):
     segments = validate_segments(raw, sources.entries(p), media)
     moments, durations, key = assistant_state(app, p, segments)
     transcript = ""
-    if _inside(p, "transcript.txt"):
+    if _inside(p, TRANSCRIPT):
         with contextlib.suppress(OSError, UnicodeDecodeError):
-            transcript = (p / "transcript.txt").read_text(encoding="utf-8-sig")
+            transcript = (p / TRANSCRIPT).read_text(encoding="utf-8-sig")
     # the events VLM windows: what the vision model saw, which find_moments searches
-    windows = ai_context.vlm_windows(_load(p, "events.json"))
+    windows = ai_context.vlm_windows(_load(p, EVENTS_JSON))
     # preview_ranking: an analyzed project that is not 360, ranked in its recorded style
     meta, hl = read_meta(p), _highlights(p)
     ranking = None

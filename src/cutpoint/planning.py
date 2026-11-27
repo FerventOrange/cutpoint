@@ -36,6 +36,7 @@ from cutpoint import (
 from cutpoint.config import path_key
 from cutpoint.events.tails import load_events
 from cutpoint.ffmpeg_utils import MediaInfo
+from cutpoint.projectfiles import MANIFEST
 from cutpoint.styles import style_name
 from cutpoint.utils import clip_files
 
@@ -400,7 +401,7 @@ def report_clips(out_dir: Path) -> None:
     its manifest.json and, from it, each clip with its subtitles, the count and total length."""
     if not jsonout.active():
         return
-    entries = (cache.load_json(out_dir / "manifest.json") or {}).get("clips", [])
+    entries = (cache.load_json(out_dir / MANIFEST) or {}).get("clips", [])
     clips = [
         {
             "file": out_dir / e["file"],
@@ -414,7 +415,7 @@ def report_clips(out_dir: Path) -> None:
         for e in entries
     ]
     jsonout.output("clips_dir", out_dir)
-    jsonout.output("manifest", out_dir / "manifest.json")
+    jsonout.output("manifest", out_dir / MANIFEST)
     jsonout.output("clips", clips)
     jsonout.output("count", len(clips))
     jsonout.output("total_seconds", round(sum(c["end"] - c["start"] for c in clips), 3))
@@ -434,7 +435,7 @@ def foreign_manifest(folder: Path) -> str | None:
     is none. One with ``generator`` ``"cutpoint"`` is; one without (written before that key
     existed) is when it lists clips as cutpoint does, a ``clips`` list of entries with a
     ``file`` name."""
-    path = folder / "manifest.json"
+    path = folder / MANIFEST
     if not (path.exists() or path.is_symlink()):
         return None
     data = cache.load_json(path)
@@ -542,7 +543,7 @@ def manifest_entries(folder: Path, files: list[Path]) -> dict[str, dict[str, Any
     such entry and one such clip match. Entries without ``size`` (written before it was
     recorded) match by name only. Clips with neither are left out.
     """
-    manifest = cache.load_json(folder / "manifest.json")
+    manifest = cache.load_json(folder / MANIFEST)
     listed = manifest.get("clips") if isinstance(manifest, dict) else None
     if not isinstance(listed, list):
         return {}
@@ -587,7 +588,7 @@ def kept_why(kept: list[str], renamed: dict[str, str], had_manifest: bool) -> st
 def _listed_pairs(out_dir: Path) -> list[tuple[str | None, str | None]] | None:
     """``(clip, .srt)`` names of each entry of the manifest.json in ``out_dir`` (None for a
     missing or invalid one), or None if there is no readable manifest.json."""
-    manifest = cache.load_json(out_dir / "manifest.json")
+    manifest = cache.load_json(out_dir / MANIFEST)
     entries = manifest.get("clips") if isinstance(manifest, dict) else None
     if not isinstance(entries, list):
         return None

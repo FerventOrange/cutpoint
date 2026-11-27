@@ -21,6 +21,7 @@ import requests
 from cutpoint import cache, jsonout, memguard, projectfiles
 from cutpoint.backends import ollama_post, ollama_ps, ollama_url
 from cutpoint.errors import LowMemoryError
+from cutpoint.projectfiles import TRANSCRIPT
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ def load_transcript_lines(project: Path) -> list[dict[str, Any]]:
     text of the analysis in progress, see :func:`pending_highlights`)."""
     text = _PENDING_TRANSCRIPTS.get(project.resolve()) if _PENDING_TRANSCRIPTS else None
     if text is None:
-        path = project / "transcript.txt"
+        path = project / TRANSCRIPT
         if not path.exists():
             return []
         text = path.read_text(encoding="utf-8")

@@ -17,7 +17,7 @@ from cutpoint import backends, cache, projectfiles, scorer
 from cutpoint.config import path_key
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import is_nominated, number_candidates, restore_widened
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS
 from cutpoint.reanalyze import _recorded_style
 from cutpoint.styles import ACTION_CAM, Style
 
@@ -312,7 +312,7 @@ def rebuild_crash_moments(project: Path) -> bool:
         # same, else the new moment with its id
         same = all(old.get(k) == new.get(k) for k in (*CRASH_MARKS, "must_include"))
         kept.append(old if same else ({"id": old["id"]} if "id" in old else {}) | new)
-    ev = cache.load_json(project / "events.json")
+    ev = cache.load_json(project / EVENTS_JSON)
     if fresh and ev:  # menu time drops or trims a new one as analyze does, so it takes no id
         menu_hl = {
             "style": hl.get("style") or style.name,

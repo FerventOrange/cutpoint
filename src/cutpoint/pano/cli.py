@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from cutpoint import cache, jsonout, progress, runstate
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS, MANIFEST, MIX_SEGMENTS, PANO_TIMINGS
 from cutpoint.utils import file_stamp, parse_size, positive_float, positive_int
 
 logger = logging.getLogger("cutpoint")
@@ -104,7 +104,7 @@ def _set_folder_project(folder: Path) -> None:
     _set_clips_project(folder)
 
 
-TIMINGS_FILE = "pano_timings.json"
+TIMINGS_FILE = PANO_TIMINGS
 STALE_TIMINGS_KEPT = "stale_timings_kept"  # --json warning: an earlier run's timings not removed
 DUPLICATE_CLIP_NUMBERS = "duplicate_clip_numbers"  # --json warning: recordings share a number
 
@@ -395,7 +395,7 @@ def _analyze(a: argparse.Namespace, project: Path, steps: progress.Run, kept: li
             )
             rescored = reanalyze_if_reachable(project)
         timings["events_s"] = round(time.perf_counter() - t2, 1)
-        jsonout.output("events", project / "events.json")
+        jsonout.output("events", project / EVENTS_JSON)
         _plan_paths(project, timings)
         _save_timings(project, timings, t_start)
     except BaseException:  # Ctrl+C too (one held until analyze's commit included); re-raised
@@ -1062,7 +1062,7 @@ def cmd_stitch(a: argparse.Namespace) -> None:
     else:
         sources: list[str] = []
         if a.from_clips:
-            man = cache.load_json(_folder(a.from_clips, project) / "manifest.json") or {}
+            man = cache.load_json(_folder(a.from_clips, project) / MANIFEST) or {}
             sources = [e["source"] for e in man.get("clips", [])]
         elif a.segments:
             from cutpoint.clips import load_segments  # noqa: PLC0415
@@ -1476,7 +1476,7 @@ def add_parser(sub: Any) -> None:
     rp.add_argument("project")
     rp.add_argument(
         "--segments",
-        default="mix_segments.json",
+        default=MIX_SEGMENTS,
         help="the mix segments file, or one not written by cutpoint mix "
         "([{source, start, end, label}]: clips are only trimmed or dropped, nothing is refilled)",
     )

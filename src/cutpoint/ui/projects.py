@@ -35,7 +35,7 @@ from cutpoint.clips import MIN_EXPORT_S
 from cutpoint.config import get_config, projects_dir, remap_source
 from cutpoint.events import scoring
 from cutpoint.pano import x3
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import CRASHES, EVENTS_JSON, HIGHLIGHTS, MANIFEST, PANO_TIMINGS
 from cutpoint.segments import MAX_SEGMENTS, check_segments, span_id
 from cutpoint.ui.common import (
     BUSY_TEXT,
@@ -522,7 +522,7 @@ def analysis_took(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) -> f
     ``highlights.json`` alone, keeps the earlier analysis keys and time and adds
     ``views_only_s``); None when they are missing, as in an older file."""
     if meta.get("kind") == "360":
-        pano = _load(p, "pano_timings.json")
+        pano = _load(p, PANO_TIMINGS)
         pano = pano if isinstance(pano, dict) else {}
         if _secs(pano.get("analyze_s")) is not None and (whole := _secs(pano.get("total_s"))):
             return whole
@@ -684,7 +684,7 @@ def _events_sig(p: Path) -> str | None:
     ``+``, a missing file skipped), which changes when a run rewrites either; None when both are
     missing."""
     parts = []
-    for name in ("events.json", "crashes.json"):
+    for name in (EVENTS_JSON, CRASHES):
         try:
             st = (p / name).stat()
         except OSError:
@@ -701,7 +701,7 @@ def _rail_events(p: Path) -> list[dict[str, Any]]:
     telemetry crash of events.json already covers (``kind`` telemetry, ``type`` crash). No model
     descriptions and no coverage spans. At most ``EVENTS_MAX`` (the most confident), by start.
     [] when there are none or the files are unreadable."""
-    doc = _load(p, "events.json")
+    doc = _load(p, EVENTS_JSON)
     raw = doc.get("events") if isinstance(doc, dict) else None
     out = []
     for e in raw if isinstance(raw, list) else []:
@@ -742,7 +742,7 @@ def _crash_events(p: Path, have: list[dict[str, Any]]) -> list[dict[str, Any]]:
     floor (:func:`cutpoint.crash.crash_floor` of every confidence in the file)."""
     from cutpoint.crash import crash_floor  # noqa: PLC0415
 
-    doc = _load(p, "crashes.json")
+    doc = _load(p, CRASHES)
     raw = doc.get("crashes") if isinstance(doc, dict) else None
     known = [
         (e["source"], e["start"], e["end"])
@@ -946,7 +946,7 @@ def resumed(p: Path, rec: dict[str, Any], outputs: dict[str, Any], stamp: str) -
         not SAFE_NAME.fullmatch(name)
         or not _inside(p, name)
         or (p / name).resolve() != Path(clips_dir).resolve()
-        or not (p / name / "manifest.json").is_file()
+        or not (p / name / MANIFEST).is_file()
     ):
         return  # not a clips folder of this project (an --out elsewhere)
     final = outputs.get("final") if command == "edit" else None
@@ -968,7 +968,7 @@ def current_export(p: Path) -> dict[str, Any] | None:
         (
             e
             for e in reversed(load_exports(p))
-            if (p / e["dir"] / "manifest.json").is_file()
+            if (p / e["dir"] / MANIFEST).is_file()
             and _inside(p, e["dir"])
             and _inside(p, f"{e['dir']}/manifest.json")
         ),

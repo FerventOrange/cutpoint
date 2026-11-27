@@ -15,7 +15,7 @@ from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import FolderBusyError
 from cutpoint.pano import x3
 from cutpoint.pano.project import default_style as pano_style
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS, MANIFEST, PANO
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
     ProjectStyle,
@@ -78,9 +78,7 @@ def list_projects():
     for d in sorted(root.iterdir()) if root.is_dir() else []:
         try:
             # a command-line 360 project (pano.json, no UI meta) is not listed
-            if not d.is_dir() or (
-                (d / "pano.json").exists() and not (d / UI_DIR / "meta.json").is_file()
-            ):
+            if not d.is_dir() or ((d / PANO).exists() and not (d / UI_DIR / "meta.json").is_file()):
                 continue
             project_dir(d.name)  # listed only if it opens: the same name, folder and link rules
         except HTTPException:
@@ -205,10 +203,10 @@ def get_project(request: Request, pid: str):
     hl = _highlights(p)
     review = _load(p, f"{UI_DIR}/review.json")
     exp = current_export(p)
-    manifest = cache.load_json(p / exp["dir"] / "manifest.json") if exp else None
+    manifest = cache.load_json(p / exp["dir"] / MANIFEST) if exp else None
     outputs = output_names(p)
     listing, found, source_error = source_views(request, pid, p)
-    highlights = moments_view(hl, _load(p, "events.json"))
+    highlights = moments_view(hl, _load(p, EVENTS_JSON))
     last_run = run_state(p, hl is not None)
     if highlights is not None and meta.get("kind") == "360":
         # #517: flags of each moment's cached camera path and its director preview (null:
