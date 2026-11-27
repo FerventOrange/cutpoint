@@ -437,6 +437,27 @@ def audio_sources(client: TestClient, tmp_path: Path) -> tuple[str, dict[str, st
     return pid, ids, ui.project_dir(pid) / ui.UI_DIR / "envelope"
 
 
+@pytest.fixture
+def envelope_spawns(monkeypatch: pytest.MonkeyPatch) -> list[tuple[list[str], dict[str, object]]]:
+    """Spawn the envelope's ffmpeg at normal priority; the (args, kwargs) of each spawn as it
+    reached the real ``spawn``.
+
+    The writer spawns at low priority (BELOW_NORMAL on Windows), which starves these tests on a
+    busy machine. Tests that wait on a real decode use this; production keeps low priority, and
+    the recorded kwargs show what the writer asked for.
+    """
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    real_spawn = ui.spawn
+
+    def spawn_normal(args: list[str], **kw: object):
+        kw = {**kw, "low_priority": False}
+        calls.append((args, kw))
+        return real_spawn(args, **kw)
+
+    patch_ui(monkeypatch, "spawn", spawn_normal)
+    return calls
+
+
 def get_envelope(client: TestClient, url: str, **kw: object):
     """GET ``url`` until the decode it queued is done (202 while it runs)."""
     deadline = time.monotonic() + 60
@@ -450,14 +471,10 @@ def get_envelope(client: TestClient, url: str, **kw: object):
 def test_envelope_is_the_peak_level_per_bucket_and_cached(
     client: TestClient,
     audio_sources: tuple[str, dict[str, str], Path],
-    monkeypatch: pytest.MonkeyPatch,
+    envelope_spawns: list[tuple[list[str], dict[str, object]]],
 ) -> None:
     pid, ids, folder = audio_sources
-    calls: list[list[str]] = []
-    real_spawn = ui.spawn
-    patch_ui(
-        monkeypatch, "spawn", lambda args, **kw: (calls.append(args), real_spawn(args, **kw))[1]
-    )
+    calls = envelope_spawns
     url = f"/api/projects/{pid}/sources/{ids['tone.mp4']}/envelope"
 
     assert client.get(url).status_code == 202  # queued: the page asks again
@@ -474,6 +491,7 @@ def test_envelope_is_the_peak_level_per_bucket_and_cached(
 
     assert client.get(url).json() == data
     assert len(calls) == 1  # the second request came from the cache
+    assert calls[0][1]["low_priority"] is False  # the fixture is in effect, not a silent no-op
 
 
 @needs_ffmpeg
@@ -647,6 +665,7 @@ def test_an_envelope_decode_failing_in_any_way_is_stored_not_requeued(
 def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
     client: TestClient,
     audio_sources: tuple[str, dict[str, str], Path],
+    envelope_spawns: list[tuple[list[str], dict[str, object]]],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -655,8 +674,8 @@ def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
     shutil.copyfile(tmp_path / "tone.mp4", first)
     shutil.copyfile(tmp_path / "tone.mp4", second)
     started, release = threading.Event(), threading.Event()
-    spawned: list[list[str]] = []
-    real_spawn, real_folder = ui.spawn, ui._ui_folder
+    spawned = envelope_spawns
+    real_folder = ui._ui_folder
 
     def stuck(project: Path, name: str) -> Path:
         started.set()
@@ -677,9 +696,6 @@ def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
     clock = Clock()
     monkeypatch.setattr(media_module, "time", clock)
     patch_ui(monkeypatch, "_ui_folder", stuck)
-    patch_ui(
-        monkeypatch, "spawn", lambda args, **kw: (spawned.append(args), real_spawn(args, **kw))[1]
-    )
     media = client.app.state.media
     project = ui.project_dir(pid)
     try:
@@ -699,6 +715,7 @@ def test_an_envelope_nobody_asks_for_any_more_is_dropped_from_the_queue(
 def test_a_cached_envelope_answers_while_another_source_decodes(
     client: TestClient,
     audio_sources: tuple[str, dict[str, str], Path],
+    envelope_spawns: list[tuple[list[str], dict[str, object]]],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
