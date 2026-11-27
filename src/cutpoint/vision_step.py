@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from cutpoint import config, default_fit, jsonout, progress, scorer
+from cutpoint import config, default_fit, jsonout, pool_record, progress, scorer
 from cutpoint.config import remap_source
 from cutpoint.events.scoring import heard_laughter, rescore
 from cutpoint.styles import ACTION_CAM, Style
@@ -348,15 +348,13 @@ def _vision_step(
         # machine): no request, no cached ratings either
         steps.skip("vision", rater.warn_consent())
     else:
-        from cutpoint.visual_pool import is_pool  # noqa: PLC0415
-
         # the default edit and the band below its cut, from the ranking before vision
         ranked = sorted(
-            (c for c in cands if not c.get("must_include") and not is_pool(c)),
+            (c for c in cands if not c.get("must_include") and not pool_record.is_pool(c)),
             key=scorer.edit_rank_key,
         )
         picks = default_fit.fit_target(
-            sorted((c for c in cands if not is_pool(c)), key=scorer.edit_rank_key),
+            sorted((c for c in cands if not pool_record.is_pool(c)), key=scorer.edit_rank_key),
             style.target_total,
         )
         order, cut, k = vision_band(ranked, picks, vision_top)

@@ -17,6 +17,7 @@ from cutpoint import backends, cache, projectfiles, scorer
 from cutpoint.config import path_key
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import is_nominated, number_candidates, restore_widened
+from cutpoint.pool_record import is_pool
 from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS
 from cutpoint.reanalyze import _recorded_style
 from cutpoint.styles import ACTION_CAM, Style
@@ -248,7 +249,6 @@ def rebuild_crash_moments(project: Path) -> bool:
     )
     from cutpoint.crash import load_crashes  # noqa: PLC0415
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415
 
     path = project / HIGHLIGHTS
     hl = projectfiles.load_highlights(project)

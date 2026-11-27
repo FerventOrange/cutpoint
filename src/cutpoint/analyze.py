@@ -45,6 +45,7 @@ from cutpoint import (
     intervals,
     jsonout,
     memguard,
+    pool_record,
     progress,
     reanalyze,
     repeats,
@@ -2522,7 +2523,7 @@ def _visual_pool(
                 "signals": w.signals,
                 "label": visual_pool.LABELS[w.kind],
                 "kind": w.kind,
-                "pool": visual_pool.POOL,
+                "pool": pool_record.POOL,
                 "transcript": transcript,
                 **({"transcript_unsure": unsure} if unsure else {}),
             }
@@ -3568,7 +3569,7 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
 
     if visual_pool.project_has_pool(saved):  # absent for the other styles
         cands = saved.get("candidates") or []
-        jsonout.output("visual_candidates", sum(visual_pool.is_pool(c) for c in cands))
+        jsonout.output("visual_candidates", sum(pool_record.is_pool(c) for c in cands))
     if "suggested_top" in saved:
         jsonout.output("suggested_top", saved["suggested_top"])
     jsonout.output("style", saved.get("style"))

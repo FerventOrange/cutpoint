@@ -33,6 +33,8 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from cutpoint import default_fit, features
+from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve
+from cutpoint.pool_record import is_pool
 from cutpoint.sources import settings_language
 from cutpoint.styles import analysis_names
 from cutpoint.vision_record import sync_vision, vision_skipped
@@ -161,7 +163,6 @@ def apply_vision_clamp(cands: list[dict[str, Any]], before: Sequence[float | Non
     the final sort places it by its ``grid_score`` and :func:`tie_key`. A tie that would not
     reorder stays a tie. The result depends only on the records, not on their order in
     ``cands``, so a rescore gives the same scores."""
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
 
     def pre(i: int) -> float:
         b = before[i]
@@ -246,9 +247,7 @@ def rescore_events(
     (:mod:`cutpoint.visual_pool`) are left as they are, last, in their order, and outside
     ``suggested_top``.
     """
-    from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module
-    from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, resolve  # noqa: PLC0415
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports this
+    from cutpoint.events import scoring  # noqa: PLC0415 - the evidence; imports this module, and requests
 
     hl.setdefault("candidates", [])  # nominate appends to it
     scoring.put_vlm_labels(hl["candidates"])  # the labels of the analysis; named again below
@@ -338,7 +337,7 @@ def rescore_events(
         hl["suggested_top"] = n
     hl.setdefault("settings", {})["events_rescored"] = ev.get("created")
     # what the overlay layer did (#1069 (c)); absent when it did not look (gameplay, no extra)
-    from cutpoint.events.overlays import summary  # noqa: PLC0415
+    from cutpoint.events.overlays import summary  # noqa: PLC0415 (requests: off the scorer import)
 
     overlays = summary((ev.get("stats") or {}).get("overlays"))
     if overlays is None:

@@ -29,6 +29,7 @@ from cutpoint import (
     default_fit,
     folders,
     jsonout,
+    pool_record,
     projectfiles,
     sources,
     visual_pool,
@@ -103,7 +104,7 @@ def select_moments(
     )
     cands: list[dict[str, Any]] = data["candidates"]
     pool = (
-        [c for c in cands if visual_pool.is_pool(c)] if visual_pool.project_has_pool(data) else []
+        [c for c in cands if pool_record.is_pool(c)] if visual_pool.project_has_pool(data) else []
     )
     if ids:
         by_id = {c["id"]: c for c in cands}
@@ -112,7 +113,7 @@ def select_moments(
             raise jsonout.ArgumentError(f"Unknown ids: {', '.join(missing)}")
         chosen = [by_id[i] for i in ids]
     else:
-        ranked = sorted((c for c in cands if not visual_pool.is_pool(c)), key=lambda c: -c["score"])
+        ranked = sorted((c for c in cands if not pool_record.is_pool(c)), key=lambda c: -c["score"])
         target = (data.get("settings") or {}).get("target_total")
         n = (
             top

@@ -52,6 +52,7 @@ from cutpoint.events.eventtypes import (
 )
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
+from cutpoint.pool_record import is_pool
 from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
 from cutpoint.sources import settings_language
 from cutpoint.styles import analysis_style, get_style, style_and_base
@@ -757,8 +758,6 @@ def widen_for_dialogue(
     stretch's description in ``dialogue_description``. The widened candidate takes the title of
     the most confident stretch that widened it (``dialogue_title``, and its slug as the label;
     :func:`restore_widened` gives the label back). Returns how many candidates were widened."""
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
-
     widened: list[dict[str, Any]] = []  # each widened candidate once
     for src, evs in by_src.items():
         stretches = sorted(
@@ -882,7 +881,6 @@ def nominate(
     A new one has no id (:func:`number_candidates`).
     """
     from cutpoint import analyze  # noqa: PLC0415 - imports this module
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415 - imports actioncam, which imports us
 
     try:  # a deleted user style nominates with its recorded base (logged by the caller)
         style = analysis_style(hl, logging.DEBUG)
