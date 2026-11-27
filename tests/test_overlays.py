@@ -208,6 +208,10 @@ PROSE_NOTHING = [
     "I found no overlays in this frame, so I'm marking nothing.",
     "I don't see any scoreboard, gauge, clock, logo, caption or other overlay in this frame, "
     "so I'm marking nothing.",
+    "I found no overlays in the image, so I'm marking nothing.",
+    "I don't see any overlays in the frame.",
+    "No overlays are visible in the screenshot.",
+    "There are no overlays in this image.",
 ]
 
 
@@ -243,6 +247,9 @@ def test_prose_nothing_gives_the_same_result_as_an_empty_json_answer(world, monk
         "I do not see any image. Please upload it.",
         "There are no other overlays besides the scoreboard in the top-left corner.",
         "I see no scoreboard; there is only a channel logo.",
+        "I'm unable to view images, so I'm marking nothing.",
+        "I did not receive a picture, so nothing to mark.",
+        "No overlays, just a watermark in the corner.",
     ],
 )
 def test_a_garbage_reply_is_still_no_answer(world, monkeypatch, caplog, reply) -> None:

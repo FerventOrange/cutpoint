@@ -1542,11 +1542,18 @@ _NOTHING_RE = re.compile(
     r"|nothing (?:is |was )?(?:found|visible))\b",
     re.I,
 )
-# a contrast ("but a scoreboard"), or talk about the input itself ("I don't see any image")
+_IMG = r"(?:images?|pictures?|photos?|screenshots?|attachments?|frames?)"
+# a contrast ("but a scoreboard", "just a watermark"), or talk about the input itself that
+# never arrived ("I don't see any image", "I'm unable to view images"); "no overlays in the
+# image" is not that
 _NOT_NOTHING_RE = re.compile(
     r"\b(?:but|however|except|besides|apart from|aside from|other than|although|though|while"
-    r"|only|yet|attach\w*|upload\w*"
-    r"|(?:any|no|the) (?:images?|pictures?|photos?|screenshots?|attachments?|frames?))\b",
+    r"|only|yet|just|save for|there (?:is|are) (?:a|an|one|some)|attach\w*|upload\w*"
+    r"|(?:any|no) (?:images?|pictures?|photos?|screenshots?|attachments?)"
+    rf"|(?:see|view|open|access|load|receiv\w*|get|got|provided?|sent|shared?) (?:\w+ )?{_IMG}"
+    rf"|{_IMG} (?:\w+ ){{0,2}}(?:provided|attached|uploaded|sent|shared|received|loaded|arrived"
+    r"|came through|come through)"
+    r"|(?:didn.t|did not|never|wasn.t|was not) (?:come through|arrive\w*|load\w*|included))\b",
     re.I,
 )
 _NOTHING_MAX = 300  # chars: a longer reply is more than a plain "nothing here"
