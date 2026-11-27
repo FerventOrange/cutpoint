@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 import os
 import stat
 import tempfile
@@ -10,6 +11,8 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _posix_path(path: Path) -> Path:
@@ -225,9 +228,11 @@ def _win_check_ancestors(path: Path) -> None:
             None,
         )
         if handle == wintypes.HANDLE(-1).value:
-            if ctypes.get_last_error() in (2, 3):
+            code = ctypes.get_last_error()
+            if code in (2, 3):
                 break
-            raise PermissionError("cannot safely inspect private path")
+            logger.debug("CreateFileW failed on %s: Windows error %s", current, code)
+            raise PermissionError(f"cannot safely inspect private path: cannot open {current}")
 
         class _Info(ctypes.Structure):
             _fields_ = (
@@ -249,9 +254,13 @@ def _win_check_ancestors(path: Path) -> None:
         try:
             info = _Info()
             if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
-                raise PermissionError("cannot safely inspect private path")
-            if info.attributes & 0x400 or not info.attributes & 0x10:
-                raise PermissionError("unsafe private path")
+                code = ctypes.get_last_error()
+                logger.debug("GetFileInformationByHandle failed on %s: error %s", current, code)
+                raise PermissionError(f"cannot safely inspect private path: cannot read {current}")
+            if info.attributes & 0x400:
+                raise PermissionError(f"unsafe private path: {current} is a reparse point")
+            if not info.attributes & 0x10:
+                raise PermissionError(f"unsafe private path: {current} is not a folder")
         finally:
             kernel32.CloseHandle(handle)
 
