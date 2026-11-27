@@ -85,6 +85,7 @@ from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
 from cutpoint.styles import (
     ACTION_CAM,
+    ACTION_STYLES,
     AUTO,
     PROFANITY,
     AutoRequest,
@@ -1845,7 +1846,6 @@ def find_sources(
 
 # --------------------------------------------------------------------------- analysis steps
 GAME_STYLES = ("gaming", "funny")  # keyframes: HUD OCR (with region discovery)
-ACTION_STYLES = ("action", "sport", ACTION_CAM)  # keyframes: CLIP; crash detection
 # Skip reasons of plan_layers (the PROGRESS ``detail``) and, for keyframes, why
 # crashes.json has no visual layer (its ``no_visual_layer`` warning).
 SKIP_OPTION = "left out by --skip or analysis.skip"
