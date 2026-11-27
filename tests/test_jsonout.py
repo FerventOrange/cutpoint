@@ -385,3 +385,18 @@ def test_assemble_audio_transition_reaches_assemble(monkeypatch, tmp_path, extra
     args = cli.build_parser().parse_args(["assemble", str(tmp_path), *extra])
     cli._cmd_assemble(args)
     assert calls[0]["join"].audio_transition == audio
+
+
+def test_log_warn_logs_on_the_given_logger_and_records(tmp_path, caplog):
+    mine = logging.getLogger("cutpoint.mine")
+    with caplog.at_level(logging.WARNING), jsonout.run("x") as result:
+        jsonout.log_warn("c", "100% sure", [tmp_path / "f"], logger=mine)
+        jsonout.log_warn("d", "plain")
+    assert [(r.name, r.levelno, r.getMessage()) for r in caplog.records] == [
+        ("cutpoint.mine", logging.WARNING, "100% sure"),
+        ("cutpoint.jsonout", logging.WARNING, "plain"),
+    ]
+    assert result.warnings == [
+        {"code": "c", "message": "100% sure", "files": [str(tmp_path / "f")]},
+        {"code": "d", "message": "plain", "files": []},
+    ]

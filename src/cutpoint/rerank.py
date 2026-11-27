@@ -48,7 +48,7 @@ from cutpoint import (
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
-from cutpoint.projectfiles import HIGHLIGHTS, RERANK_BACKUP, check_candidates
+from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS, RERANK_BACKUP, check_candidates
 from cutpoint.scenes import scores_scenes
 from cutpoint.styles import ACTION_CAM, Style, style_hash
 from cutpoint.utils import command_line
@@ -314,7 +314,7 @@ def _has_audio(src: Path) -> bool:
 
 def _events_layers(project: Path) -> tuple[set[str], list[dict[str, Any]]]:
     """The layers the project's events.json was made with, and its events (none without)."""
-    ev = cache.load_json(project / "events.json")
+    ev = cache.load_json(project / EVENTS_JSON)
     if not isinstance(ev, dict):
         return set(), []
     layers = (ev.get("settings") or {}).get("layers") or []

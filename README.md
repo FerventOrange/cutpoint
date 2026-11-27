@@ -74,13 +74,13 @@ torch build for your machine.
 Linux and macOS:
 
 ```bash
-curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
+curl -LsSf https://github.com/FerventOrange/cutpoint/releases/latest/download/install.sh | sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+irm https://github.com/FerventOrange/cutpoint/releases/latest/download/install.ps1 | iex
 ```
 
 - For lite mode (no torch, no Ollama), end the Linux and macOS command with `| sh -s -- --lite`,

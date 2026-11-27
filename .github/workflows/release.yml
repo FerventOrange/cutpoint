@@ -11,9 +11,12 @@ permissions:
 
 jobs:
   build:
-    # ffmpeg-* releases are asset mirrors for CI and Docker (#836), not Cutpoint versions: skip the
-    # whole workflow (publish and installers need build, so they skip too).
-    if: github.event_name != 'release' || !startsWith(github.event.release.tag_name, 'ffmpeg-')
+    # ffmpeg-* (CI and Docker, #836) and models-* (model weights) releases are asset mirrors, not
+    # Cutpoint versions, and are never marked Latest (`gh release create --latest=false`, #1251):
+    # skip the whole workflow (publish and installers need build, so they skip too).
+    if: >-
+      github.event_name != 'release' || !(startsWith(github.event.release.tag_name, 'ffmpeg-')
+      || startsWith(github.event.release.tag_name, 'models-'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

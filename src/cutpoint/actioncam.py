@@ -84,6 +84,7 @@ from cutpoint import cache, features, scorer
 from cutpoint.config import path_key, source_path
 from cutpoint.dsp import bin_of
 from cutpoint.intervals import overlaps
+from cutpoint.projectfiles import EVENTS_JSON, TELEMETRY
 from cutpoint.telemetry import DT, Telemetry, extract, join_runs, paint_spans
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,7 @@ def prepare(
     runs = join_runs(good, quiet=quiet) if good else {}
     ctx = ActionCamContext(project=project, telemetry=tels, speed_ref=speed_ref, runs=runs)
     ctx.unreadable = list(guard.failed)
-    ev = cache.load_json(project / "events.json")
+    ev = cache.load_json(project / EVENTS_JSON)
     if ev:
         for e in ev.get("events", []):
             if e.get("kind") == "audio":
@@ -258,7 +259,7 @@ def write_telemetry_json(project: Path, ctx: ActionCamContext) -> Path:
             for src, t in ctx.telemetry.items()
         },
     }
-    path = project / "telemetry.json"
+    path = project / TELEMETRY
     cache.save_json(path, data)
     day = data["day"] or {}
     if day:

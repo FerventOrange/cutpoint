@@ -66,6 +66,7 @@ import numpy as np
 
 from cutpoint import activity, cache, jsonout, memguard, progress
 from cutpoint.dsp import bin_of
+from cutpoint.projectfiles import CRASHES
 
 logger = logging.getLogger(__name__)
 # Why the run that calls detect_project has no visual layer (``analyze`` left the
@@ -93,7 +94,7 @@ IMU_VERSION = 1
 # Crops of a dense window's frames, kept in each window of the store; 2: portrait frames are
 # cropped along the height (#1085 A182)
 DENSE_CROPS = 2
-CRASHES_FILE = "crashes.json"
+CRASHES_FILE = CRASHES
 CHECK_DIR = "crash_check"
 # On-lift damping reaches this far past the event: the lift line and boarding
 # jostle the camera just before the ride, and the GPS lift mask starts up to

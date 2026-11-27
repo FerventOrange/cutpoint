@@ -69,6 +69,7 @@ from cutpoint.dsp import bin_of, mask_runs
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
 from cutpoint.pano import views
+from cutpoint.projectfiles import MIX_EXCLUDE, MIX_REPORT, MIX_SEGMENTS, MIX_SHEET, TELEMETRY
 from cutpoint.telemetry import DT
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ LENGTHS = {
 }
 MIN_MIX_PIECE_S = 2.5  # shortest clip left after cutting out excluded spans
 TRIM_FRAC = 0.75  # ... and at least this share of the category's LENGTHS minimum
-EXCLUDE_FILE = "mix_exclude.json"
+EXCLUDE_FILE = MIX_EXCLUDE
 CRASH_MAX_S = 12.0  # crash clip (approach, impact, aftermath) cap
 REACTION_MAX_S = 8.0
 LIFT_MIN_S = 20.0
@@ -519,7 +520,7 @@ def _runs_index(
 ) -> tuple[list[dict[str, Any]], dict[str, float | None]]:
     """Telemetry runs and each source's start (epoch; None if unknown) from telemetry.json,
     keyed by ``key`` (a cached :func:`~cutpoint.clips.source_key`)."""
-    tj = cache.load_json(project / "telemetry.json") or {}
+    tj = cache.load_json(project / TELEMETRY) or {}
     starts = {key(c["source"]): c.get("start_epoch") for c in tj.get("clips", [])}
     return tj.get("runs", []), starts
 
@@ -781,7 +782,7 @@ def run_mix(
     for seg, (s, c) in zip(segs, flat, strict=True):  # the profile's opener categories
         if s is c and c.category in pm.opener:
             seg["opener"] = True
-    out = out or project / "mix_segments.json"
+    out = out or project / MIX_SEGMENTS
     if previous is not None:
         prior = previous
     else:  # as written: a relative source is relative to the file's folder
@@ -819,7 +820,7 @@ def run_mix(
         length_window_s=length_window(target_s),
         opener=pm.opener or None,
     )
-    cache.save_json(out.with_name("mix_report.json"), report)
+    cache.save_json(out.with_name(MIX_REPORT), report)
     logger.info(
         "mix: %d segments, %.0f s; %s; %d/%d runs, %d sources -> %s",
         len(segs),
@@ -834,7 +835,7 @@ def run_mix(
     )
     failed = [k for k, v in report["content_qa"]["checks"].items() if not v["ok"]]
     logger.info("mix content QA: %s", f"FAIL ({', '.join(failed)})" if failed else "pass")
-    sheet_file = out.with_name("mix_sheet.jpg")
+    sheet_file = out.with_name(MIX_SHEET)
     report["sheet"] = _write_sheet(segs, sheet_file, pm.names) if sheet else None
     return report
 
@@ -854,9 +855,10 @@ def content_qa(
     """Edit-level content acceptance of play-ordered segments.
 
     Checks: at least :data:`QA_MIN_GROUPS` categories (lift and scenery count as
-    one), no category past ``max_share`` of the length (with fewer than 3 categories
-    that have candidates, what selection guarantees at the shortest accepted length:
-    ``1 / n`` of the budget over the lowest length, 60% with two, 100% with one),
+    one), no category past its share of the length: what selection guarantees at the
+    shortest accepted length (the share of the budget, ``max_share`` or ``1 / n`` with
+    fewer than 3 categories that have candidates, over the lowest length: 48% with 3+,
+    60% with two, 100% with one),
     no near-duplicate pairs,
     ``run_cover`` of the telemetry runs covered (skipped without runs), a lift /
     scenery opener and a length within ``length_window_s`` (:func:`length_window` of
@@ -893,10 +895,10 @@ def content_qa(
     first = segs[0].get("category") if segs else None
     views = bool(have & set(opener))
     lo, hi = length_window_s
-    cap = effective_share(r, len(have))
-    if cap > r.max_share:  # selection holds each category to 1/n of the budget; at the
-        # shortest accepted length that is this share of the edit
-        cap = min(1.0, cap * r.budget_frac / QA_LENGTH_FRAC[0])
+    # selection holds each category to its share of the budget; at the shortest accepted
+    # length that is this share of the edit (also with 3+ categories: an under-filled
+    # selection in the window still has each category up to ``max_share * budget``)
+    cap = min(1.0, effective_share(r, len(have)) * r.budget_frac / QA_LENGTH_FRAC[0])
     checks = {
         "categories": {"value": len(groups), "ok": len(groups) >= need_groups},
         "max_share": {"value": round(share, 3), "ok": share <= cap},

@@ -111,7 +111,7 @@ def probe_video_stream(path: Path) -> dict[str, Any]:
     try:
         data = ffprobe_json(
             path,
-            streams="v:0",
+            streams="V:0",
             entries="stream=width,height,nb_frames,avg_frame_rate,duration",
             timeout=120,
         )

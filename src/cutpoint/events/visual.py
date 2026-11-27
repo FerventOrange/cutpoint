@@ -195,7 +195,7 @@ def keyframe_spacing(path: Path, probe_s: float = KEYFRAME_PROBE_S) -> float | N
     try:
         data = ffprobe_json(
             path,
-            streams="v:0",
+            streams="V:0",
             entries="frame=pts_time",
             options=("-skip_frame", "nokey", "-read_intervals", f"%+{probe_s:g}"),
             timeout=60,

@@ -426,7 +426,7 @@ class TestRenderSegmentSendcmd:
         assert args.count("-hwaccel_device") == 2  # one per fisheye input, not the audio input
         dl = "hwdownload,format=nv12,format=yuv420p"
         graph = self._filter(args)
-        assert graph.startswith(f"[0:v]{dl}[d0];[1:v]{dl}[d1];[d0][d1]hstack=inputs=2,v360")
+        assert graph.startswith(f"[0:V]{dl}[d0];[1:V]{dl}[d1];[d0][d1]hstack=inputs=2,v360")
 
 
 # --------------------------------------------------------------------------- moved footage

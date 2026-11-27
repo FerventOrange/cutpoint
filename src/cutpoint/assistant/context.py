@@ -37,6 +37,7 @@ from typing import Any
 from cutpoint import state
 from cutpoint.config import source_path
 from cutpoint.events.scoring import LAUGH_STRONG
+from cutpoint.projectfiles import EVENTS_TXT, HIGHLIGHTS, TRANSCRIPT
 from cutpoint.utils import data_block
 
 CHARS_PER_TOKEN = 2.5  # of JSON, data blocks and tool results (2.0-2.4); prose has about 4
@@ -786,9 +787,9 @@ def rules(table: MomentTable, *, images: bool = False) -> str:
 
 # What a project file holds, for the model (:func:`project_files`).
 FILE_HOLDS = {
-    "transcript.txt": "the time-stamped transcript of the footage",
-    "highlights.json": "the analysis: the ranked moments with their scores",
-    "events.txt": "the detected events: sounds, on-screen events and what the vision model saw",
+    TRANSCRIPT: "the time-stamped transcript of the footage",
+    HIGHLIGHTS: "the analysis: the ranked moments with their scores",
+    EVENTS_TXT: "the detected events: sounds, on-screen events and what the vision model saw",
 }
 OUTPUT_HOLDS = {
     ".mp4": "a final video",

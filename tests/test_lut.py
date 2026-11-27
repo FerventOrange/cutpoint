@@ -131,7 +131,7 @@ def test_a_partial_grade_with_a_gpu_upload_stays_one_chain_to_v(monkeypatch):
                    Path("o.mp4"), fmt, False, None, 0.0, grade=lut)  # fmt: skip
     graph = _graph(calls[0])
     assert (
-        graph.startswith("[0:v:0]scale=")
+        graph.startswith("[0:V:0]scale=")
         and f"all_opacity=0.5,{TAG},format=yuv420p,format=nv12" in graph
     )
     assert graph.split(";[", 3)[2].endswith("hwupload[v]")

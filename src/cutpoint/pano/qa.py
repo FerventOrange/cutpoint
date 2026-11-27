@@ -88,6 +88,7 @@ import numpy as np
 
 from cutpoint import cache
 from cutpoint.pano import boxes as B
+from cutpoint.projectfiles import MANIFEST
 from cutpoint.utils import clip_files
 
 if TYPE_CHECKING:
@@ -801,7 +802,7 @@ def find_inputs(qa_dir: Path) -> list[dict[str, Any]]:
     from cutpoint.pano.director import validate_path  # noqa: PLC0415
 
     files = clip_files(qa_dir)
-    manifest = cache.load_json(qa_dir / "manifest.json")
+    manifest = cache.load_json(qa_dir / MANIFEST)
     out = []
     if manifest is not None:
         by_file = {e["file"]: e for e in manifest.get("clips", [])}
