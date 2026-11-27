@@ -807,8 +807,10 @@ class VisionRater:
             if reply is None:
                 return None
             if not isinstance(data, dict):
-                logger.warning("Vision reply has no JSON object: %.120s", reply)
-                return None
+                empty = _nothing_reply(reply, schema)
+                if empty is None:
+                    logger.warning("Vision reply has no JSON object: %.120s", reply)
+                return empty
             return data
         if self.consent_needed:
             self.warn_consent()
@@ -837,6 +839,9 @@ class VisionRater:
         tokens = body.get("prompt_eval_count")
         self.last_prompt_tokens = tokens if isinstance(tokens, int) else None
         if not isinstance(data, dict):
+            empty = _nothing_reply(content, schema)
+            if empty is not None:
+                return empty
             logger.warning(
                 "Vision reply has no JSON object (done_reason=%s): %.120s",
                 body.get("done_reason"),
@@ -1528,6 +1533,33 @@ def _json_object(content: str) -> object:
         return json.loads(content.strip())
     except ValueError:
         return None
+
+
+_NOTHING_RE = re.compile(
+    r"\b(?:marking nothing|nothing to (?:mark|report)|no (?:\w+ ){0,2}overlays?"
+    r"|(?:do not|donWt|cannot|canWt|did not|didnWt) (?:see|find) any"
+    r"|(?:found|see) no"
+    r"|nothing (?:is |was )?(?:found|visible))\b",
+    re.I,
+)
+_NOTHING_MAX = 300  # chars: a longer reply is more than a plain "nothing here"
+
+
+def _nothing_reply(content: object, schema: dict | None) -> dict | None:
+    """``{"elements": []}`` for a reply that is no JSON but plainly says there is nothing to
+    mark (hosted models sometimes answer an element-list ``schema`` in prose: "I found no
+    overlays in this frame, so I'm marking nothing."), else None. Narrow on purpose: only for
+    a schema that requires ``elements``, and the reply must be short, carry an explicit
+    negative phrase and nothing box-like (no digit, brace or bracket, no "but"/"however")."""
+    if not isinstance(content, str) or "elements" not in (schema or {}).get("required", ()):
+        return None
+    text = content.strip()
+    if not text or len(text) > _NOTHING_MAX or re.search(r"[\d{}\[\]]", text):
+        return None
+    if re.search(r"\b(?:but|however|except)\b", text, re.I) or not _NOTHING_RE.search(text):
+        return None
+    logger.debug("Vision reply is prose for no elements: %.120s", text)
+    return {"elements": []}
 
 
 def _matching(data: object, schema: dict | None, who: str = "") -> dict | None:

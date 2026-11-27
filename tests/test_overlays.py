@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 import pytest
 
-from cutpoint import jsonout, scorer
+from cutpoint import jsonout, scorer, vision
 from cutpoint.errors import LowMemoryError
 from cutpoint.events import eventtypes, hud_map, layers, overlays, pipeline, scoring
 from cutpoint.events.common import Source
@@ -174,6 +174,85 @@ def test_the_model_answering_nothing_usable_reads_nothing(world) -> None:
     world.rater.describe = lambda *a, **k: {"not": "elements"}
     out, stats = world.run()
     assert out == {} and stats["skipped"] == "no answer" and world.decodes == 0
+
+
+class _Via:
+    """A hosted Vision role stand-in answering with the next of ``replies`` (the last repeats)."""
+
+    finish = None
+
+    def __init__(self, replies: list[str]) -> None:
+        self.replies = replies
+        self.n = 0
+
+    def ask(self, prompt: str, images: list[bytes], schema: Any = None, accept: Any = None) -> str:
+        reply = self.replies[min(self.n, len(self.replies) - 1)]
+        self.n += 1
+        return reply
+
+    def available(self) -> bool:
+        return True
+
+
+def _hosted_replies(world, monkeypatch, replies: list[str]) -> _Via:
+    """The world's vision model is the real client over a hosted role giving ``replies``."""
+    real = vision.VisionRater(url="http://127.0.0.1:1", model="m")
+    via = _Via(replies)
+    real.via = via
+    monkeypatch.setattr(real, "check_memory", lambda *_a: None)
+    world.rater.describe = real.describe
+    return via
+
+
+PROSE_NOTHING = [
+    "I found no overlays in this frame, so I'm marking nothing.",
+    "I don't see any scoreboard, gauge, clock, logo, caption or other overlay in this frame, "
+    "so I'm marking nothing.",
+]
+
+
+@pytest.mark.parametrize("reply", PROSE_NOTHING)
+def test_a_prose_reply_of_nothing_is_an_empty_answer(world, monkeypatch, caplog, reply) -> None:
+    via = _hosted_replies(world, monkeypatch, [reply])
+    with caplog.at_level(logging.INFO):
+        out, stats = world.run()
+    assert via.n > overlays.STOP_AFTER  # never counted toward "no usable answer; stopping"
+    assert out == {} and "skipped" not in stats and stats["elements"] == []
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "no usable answer" not in caplog.text
+
+
+def test_prose_nothing_gives_the_same_result_as_an_empty_json_answer(world, monkeypatch) -> None:
+    _hosted_replies(world, monkeypatch, ['{"elements": []}'])
+    want = world.run()
+    for f in Path(world.src.cdir).rglob(overlays.VISION_FILE):
+        f.unlink()
+    _hosted_replies(world, monkeypatch, [PROSE_NOTHING[0]])
+    assert world.run() == want
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "Sorry, I cannot help with that.",
+        "garbage {not json",
+        "There is a scoreboard at 450, 25 but I found no overlays elsewhere.",
+        "I found no overlays [450, 25, 560, 110]",
+    ],
+)
+def test_a_garbage_reply_is_still_no_answer(world, monkeypatch, caplog, reply) -> None:
+    _hosted_replies(world, monkeypatch, [reply])
+    out, stats = world.run()
+    assert out == {} and stats["skipped"] == "no answer"
+
+
+def test_prose_nothing_among_real_answers_keeps_the_real_boxes(world, monkeypatch) -> None:
+    real = json.dumps(SCOREBOARD_ANSWER)
+    _hosted_replies(world, monkeypatch, [PROSE_NOTHING[0], real])
+    out, stats = world.run()
+    assert "skipped" not in stats
+    assert [e["kind"] for e in stats["elements"]] == ["scoreboard"]
+    assert len(out[str(world.src.path)]) == 3
 
 
 def test_an_overlay_of_a_kind_that_is_not_wanted_is_dropped(world) -> None:
