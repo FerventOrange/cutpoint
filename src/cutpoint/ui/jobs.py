@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import math
 import re
 import secrets
 import subprocess
@@ -26,6 +27,7 @@ from cutpoint.ui.common import (
     bad,
     finite_number,
     logger,
+    number_in,
     spawn,
 )
 
@@ -51,8 +53,7 @@ def parse_progress(line: str) -> dict[str, Any] | None:
     if (
         not isinstance(step, str)
         or not step
-        or not isinstance(index, int)
-        or isinstance(index, bool)
+        or number_in(index, -math.inf, integer=True) is None
         or state not in STEP_STATES
     ):
         return None
@@ -60,7 +61,7 @@ def parse_progress(line: str) -> dict[str, Any] | None:
     return {
         "step": step,
         "index": index,
-        "total": total if isinstance(total, int) and not isinstance(total, bool) else None,
+        "total": number_in(total, -math.inf, integer=True),
         "label": label if isinstance(label, str) and label else step,
         "state": state,
         "pct": None if pct is None else min(100.0, max(0.0, pct)),
@@ -172,7 +173,8 @@ class Job:
             out["error_code"] = self.error_code
         # clips, extend or a resumed export (#109): finished clips of a stopped export it kept
         taken = (self.result or {}).get("outputs", {}).get("taken_over")
-        if isinstance(taken, int) and not isinstance(taken, bool) and taken > 0:
+        taken = number_in(taken, 1, integer=True)
+        if taken is not None:
             out["taken_over"] = taken
         return out
 
