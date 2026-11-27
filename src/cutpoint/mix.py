@@ -855,9 +855,10 @@ def content_qa(
     """Edit-level content acceptance of play-ordered segments.
 
     Checks: at least :data:`QA_MIN_GROUPS` categories (lift and scenery count as
-    one), no category past ``max_share`` of the length (with fewer than 3 categories
-    that have candidates, what selection guarantees at the shortest accepted length:
-    ``1 / n`` of the budget over the lowest length, 60% with two, 100% with one),
+    one), no category past its share of the length: what selection guarantees at the
+    shortest accepted length (the share of the budget, ``max_share`` or ``1 / n`` with
+    fewer than 3 categories that have candidates, over the lowest length: 48% with 3+,
+    60% with two, 100% with one),
     no near-duplicate pairs,
     ``run_cover`` of the telemetry runs covered (skipped without runs), a lift /
     scenery opener and a length within ``length_window_s`` (:func:`length_window` of
@@ -894,10 +895,10 @@ def content_qa(
     first = segs[0].get("category") if segs else None
     views = bool(have & set(opener))
     lo, hi = length_window_s
-    cap = effective_share(r, len(have))
-    if cap > r.max_share:  # selection holds each category to 1/n of the budget; at the
-        # shortest accepted length that is this share of the edit
-        cap = min(1.0, cap * r.budget_frac / QA_LENGTH_FRAC[0])
+    # selection holds each category to its share of the budget; at the shortest accepted
+    # length that is this share of the edit (also with 3+ categories: an under-filled
+    # selection in the window still has each category up to ``max_share * budget``)
+    cap = min(1.0, effective_share(r, len(have)) * r.budget_frac / QA_LENGTH_FRAC[0])
     checks = {
         "categories": {"value": len(groups), "ok": len(groups) >= need_groups},
         "max_share": {"value": round(share, 3), "ok": share <= cap},
