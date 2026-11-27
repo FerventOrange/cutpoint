@@ -1263,8 +1263,7 @@ def _warn_dropped_grade(out_dir: Path) -> None:
             f"({', '.join(keys)}); this run grades none, so the new clips are ungraded (give "
             f"{again} again to keep the grade)"
         )
-        logger.warning("%s", message)
-        jsonout.warn("grade_dropped", message, [out_dir / MANIFEST])
+        jsonout.log_warn("grade_dropped", message, [out_dir / MANIFEST], logger=logger)
 
 
 def _color_mode(
@@ -1313,8 +1312,7 @@ def _color_mode(
                 f"--color {color} on gaming footage (style {style.name}): game graphics are "
                 "graded too; check the clips"
             )
-        logger.warning("%s", message)
-        jsonout.warn("color_on_gaming", message)
+        jsonout.log_warn("color_on_gaming", message, logger=logger)
     return color
 
 
@@ -1474,8 +1472,7 @@ def _event_tails(
             f"--event-tails: {project} has no events.json (run `cutpoint events`); "
             "continuing without event tails"
         )
-        logger.warning("%s", message)
-        jsonout.warn("event_tails_no_events", message, [project / EVENTS_JSON])
+        jsonout.log_warn("event_tails_no_events", message, [project / EVENTS_JSON], logger=logger)
     ev_settings = EventTailSettings(
         enabled=project_events is not None,
         **({"window": event_window} if event_window is not None else {}),

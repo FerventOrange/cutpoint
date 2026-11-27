@@ -674,11 +674,11 @@ def _warn_dropped_peaks(plans: list[ExtendPlan], clips_dir: Path) -> None:
             f"{compressed} clip(s) were exported with --compress-peaks; extend re-exports "
             "them without it (assemble --compress-peaks can apply it)"
         )
-        logger.warning("%s", message)
-        jsonout.warn(
+        jsonout.log_warn(
             "compress_peaks_dropped",
             message,
             [clips_dir / p.name for p in plans if p.entry.get("compress_peaks")],
+            logger=logger,
         )
 
 

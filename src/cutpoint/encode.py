@@ -475,8 +475,7 @@ def warn_if_log(src: Path, info: MediaInfo, at: float) -> None:
             f"{black:.2f}-{white:.2f}): clips keep that look; give your camera's LUT with "
             "--lut FILE or apply it in an editor for normal colors"
         )
-        logger.warning("%s", message)
-        jsonout.warn("log_footage", message, [src])
+        jsonout.log_warn("log_footage", message, [src], logger=logger)
 
 
 def audio_fade_filter(
@@ -977,8 +976,7 @@ def _export_checked(
                 f"{out.name} from {src.name} is complete but ffmpeg reported read errors inside "
                 f"it: {'; '.join(messages)}"
             )
-            logger.warning("%s", message)
-            jsonout.warn("read_errors_in_clip", message, [src])
+            jsonout.log_warn("read_errors_in_clip", message, [src], logger=logger)
             return {"failure_time": None, "messages": messages, "retried": attempt == 2, "end": end}
         messages = list(dict.fromkeys(messages + found))[:5]
         fail_t = start + got

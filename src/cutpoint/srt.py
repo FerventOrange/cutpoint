@@ -210,8 +210,7 @@ class ClipSubtitles:
                 "list them (made by hand?), so they are not replaced and these clips get no new "
                 "subtitles"
             )
-            logger.warning("%s", message)
-            jsonout.warn("kept_srt", message, self.not_written)
+            jsonout.log_warn("kept_srt", message, self.not_written, logger=logger)
 
 
 def final_cues(
@@ -305,8 +304,7 @@ def write_final_srt(
         skipped_info(video.name, missing_sources)
         if srt.exists():
             message = f"{srt} is from an earlier run and does not match {video.name}"
-            logger.warning("%s", message)
-            jsonout.warn("stale_srt", message, [srt])
+            jsonout.log_warn("stale_srt", message, [srt], logger=logger)
         return None
     if missing:
         skipped_info(f"{', '.join(missing)} in {video.name}", missing_sources)

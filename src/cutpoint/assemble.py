@@ -1153,13 +1153,11 @@ def normalize_with_ceiling(
                     "the ceiling; --compress-peaks light|strong (if not used yet) leaves it "
                     "more room"
                 )
-                logger.warning(msg)
-                jsonout.warn("loudness_below_target", msg)
+                jsonout.log_warn("loudness_below_target", msg, logger=logger)
             return lufs, tp
         limit_db -= tp - TP_CEILING + LIMIT_MARGIN_DB
     msg = f"True peak {tp:+.2f} dBTP is still above {TP_CEILING:.1f} after {LIMIT_PASSES} passes"
-    logger.warning("%s", msg)
-    jsonout.warn("true_peak_over_ceiling", msg, [out])
+    jsonout.log_warn("true_peak_over_ceiling", msg, [out], logger=logger)
     return lufs, tp
 
 
@@ -1274,8 +1272,7 @@ def _per_join_fade(infos: list[MediaInfo], kinds: list[str], fade_dur: float) ->
                 f"One frame is more than 45% of {a.path.name} or {b.path.name}: no room for a "
                 "crossfade; cutting between them"
             )
-            logger.warning("%s", message)
-            jsonout.warn("join_no_room", message, [a.path, b.path])
+            jsonout.log_warn("join_no_room", message, [a.path, b.path], logger=logger)
         fading.append(kind == "fade" and room)
     clips = [i for n, i in enumerate(infos) if any(fading[max(n - 1, 0) : n + 1])]
     used = crossfade_duration(clips, fade_dur, fps) if clips else 0.0
@@ -1304,9 +1301,8 @@ def join_fade(
             "One frame is more than 45% of the shortest clip: no room for a crossfade; "
             "joining with cuts"
         )
-        logger.warning("%s", message)
         shortest = min(infos, key=lambda i: i.vduration)
-        jsonout.warn("crossfade_no_room", message, [shortest.path])
+        jsonout.log_warn("crossfade_no_room", message, [shortest.path], logger=logger)
     return used
 
 
@@ -1359,8 +1355,7 @@ def join_kinds(
                 f"Join {pair[0]} to {pair[1]}: these clips are not next to each other in this "
                 f"order, so it is ignored and the joins there use the default ({transition})"
             )
-            logger.warning("%s", message)
-            jsonout.warn("join_unmatched", message, pair)
+            jsonout.log_warn("join_unmatched", message, pair, logger=logger)
     return kinds
 
 
@@ -1600,8 +1595,7 @@ def _warn_earlier(out: Path, written: str) -> None:
         other = out.with_suffix(f".{kind}")
         if kind != written and other.is_file():
             message = f"{other} is from an earlier run and may not match {out.stem}"
-            logger.warning("%s", message)
-            jsonout.warn("earlier_output", message, [other])
+            jsonout.log_warn("earlier_output", message, [other], logger=logger)
 
 
 # ------------------------------------------------------- assembling without keeping the clips
