@@ -84,7 +84,7 @@ def test_a_window_proxy_has_its_own_name_and_goes_after_a_failed_encode(tmp_path
     with pytest.raises(KeyboardInterrupt):
         scenes._window_cuts(write(tmp_path / "a.mp4"), tmp_path, 0.0, 17.5, 22.5)
     (name,) = names
-    assert name == f"proxy-window-{os.getpid()}-{threading.get_ident()}.mp4"
+    assert name.startswith(f"proxy-window.{os.getpid()}.") and name.endswith(".tmp.mp4")
     assert not list(tmp_path.glob("proxy-window*"))
 
 

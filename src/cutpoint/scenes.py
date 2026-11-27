@@ -351,6 +351,7 @@ def scene_cuts(
     logger.info("%s: detecting scene cuts", src.name)
     importlib.import_module("scenedetect")  # not installed: fails before any decode
     dopts = {"cancel": cancel} if cancel is not None else {}  # plain call when not overlapped
+    _sweep_split_proxies(cdir)
     plan = _hybrid_plan(src, duration, offset, limit, cpu_free)
     if plan is not None and (cuts := _hybrid_cuts(src, cdir, duration, *plan, cancel)) is not None:
         cache.save_json(path, cuts)
@@ -522,7 +523,6 @@ def _hybrid_cuts(
     gend = min(duration, split + SEAM_S)
     # a container that seeks exactly (_hybrid_plan): both halves count as ffmpeg does
     _pre, _post, vf, enc = _proxy_args(duration)
-    tag = f"{os.getpid()}-{threading.get_ident()}"  # another run may share the cache folder
     dec_args, chain = _scene_decode(hw, vf, src)
     # the CPU half converts to the format NVDEC downloads before it scales, as that half does,
     # so the same frames give the same proxy pixels
@@ -536,9 +536,9 @@ def _hybrid_cuts(
         return [*REINIT_OFF, *dec, "-i", str(src), "-t", f"{gend:.3f}", *out, gchain]
 
     halves = {
-        "gpu": (cdir / f"proxy-gpu-{tag}.mp4", gpu_args(False), gend),
+        "gpu": (ffmpeg_utils.unique_tmp(cdir / "proxy-gpu.mp4"), gpu_args(False), gend),
         "cpu": (
-            cdir / f"proxy-cpu-{tag}.mp4",
+            ffmpeg_utils.unique_tmp(cdir / "proxy-cpu.mp4"),
             # both halves count from the container start (the chain's fps start_time, #976)
             [
                 *REINIT_OFF,
@@ -619,6 +619,13 @@ def _hybrid_cuts(
         )
         return None
     return _merge_seam(found["gpu"], found["cpu"], split, cstart)
+
+
+def _sweep_split_proxies(cdir: Path) -> None:
+    """Remove the hybrid halves and window proxies that killed runs left in ``cdir``; live
+    runs and other computers keep theirs (:func:`~cutpoint.ffmpeg_utils.sweep_tmp`)."""
+    for name in ("proxy-gpu.mp4", "proxy-cpu.mp4", "proxy-window.mp4"):
+        ffmpeg_utils.sweep_tmp(cdir / name)
 
 
 def _make_proxy(
@@ -755,7 +762,8 @@ def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> lis
     costs more than the few seconds it decodes. The seek counts from the container start, as the
     full pass's time does (#976), so ``io`` must seek exactly (:func:`_seeks_exactly`)."""
     # its own name: another run (project) may read the same source from the shared cache folder
-    proxy = cdir / f"proxy-window-{os.getpid()}-{threading.get_ident()}.mp4"
+    _sweep_split_proxies(cdir)
+    proxy = ffmpeg_utils.unique_tmp(cdir / "proxy-window.mp4")
     try:
         _make_proxy(io, proxy, _proxy_args(b - a, offset + a, b - a), b - a, gpu=False)
         found = _scan(proxy, None)  # its video handle is closed on return
