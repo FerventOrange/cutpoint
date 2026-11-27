@@ -232,7 +232,7 @@ def _win_check_ancestors(path: Path) -> None:
             if code in (2, 3):
                 break
             logger.debug("CreateFileW failed on %s: Windows error %s", current, code)
-            raise PermissionError(f"cannot safely inspect private path: cannot open {current}")
+            raise PermissionError(f'cannot safely inspect private path: cannot open "{current}"')
 
         class _Info(ctypes.Structure):
             _fields_ = (
@@ -256,11 +256,13 @@ def _win_check_ancestors(path: Path) -> None:
             if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(info)):
                 code = ctypes.get_last_error()
                 logger.debug("GetFileInformationByHandle failed on %s: error %s", current, code)
-                raise PermissionError(f"cannot safely inspect private path: cannot read {current}")
+                raise PermissionError(
+                    f'cannot safely inspect private path: cannot read "{current}"'
+                )
             if info.attributes & 0x400:
-                raise PermissionError(f"unsafe private path: {current} is a reparse point")
+                raise PermissionError(f'unsafe private path: "{current}" is a reparse point')
             if not info.attributes & 0x10:
-                raise PermissionError(f"unsafe private path: {current} is not a folder")
+                raise PermissionError(f'unsafe private path: "{current}" is not a folder')
         finally:
             kernel32.CloseHandle(handle)
 

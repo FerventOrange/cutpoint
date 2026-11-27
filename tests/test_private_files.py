@@ -88,7 +88,7 @@ def test_windows_ancestor_error_names_the_refused_folder(
         private_files._win_check_ancestors(target)
     assert str(target.parent) in str(excinfo.value)
     assert str(excinfo.value) == (
-        f"cannot safely inspect private path: cannot open {target.parent}"
+        f'cannot safely inspect private path: cannot open "{target.parent}"'
     )
     assert "Windows error 5" in caplog.text
 
@@ -96,9 +96,9 @@ def test_windows_ancestor_error_names_the_refused_folder(
 @pytest.mark.parametrize(
     ("failure", "message"),
     [
-        ("read", "cannot safely inspect private path: cannot read {folder}"),
-        ("reparse", "unsafe private path: {folder} is a reparse point"),
-        ("file", "unsafe private path: {folder} is not a folder"),
+        ("read", 'cannot safely inspect private path: cannot read "{folder}"'),
+        ("reparse", 'unsafe private path: "{folder}" is a reparse point'),
+        ("file", 'unsafe private path: "{folder}" is not a folder'),
     ],
 )
 def test_windows_ancestor_checks_name_the_refused_folder(
