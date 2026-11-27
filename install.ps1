@@ -236,13 +236,22 @@ Optional prompts (default No; with no interactive console the answer is No unles
         if ($S.Source -eq "pypi") { Test-Version $S.Version }
     }
 
+    # A part with more digits than fit an int (0.99999999999.0) counts as a huge number, not a
+    # cast error: it is not older than anything.
+    function ConvertTo-VersionPart([string]$Digits) {
+        $t = $Digits.TrimStart('0')
+        if ($t.Length -gt 9) { return 999999999 }
+        if ($t.Length -eq 0) { return 0 }
+        return [int]$t
+    }
+
     # Releases before 0.4.0 need the ui extra for the browser workspace, which this installer no
     # longer asks for. Only major.minor are compared, numerically; a leading v and a pre-release
     # suffix (0.4.0rc1) are ignored, so 0.4.0rc1 counts as 0.4.0. A version that does not start
     # with N.N is left to uv to reject. Keep in step with check_version in install.sh.
     function Test-Version([string]$Version) {
         if ($Version -match '^v?(\d+)\.(\d+)') {
-            if ([int]$Matches[1] -eq 0 -and [int]$Matches[2] -lt 4) {
+            if ((ConvertTo-VersionPart $Matches[1]) -eq 0 -and (ConvertTo-VersionPart $Matches[2]) -lt 4) {
                 Die "Cutpoint $Version is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
             }
         }
@@ -434,8 +443,9 @@ Optional prompts (default No; with no interactive console the answer is No unles
     function Test-UvVersionOk {
         $v = Get-UvVersionText
         if ($v -notmatch '^(\d+)\.(\d+)') { return $false }
-        $major = [int]$Matches[1]
-        $minor = [int]$Matches[2]
+        # An oversized part is read as a huge number (new enough), never a cast error.
+        $major = ConvertTo-VersionPart $Matches[1]
+        $minor = ConvertTo-VersionPart $Matches[2]
         if ($major -gt $UV_MIN_MAJOR) { return $true }
         return ($major -eq $UV_MIN_MAJOR -and $minor -ge $UV_MIN_MINOR)
     }

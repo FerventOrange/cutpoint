@@ -252,6 +252,16 @@ parse_args() {
   [ "$SOURCE" != pypi ] || check_version
 }
 
+# Print a run of digits as a number that fits shell arithmetic: leading zeros dropped, more than
+# 9 digits (0.99999999999.0) a huge value, so a test on it never errors.
+clamp_num() {
+  _n=$1
+  while [ "${_n#0}" != "$_n" ]; do _n=${_n#0}; done
+  [ -n "$_n" ] || _n=0
+  if [ "${#_n}" -gt 9 ]; then _n=999999999; fi
+  printf '%s\n' "$_n"
+}
+
 # Releases before 0.4.0 need the ui extra for the browser workspace, which this installer no
 # longer asks for. Only major.minor are compared, numerically; a leading v and a pre-release
 # suffix (0.4.0rc1) are ignored, so 0.4.0rc1 counts as 0.4.0. A version that does not start
@@ -260,8 +270,8 @@ check_version() {
   _ver=${CUTPOINT_VERSION#v}
   _mm=$(printf '%s\n' "$_ver" | sed -n 's/^\([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')
   [ -n "$_mm" ] || return 0
-  _major=${_mm% *}
-  _minor=${_mm#* }
+  _major=$(clamp_num "${_mm% *}")
+  _minor=$(clamp_num "${_mm#* }")
   if [ "$_major" -eq 0 ] && [ "$_minor" -lt 4 ]; then
     die "Cutpoint $CUTPOINT_VERSION is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
   fi
@@ -464,6 +474,8 @@ uv_version_ok() {
   major=${major%%[!0-9]*}
   minor=${minor%%[!0-9]*}
   [ -n "$major" ] && [ -n "$minor" ] || return 1
+  major=$(clamp_num "$major")
+  minor=$(clamp_num "$minor")
   if [ "$major" -gt "$UV_MIN_MAJOR" ]; then
     return 0
   fi
