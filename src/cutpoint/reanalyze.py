@@ -235,8 +235,11 @@ def reanalyze(
         [Path(p) for p in inputs],
         style,
         project,
-        # opt-in: only if the earlier run asked (older projects record no request: off)
-        vision=st.get("vision_requested") is True,
+        # rating opt-in: only if the earlier run asked (older projects record no request:
+        # off); --no-vision recorded (settings.vision_off) keeps every vision call off
+        vision=True
+        if st.get("vision_requested") is True
+        else (False if st.get("vision_off") is True else None),
         vision_top=st.get("vision_top"),
         ollama_url=st.get("ollama_url"),
         ollama_model=st.get("ollama_model"),

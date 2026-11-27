@@ -34,6 +34,27 @@ SCORE_MAX_GAP_S = 60.0
 SCORE_MAX_VALUES = 12
 
 
+@dataclass(frozen=True)
+class ScoreRules:
+    """The rules of one :class:`ScoreTracker` that differ by HUD. The defaults are the
+    gameplay HUD's (a change of one, 1-2 digits, :data:`SCORE_MAX_VALUES`). An overlay
+    scoreboard (#1069, :data:`OVERLAY_SCORE_RULES`) counts a change of 1 to ``max_step``
+    points at once (a try, a three-pointer), reads up to ``digits`` digits and has no value
+    cap (``max_values`` None: a basketball score shows a hundred values); a move by more
+    than ``max_step`` in the slot's direction still marks a count of items, no score
+    (:func:`_score_jumps`). With ``increase_only`` the direction is up from the start: a
+    drop (21 to 0 at a new match or period) is a reset, never an event nor a jump."""
+
+    max_step: int = 1
+    digits: int = 2
+    max_values: int | None = SCORE_MAX_VALUES
+    increase_only: bool = False
+
+
+GAMEPLAY_SCORE_RULES = ScoreRules()
+OVERLAY_SCORE_RULES = ScoreRules(max_step=6, digits=3, max_values=None, increase_only=True)
+
+
 @dataclass
 class _ScoreRun:
     """Reads of one value in a row (:class:`ScoreTracker`)."""
@@ -86,7 +107,8 @@ class ScoreTracker:
     (:meth:`see`), the changes of the value as ``score`` events at its end (:meth:`finish`,
     rules at :data:`SCORE_SLOT_PX`)."""
 
-    def __init__(self) -> None:
+    def __init__(self, rules: ScoreRules | None = None) -> None:
+        self.rules = rules or ScoreRules()
         self.reads: dict[tuple[str, int], list[tuple[float, int, float]]] = {}
         self._slots: dict[str, list[float]] = {}  # per region the slots' centre x (reference px)
 
@@ -102,7 +124,7 @@ class ScoreTracker:
         rx, _, sx, _ = ref
         best: dict[int, tuple[int, float]] = {}
         for box, text, score in items:
-            v = score_value(text)
+            v = score_value(text, self.rules.digits)
             if v is None or score < SCORE_MIN_CONF:
                 continue
             cx = (rx + (min(p[0] for p in box) + max(p[0] for p in box)) / 2) * sx
@@ -129,15 +151,17 @@ class ScoreTracker:
         its direction, :func:`_score_jumps`)."""
         events: list[dict[str, Any]] = []
         stats: dict[str, Any] = {}
+        rules = self.rules
+        cap = rules.max_values
         for (region, slot), reads in self.reads.items():
             runs = _score_runs([r for r in reads if r[0] not in menu])
             spans = [b.first - a.first for a, b in pairwise(runs)]
             disabled = (
-                len({r.value for r in runs}) > SCORE_MAX_VALUES
+                (cap is not None and len({r.value for r in runs}) > cap)
                 or (len(spans) >= 2 and float(np.median(spans)) < SCORE_HOLD_S)
-                or _score_jumps(runs) > 0
+                or _score_jumps(runs, rules) > 0
             )
-            found = [] if disabled else _score_changes(runs, region, slot)
+            found = [] if disabled else _score_changes(runs, region, slot, rules)
             events += found
             stats[f"{region}@{slot}"] = {
                 "reads": len(reads),
@@ -154,37 +178,53 @@ def _in_play(a: _ScoreRun, b: _ScoreRun) -> bool:
     return a.held() >= SCORE_HOLD_S and b.first - a.last <= SCORE_MAX_GAP_S
 
 
-def _score_jumps(runs: list[_ScoreRun]) -> int:
-    """How often one slot's value moved by two or more in its direction (the sign of its
-    first in-play change by one, :func:`_in_play`) to a value that then held
+def _score_jumps(runs: list[_ScoreRun], rules: ScoreRules = GAMEPLAY_SCORE_RULES) -> int:
+    """How often one slot's value moved by more than ``rules.max_step`` (:class:`ScoreRules`;
+    two or more for the gameplay HUD) in its direction (up with ``increase_only``, else the
+    sign of its first in-play change of 1 to ``max_step``, :func:`_in_play`) to a value that
+    then held
     :data:`SCORE_HOLD_S`, at most :data:`SCORE_MAX_GAP_S` after the old one: a count of
     items, no score (:data:`SCORE_MAX_VALUES`). The old value need not have held: menus
     and the HUD hidden between rounds leave it few reads. None without a direction."""
     pairs = list(pairwise(runs))
-    step = next(
-        (b.value - a.value for a, b in pairs if abs(b.value - a.value) == 1 and _in_play(a, b)), 0
+    max_step = rules.max_step
+    step = (
+        1
+        if rules.increase_only
+        else next(
+            (
+                1 if b.value > a.value else -1
+                for a, b in pairs
+                if 1 <= abs(b.value - a.value) <= max_step and _in_play(a, b)
+            ),
+            0,
+        )
     )
     return sum(
-        (b.value - a.value) * step >= 2
+        (b.value - a.value) * step > max_step
         and b.held() >= SCORE_HOLD_S
         and b.first - a.last <= SCORE_MAX_GAP_S
         for a, b in pairs
     )
 
 
-def _score_changes(runs: list[_ScoreRun], region: str, slot: int) -> list[dict[str, Any]]:
+def _score_changes(
+    runs: list[_ScoreRun], region: str, slot: int, rules: ScoreRules = GAMEPLAY_SCORE_RULES
+) -> list[dict[str, Any]]:
     """The ``score`` events of one slot's confirmed values (:data:`SCORE_SLOT_PX`): at the last
-    read of the old value, ending at the first read of the new one."""
+    read of the old value, ending at the first read of the new one; a change is 1 to
+    ``rules.max_step`` points (:class:`ScoreRules`), up only with ``increase_only``."""
     out = []
-    step = 0  # the slot's direction, once set
+    max_step = rules.max_step
+    step = 1 if rules.increase_only else 0  # the slot's direction (+1 or -1), once set
     for a, b in pairwise(runs):
         d = b.value - a.value
         gap = b.first - a.last
-        if abs(d) != 1 or not _in_play(a, b):
+        if not 1 <= abs(d) <= max_step or not _in_play(a, b):
             continue  # a reset or a misread: the new value counts from here
-        if step and d != step:
+        if step and (d > 0) != (step > 0):
             continue  # a step back
-        step = d
+        step = 1 if d > 0 else -1
         out.append(
             {
                 "t": round(a.last, 2),

@@ -60,6 +60,7 @@ from cutpoint.crash_moments import CrashPart, add_crash_candidates
 from cutpoint.dsp import conv_same, gauss_kernel, gauss_smooth
 from cutpoint.errors import LowMemoryError
 from cutpoint.events import paths as event_paths
+from cutpoint.events.layers import overlay_kinds
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import (
     Seed,
@@ -1864,6 +1865,8 @@ LAYER_STEP = {
     "visual": "keyframes",
     "visual_light": "keyframes",  # without a CUDA GPU: the AI Chat's light frame index (#989)
     "ocr": "keyframes",
+    # the on-screen overlays of non-gameplay footage (#1069 (c), events.overlays)
+    "overlay": "keyframes",
     "crash": "crashes",
     "dialogue": "dialogue",  # the dialogue reader, run by run_events before it writes
     "write": "ranking",
@@ -1989,7 +1992,10 @@ def plan_layers(
     ``cat``: the footage category (:mod:`cutpoint.category`; None: :func:`layer_category`
     of ``style``). Reactions: the PANNs audio events (plus the voice layer for action-cam
     footage, whose crash audio score reads it). Keyframes: HUD OCR for gameplay, the CLIP
-    visual layer for action-cam, action and general footage (only with a CUDA GPU); ``visual_index``
+    visual layer for action-cam, action and general footage (only with a CUDA GPU), and for
+    other footage the overlay layer when the style looks for overlays
+    (:func:`~cutpoint.events.layers.overlay_kinds`: a scoreboard, gauges, lower-thirds; it reads
+    them only when a vision model answers); ``visual_index``
     (``--visual-index``) adds the CLIP visual layer to the keyframes of gameplay (before the
     HUD text) and talk too, for the assistant's visual search only. ``cuda``: whether a CUDA
     GPU is there (None: torch's own check, :func:`_cuda`; ``cutpoint ui`` passes a child
@@ -2017,10 +2023,14 @@ def plan_layers(
     if "reactions" not in plan.skipped:
         want["reactions"] = ("audio", "voice") if "crashes" in want else ("audio",)
     if "keyframes" not in plan.skipped:
+        # the overlays the style looks for (none for gameplay: its HUD is the OCR layer's)
+        overlay = ("overlay",) if not plan.game and overlay_kinds(style.name, style.base) else ()
         if plan.game:
             want["keyframes"] = ("ocr", "visual") if visual_index else ("ocr",)
         elif action or visual_index:
-            want["keyframes"] = ("visual",)
+            want["keyframes"] = ("visual", *overlay)
+        elif overlay:
+            want["keyframes"] = overlay
         else:
             plan.skipped["keyframes"] = f"no keyframe layer for the {style.name} style"
     if not want:
@@ -2066,11 +2076,11 @@ def plan_layers(
         if not files:
             continue
         components.update(dict.fromkeys(comp for comp, _ in files))
-        # reactions without the voice layer, keyframes of gameplay without the visual index
+        # reactions without the voice layer, keyframes of gameplay without the visual index,
+        # keyframes of other footage with the overlays alone
+        visual = plan.game or "overlay" in layers
         rest = tuple(
-            x
-            for x in layers
-            if x not in ("voice", *(("visual", "visual_light") if plan.game else ()))
+            x for x in layers if x not in ("voice", *(("visual", "visual_light") if visual else ()))
         )
         if rest != layers and rest and not event_paths.missing_files(rest):
             want[step] = rest
@@ -2349,6 +2359,7 @@ def _run_layers(
     dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
     det_skip: bool = False,
     context: str | None = None,
+    vision: bool | None = None,
 ) -> bool:
     """Run the planned event layers on the analysis ``hl`` (not written yet) and write
     events.json, as ``cutpoint events`` would (held back with the other
@@ -2360,7 +2371,8 @@ def _run_layers(
     (:func:`~cutpoint.events.pipeline.run_events`); ``dialogue``: the dialogue reader it runs as
     the ``dialogue`` step before it writes events.json (:func:`_dialogue_reader`); ``det_skip``:
     ``--ocr-det-skip`` (``OcrParams.det_skip``); ``context``: ``--context``, for the crash
-    layer's activity profile."""
+    layer's activity profile; ``vision``: ``--vision`` / ``--no-vision`` (False: no HUD map,
+    top-up or overlays, :func:`~cutpoint.events.pipeline.vision_off`)."""
     from cutpoint.crash import no_visual_reason  # noqa: PLC0415
     from cutpoint.events.audio_events import AudioParams  # noqa: PLC0415
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
@@ -2393,6 +2405,7 @@ def _run_layers(
                 batch_size=batch_size,
                 dialogue=dialogue,
                 context=context,
+                vision=vision,
             )
     except Exception as err:
         if steps.current == "ranking" or isinstance(err, LowMemoryError):
@@ -3176,6 +3189,9 @@ def _highlights_record(
             "whisper_device": tr.device,
             "scenes": opts.use_scenes,
             "vision_requested": bool(opts.vision),
+            # --no-vision / "vision": false: no frames to a vision model (HUD map, overlays);
+            # `events`, `rerank --analyze` and `resume` follow it
+            **({"vision_off": True} if opts.vision is False else {}),
             "vision_used": False,
             "vision": None,
             "vision_top": opts.vision_top,
@@ -3316,6 +3332,7 @@ def _run_event_steps(
             # a recorded context does not replace the project's activity.json (the
             # VLM layer still reads it from settings.context)
             context=None if opts.context_recorded else opts.context,
+            vision=opts.vision,
         )
         timings["events_s"] = round(time.perf_counter() - t0, 2)
         free_models()

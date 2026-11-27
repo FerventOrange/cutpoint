@@ -212,6 +212,8 @@ SCORE_MAX_SLOTS = 2
 SCORE_EVERY = 3
 SCORE_UPSCALE = 2.5
 _SCORE_VALUE_RE = re.compile(r"\D?(\d{1,2})\D?")
+_SCORE_VALUE3_RE = re.compile(r"\D?(\d{1,3})\D?")  # an overlay scoreboard (#1069)
+MINUTE_MARKS = ("'", "\u2032", "\u2019")  # ', prime, and the right quote OCR reads for it
 
 # a feed needs this score at least, as a banner or notice does (a loadout box that changes a
 # little scored 0.004 and was the only "feed", so it was kept as the best one)
@@ -634,14 +636,19 @@ def _score_rows(frames: list[list[dict[str, Any]]]) -> float:
     return sum(bool(_SCORE_RE.fullmatch(t.strip())) for t in rows) / max(1, len(rows))
 
 
-def score_value(text: str) -> int | None:
-    """The number a score box shows (:data:`SCORE_SLOT_PX`): 1 or 2 digits with at most one
-    other glyph before and after ("3", "12", "3X"), else None; never with ":" or "%" (a clock,
-    a share) or starting with "+" (a point pop-up)."""
+def score_value(text: str, digits: int = 2) -> int | None:
+    """The number a score box shows (:data:`SCORE_SLOT_PX`): 1 or 2 digits (``digits`` 3: up
+    to 3, an overlay scoreboard's "102", #1069) with at most one other glyph before and after
+    ("3", "12", "3X"), else None; never with ":" or "%" (a clock, a share) or starting with
+    "+" (a point pop-up); with ``digits`` 3 never ending in a minute mark ("65'", a match
+    clock inside the scoreboard).
+    """
     t = text.strip()
     if ":" in t or "%" in t or t.startswith("+"):
         return None
-    m = _SCORE_VALUE_RE.fullmatch(t)
+    if digits >= 3 and t.endswith(MINUTE_MARKS):
+        return None
+    m = (_SCORE_VALUE3_RE if digits >= 3 else _SCORE_VALUE_RE).fullmatch(t)
     return int(m[1]) if m else None
 
 

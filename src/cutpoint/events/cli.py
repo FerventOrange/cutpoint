@@ -77,8 +77,9 @@ def add_arguments(ap: argparse.ArgumentParser) -> None:
         choices=LAYERS,
         default=None,
         help="layers to run (others still use cached results). Default: audio "
-        "ocr vlm; action-cam projects: audio voice visual crash vlm (no HUD; crash = "
-        "cutpoint crashes, writes crashes.json)",
+        "ocr overlay vlm; action-cam projects: audio voice visual crash overlay vlm (no HUD; "
+        "crash = cutpoint crashes, writes crashes.json; overlay = on-screen overlays of "
+        "non-gameplay footage, read when a vision model answers)",
     )
     ap.add_argument("--no-vlm", action="store_true", help="run the default layers without vlm")
     ap.add_argument(
