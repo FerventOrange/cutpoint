@@ -1,4 +1,4 @@
-"""``analyze._snap`` and ``_snap_sentences`` bisect one index of the part's words and sentence
+"""``analyze.snap`` and ``_snap_sentences`` bisect one index of the part's words and sentence
 edges instead of scanning every word per candidate (#1085, A685): they must snap to the same
 floats as the old scans, frozen here (synthetic transcripts, seeded)."""
 
@@ -127,10 +127,10 @@ def _check(segments, cands, cuts, duration, style):
         old = Candidate(source="x", start=a, end=b, peak_t=a, peak=1.0, signals={}, whole=whole)
         new = Candidate(source="x", start=a, end=b, peak_t=a, peak=1.0, signals={}, whole=whole)
         _old_snap(old, cuts, segments, duration, style)
-        analyze._snap(new, cuts, segments, duration, style, index)
+        analyze.snap(new, cuts, segments, duration, style, index)
         assert (new.start, new.end) == (old.start, old.end)
         solo = Candidate(source="x", start=a, end=b, peak_t=a, peak=1.0, signals={}, whole=whole)
-        analyze._snap(solo, cuts, segments, duration, style)  # no index passed
+        analyze.snap(solo, cuts, segments, duration, style)  # no index passed
         assert (solo.start, solo.end) == (old.start, old.end)
 
 

@@ -18,7 +18,7 @@ from cutpoint.config import path_key
 from cutpoint.events.menu_spans import drop_menu_time
 from cutpoint.events.scoring import is_nominated, number_candidates, restore_widened
 from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS
-from cutpoint.reanalyze import _recorded_style
+from cutpoint.reanalyze import recorded_style
 from cutpoint.styles import ACTION_CAM, Style
 
 if TYPE_CHECKING:
@@ -95,7 +95,7 @@ def _crash_windows(r: CrashPart, c: dict[str, Any], style: Style, forced: bool) 
     clip (approach, impact, aftermath) and, when ``forced``, its reaction. A forced one scores
     its confidence (:func:`cutpoint.scorer.score`); any other is scored from the part's grids
     over its span, as a picked window there would be. Word edges only (no scene snapping)."""
-    from cutpoint.analyze import DT, Candidate, _snap, describe_candidates  # noqa: PLC0415 - analyze imports this module
+    from cutpoint.analyze import DT, Candidate, describe_candidates, snap  # noqa: PLC0415 - analyze imports this module
 
     ps, off, span = r.signals, r.offset, r.duration
     if ps is None:
@@ -123,7 +123,7 @@ def _crash_windows(r: CrashPart, c: dict[str, Any], style: Style, forced: bool) 
             must_include=forced,
             event=_crash_event(c),
         )
-        _snap(cand, [], ps.segments, span, words_only)
+        snap(cand, [], ps.segments, span, words_only)
         i = max(0, min(int(cand.start / DT), ps.n - 1))
         j = max(i + 1, int(cand.end / DT))
         cand.signals = {k: round(float(v[i:j].max()), 3) for k, v in ps.sig.items()}
@@ -235,16 +235,16 @@ def rebuild_crash_moments(project: Path) -> bool:
     action-cam (its scorer reads crashes.json), 360 projects, ``settings.crash_moments`` false, and
     a source whose grids are not cached (recovered, offline). A candidate that a forced crash moment
     replaced is not brought back when that crash goes away: only a re-analysis does. A file without
-    ``style`` takes the fallback style of :func:`~cutpoint.reanalyze._recorded_style`.
+    ``style`` takes the fallback style of :func:`~cutpoint.reanalyze.recorded_style`.
 
     Raises:
         ValueError: If the style is not in the library and the file records no built-in base
-            (:func:`~cutpoint.reanalyze._recorded_style`).
+            (:func:`~cutpoint.reanalyze.recorded_style`).
     """
     from cutpoint.analyze import (  # noqa: PLC0415 - analyze imports this module
         Candidate,
-        _candidate_record,
         cached_grid_parts,
+        candidate_record,
     )
     from cutpoint.crash import load_crashes  # noqa: PLC0415
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
@@ -256,7 +256,7 @@ def rebuild_crash_moments(project: Path) -> bool:
         return False
     if (hl.get("settings") or {}).get("crash_moments") is False or (project / PANO_FILE).is_file():
         return False
-    style = _recorded_style(hl)
+    style = recorded_style(hl)
     if style.kind == ACTION_CAM:
         return False
     parts = {
@@ -300,7 +300,7 @@ def rebuild_crash_moments(project: Path) -> bool:
                     rec["crash_forced"] = c.must_include
                 kept.append(rec)
                 continue
-            built.append(_candidate_record(c, i, style))
+            built.append(candidate_record(c, i, style))
     was = _crash_keys(olds)
     fresh: list[dict[str, Any]] = []  # crash moments with no earlier record
     for key, new in _crash_keys(built).items():

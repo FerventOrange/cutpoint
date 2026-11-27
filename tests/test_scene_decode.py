@@ -440,7 +440,7 @@ def test_the_prefetch_is_busy_with_an_offered_source_the_worker_has_not_taken():
 @pytest.fixture
 def world(home, tmp_path, monkeypatch):
     """``analyze_source`` with ffprobe, audio, Whisper and loudness faked; ``w.kw`` records the
-    keyword arguments of each ``scene_cuts`` call, ``w.jobs`` the ``_SceneJob`` arguments."""
+    keyword arguments of each ``scene_cuts`` call, ``w.jobs`` the ``SceneJob`` arguments."""
     w = scene_world(monkeypatch, tmp_path, 600.0, flat_lufs=-30.0)
     src, w.kw, w.jobs = w.src, [], []
 
@@ -457,7 +457,7 @@ def world(home, tmp_path, monkeypatch):
             return self.cuts
 
     monkeypatch.setattr(scenes, "scene_cuts", scene)
-    monkeypatch.setattr(scenes, "_SceneJob", Job)
+    monkeypatch.setattr(scenes, "SceneJob", Job)
     w.source = lambda tr=None, **kw: analyze.analyze_source(
         src, get_style("action"), tr or StubTranscriber(), True, None, {}, **kw
     )

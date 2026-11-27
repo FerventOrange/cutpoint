@@ -114,7 +114,7 @@ def project_backup_link(project: Path) -> str | None:
     return link if isinstance(link, str) and backup_digest(backup) == link else None
 
 
-def _recorded_style(hl: dict[str, Any]) -> Style:
+def recorded_style(hl: dict[str, Any]) -> Style:
     """The style of the analysis ``hl``, with the ``--must-include-crash`` it recorded.
 
     A style no longer in the library (a deleted user style) degrades to its recorded built-in
@@ -189,7 +189,7 @@ def reanalyze(
         FileNotFoundError: If the project has no highlights.json.
         ValueError: If highlights.json is unreadable, not valid JSON or records
             no analysis, or its style is not in the library and it records no built-in
-            base (:func:`_recorded_style`).
+            base (:func:`recorded_style`).
     """
     from cutpoint.analyze import analyze  # noqa: PLC0415 - analyze imports this module
     from cutpoint.pano.project import PANO_FILE  # noqa: PLC0415
@@ -207,7 +207,7 @@ def reanalyze(
     reranked = None if given is None else rerank_record(hl, given)
     if reranked is None and isinstance(st.get("reranked"), dict):
         reranked = st["reranked"]  # re-ranked before: the user's style stays
-    style = _recorded_style(hl) if given is None else restyled(hl, given)
+    style = recorded_style(hl) if given is None else restyled(hl, given)
     requested = st.get("style_requested")
     if given is None and isinstance(st.get("style_fallback"), dict) and isinstance(requested, str):
         # an action-cam style that fell back to action (#939): asked for again, so the
@@ -282,7 +282,7 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
     Returns:
         Path of highlights.json, or None if skipped.
     """
-    from cutpoint.analyze import _find_input  # noqa: PLC0415 - analyze imports this module
+    from cutpoint.analyze import find_input  # noqa: PLC0415 - analyze imports this module
 
     hl = projectfiles.load_highlights(project)
     if not isinstance(hl, dict):  # missing or not an object: reanalyze below reports it
@@ -315,7 +315,7 @@ def reanalyze_if_reachable(project: Path) -> Path | None:
     missing = 0
     for p in dict.fromkeys(st.get("inputs") or srcs):
         try:
-            batch = _find_input(Path(p), st.get("exclude") or [], bool(st.get("recursive")))
+            batch = find_input(Path(p), st.get("exclude") or [], bool(st.get("recursive")))
         except FileNotFoundError:
             missing += 1
             continue

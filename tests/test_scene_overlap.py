@@ -174,7 +174,7 @@ def test_the_overlap_time_is_the_scene_threads_own(world, monkeypatch):
 def test_no_scene_thread_when_it_is_not_needed(world, monkeypatch, case):
     monkeypatch.setenv(ENV, "1")
     started = []
-    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: started.append(a))
+    monkeypatch.setattr(scenes, "SceneJob", lambda *a, **k: started.append(a))
     use_scenes = case != "no scenes in the style"
     if case == "scenes cached":
         cache.save_json(world.cdir / scenes.SCENES_FILE, CUTS)
@@ -190,7 +190,7 @@ def test_no_scene_thread_when_it_is_not_needed(world, monkeypatch, case):
 def test_no_scene_thread_for_a_style_without_scenes_through_analyze(world, monkeypatch):
     """``analyze`` ANDs the style's ``use_scenes`` into the flag; here the caller's is False."""
     monkeypatch.setenv(ENV, "1")
-    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
+    monkeypatch.setattr(scenes, "SceneJob", lambda *a, **k: pytest.fail("thread started"))
     analyze.analyze(
         world.src, get_style("gaming"), world.proj, vision=False, use_scenes=False, layers=False
     )
@@ -339,13 +339,13 @@ def test_whisper_is_loaded_before_the_scene_thread_starts(world, monkeypatch):
     monkeypatch.setenv(ENV, "1")
     order = []
     monkeypatch.setattr(FakeTr, "load", lambda self: order.append("load"))
-    real_job = scenes._SceneJob
+    real_job = scenes.SceneJob
 
     def job(*a, **k):
         order.append("job")
         return real_job(*a, **k)
 
-    monkeypatch.setattr(scenes, "_SceneJob", job)
+    monkeypatch.setattr(scenes, "SceneJob", job)
     world.source()
     assert order == ["load", "job"]
 
@@ -358,7 +358,7 @@ def test_a_low_memory_load_starts_no_scene_thread(world, monkeypatch):
         raise err
 
     monkeypatch.setattr(FakeTr, "load", load)
-    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: pytest.fail("thread started"))
+    monkeypatch.setattr(scenes, "SceneJob", lambda *a, **k: pytest.fail("thread started"))
     with pytest.raises(LowMemoryError) as caught:
         world.source()
     assert caught.value is err

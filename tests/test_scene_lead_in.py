@@ -372,7 +372,7 @@ def test_a_late_webm_seeks_exactly_for_windows_and_a_split(webm, tmp_path, real)
     forced split of the pass matches one pass."""
     info = ffmpeg_utils.probe(webm)
     assert info.vcodec == "vp9" and info.vstart > 0.2
-    assert scenes._seeks_exactly(webm)
+    assert scenes.seeks_exactly(webm)
     one = scene(webm, tmp_path / "one", info.duration)
     assert near(one, [c + info.vstart for c in CUT_TIMES]), one
     edges = [2.5, 8.0, 11.5, 15.0, 19.0]

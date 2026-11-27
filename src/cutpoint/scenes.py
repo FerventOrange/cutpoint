@@ -1,7 +1,7 @@
 """Scene cuts of a source for :mod:`cutpoint.analyze`: PySceneDetect on a small proxy.
 
 The full pass (:func:`scene_cuts`, cached as :data:`SCENES_FILE`), its decode split between
-NVDEC and the CPU (#730), the overlap with Whisper (:class:`_SceneJob`, #725), and the windows
+NVDEC and the CPU (#730), the overlap with Whisper (:class:`SceneJob`, #725), and the windows
 around candidate edges of a style that does not weigh the scene curve (:class:`EdgeCuts`).
 """
 
@@ -50,7 +50,7 @@ SCENES_FILE = "scenes-v3.json"
 # Scene cuts of a style that does not weigh them, only around candidate edges (#730, EdgeCuts)
 SCENE_WINDOWS_FILE = "scenes-windows.json"  # per part cache folder, next to SCENES_FILE
 SCENE_WINDOWS_VERSION = 3  # 3: lossless proxy (#994), 2: container clock (#976); else decoded again
-SNAP_REACH_S = 1.0  # _snap moves an edge to a scene cut at most this far
+SNAP_REACH_S = 1.0  # snap moves an edge to a scene cut at most this far
 SCENE_WARMUP_S = 1.5  # picture the detector needs around a cut (2-frame window, 0.5 s min)
 WINDOW_PAD_S = SNAP_REACH_S + SCENE_WARMUP_S  # a window reaches this far either side of an edge
 SCENE_GRID_S = 0.1  # the full proxy's frame step (10 fps, _proxy_args): windows start on it
@@ -77,7 +77,7 @@ def _first_shift(src: Path, offset: float, duration: float) -> float | None:
     part places its frames by :func:`_lead_in` instead), a whole pass of a container that seeks
     exactly, and a source ffprobe or the one-frame decode fails on (the pass then counts as
     ffmpeg does)."""
-    if offset > 0 or _seeks_exactly(src):
+    if offset > 0 or seeks_exactly(src):
         return None
     try:
         first = first_frame_time(src, keyframes=duration > LONG_FILE_S)
@@ -91,7 +91,7 @@ def _lead_in(
     src: Path, offset: float, duration: float, readable_from: float | None
 ) -> tuple[float, float] | None:
     """The seek point and the shift of a scene pass of ``src`` from ``offset`` (a recovered
-    part) in a container that does not seek exactly (:func:`_seeks_exactly`), or None: a pass
+    part) in a container that does not seek exactly (:func:`seeks_exactly`), or None: a pass
     from the start, a container that seeks exactly, no ``readable_from`` known (a read-error
     record older than it), less than :data:`LEAD_IN_MIN_S` between it and ``offset``, and a
     source ffprobe or the one-frame decode fails on (the pass then seeks ``offset`` as ffmpeg
@@ -104,7 +104,7 @@ def _lead_in(
     frame decoded from there is put at its container time less ``offset`` (measured by a decode of
     its own: the seek may land anywhere, or clamp to the start), so ``fps`` drops the lead-in and
     the proxy starts at ``offset`` (:func:`_proxy_args`)."""
-    if offset <= 0 or readable_from is None or _seeks_exactly(src):
+    if offset <= 0 or readable_from is None or seeks_exactly(src):
         return None
     seek = round(max(0.0, offset - LEAD_IN_S, readable_from), 3)
     if offset - seek < LEAD_IN_MIN_S:
@@ -132,7 +132,7 @@ def _proxy_args(
     Every pass counts from the container start (#976), so its cuts are on the clock clips are
     cut on: ``fps`` with ``start_time=0`` makes the proxy's first frame the seek point (the
     container start without one) and pads a video that starts later with its first frame.
-    That is ffmpeg's own count in a container that seeks exactly (:func:`_seeks_exactly`). In
+    That is ffmpeg's own count in a container that seeks exactly (:func:`seeks_exactly`). In
     MPEG-TS ffmpeg 6.1 counts a whole pass from the video instead (``-an``), so the first
     decoded frame is put at ``shift`` (:func:`_first_shift`: its container time, also when the
     file starts in the middle of a GOP); ffmpeg's own timestamps stay, so a timestamp reset
@@ -199,7 +199,7 @@ def _scene_decode(
     vf = _fixed_scale(vf, src)
     if hw is None:
         return [], vf
-    if download or not _seeks_exactly(src):
+    if download or not seeks_exactly(src):
         if hw.kind == "cuda":
             try:
                 info = probe(src)
@@ -260,7 +260,7 @@ def _run_scene_proxy(
 def _detect(proxy: Path, path: Path, cancel: threading.Event | None = None) -> list[float]:
     """Scene cuts of ``proxy`` (deleted after), saved to ``path``.
 
-    With ``cancel`` (a :class:`_SceneJob`), setting it stops the detection within about 0.1 s plus a
+    With ``cancel`` (a :class:`SceneJob`), setting it stops the detection within about 0.1 s plus a
     frame decode and raises :class:`~cutpoint.ffmpeg_utils.RunCancelled`, writing nothing."""
     try:
         cuts = _scan(proxy, cancel)  # its video handle is closed on return
@@ -333,7 +333,7 @@ def scene_cuts(
         offset: Seek here first; returned times are relative to it.
         limit: Stop decoding after this many seconds (stays clear of a known
             unreadable region instead of hitting it again).
-        cancel: For a run in a background thread (:class:`_SceneJob`): once set, ffmpeg is
+        cancel: For a run in a background thread (:class:`SceneJob`): once set, ffmpeg is
             killed or the detection stopped, the proxy removed and :class:`~cutpoint.ffmpeg_utils.RunCancelled` raised,
             before any :data:`SCENES_FILE` is written.
         cpu_free: The caller knows no CPU-heavy step (the background HUD OCR, Whisper on the
@@ -448,7 +448,7 @@ def _hybrid_plan(
     """The NVDEC decoder, split point and CPU threads of a split scene pass of ``src``, or None
     for one decode. ``CUTPOINT_SCENE_DECODE``: ``gpu`` and ``cpu`` never split; ``hybrid``
     splits whenever NVDEC decodes ``src`` and its container seeks exactly, as the CPU half
-    seeks (:func:`_seeks_exactly`); ``auto`` only when also ``cpu_free`` (no CPU-heavy step
+    seeks (:func:`seeks_exactly`); ``auto`` only when also ``cpu_free`` (no CPU-heavy step
     runs meanwhile), the source is at least :data:`HYBRID_MIN_S` long, in one of
     :data:`HYBRID_CODECS` and :data:`HYBRID_PIX_FMTS`, and :data:`HYBRID_MIN_THREADS` CPU
     threads are left after the headroom.
@@ -457,7 +457,7 @@ def _hybrid_plan(
     mode = scene_decode_mode()
     if mode in ("gpu", "cpu") or offset or limit or duration > LONG_FILE_S:
         return None
-    if not _seeks_exactly(src):
+    if not seeks_exactly(src):
         return None
     threads = _hybrid_threads()
     if mode == "auto" and (
@@ -480,7 +480,7 @@ def _hybrid_source_ok(src: Path) -> bool:
     return info.vcodec in HYBRID_CODECS and info.pix_fmt in HYBRID_PIX_FMTS
 
 
-def _seeks_exactly(src: Path) -> bool:
+def seeks_exactly(src: Path) -> bool:
     """``src`` is in a container whose input seek lands on the frame asked for
     (:data:`HYBRID_SUFFIXES`): a scene pass may start in the middle (a split pass's CPU half,
     an edge window). MPEG-TS (#976: cuts 1.4 s late on ffmpeg 6.1) and the others decode from
@@ -671,7 +671,7 @@ def _make_proxy(
     return res
 
 
-class _SceneJob:
+class SceneJob:
     """:func:`scene_cuts` of one source in a thread, alongside its Whisper run (#725).
 
     ``cancel`` stops it: ffmpeg is killed (``run_progress``) or the detection stopped, and no
@@ -753,7 +753,7 @@ def _window_cuts(io: Path, cdir: Path, offset: float, a: float, b: float) -> lis
     proxy of that stretch made as the full one of a normal-length file (:func:`_proxy_args`),
     always decoded on the CPU: each window is a short ffmpeg run, and a GPU decoder's start-up
     costs more than the few seconds it decodes. The seek counts from the container start, as the
-    full pass's time does (#976), so ``io`` must seek exactly (:func:`_seeks_exactly`)."""
+    full pass's time does (#976), so ``io`` must seek exactly (:func:`seeks_exactly`)."""
     # its own name: another run (project) may read the same source from the shared cache folder
     proxy = cdir / f"proxy-window-{os.getpid()}-{threading.get_ident()}.mp4"
     try:
@@ -772,7 +772,7 @@ class EdgeCuts:
     curve, up to :data:`LONG_FILE_S` long (:func:`edge_windows`), detected only in windows
     around candidate edges (#730), decoded on the CPU (:func:`_window_cuts`).
 
-    :func:`~cutpoint.analyze._snap` moves an edge to a cut at most :data:`SNAP_REACH_S` away, and
+    :func:`~cutpoint.analyze.snap` moves an edge to a cut at most :data:`SNAP_REACH_S` away, and
     the detector needs :data:`SCENE_WARMUP_S` of picture around a cut, so a window reaches
     :data:`WINDOW_PAD_S` either side of an edge. The windows decoded and their cuts are kept in the
     part's cache folder as :data:`SCENE_WINDOWS_FILE` (part-relative time, as :data:`SCENES_FILE`):
@@ -780,7 +780,7 @@ class EdgeCuts:
     overlap: a new window that touches saved ones is decoded together with them, so every cut comes
     from one decode that saw the whole window. A full :data:`SCENES_FILE` of the part (a full pass,
     for a style that weighs scenes) is always used instead, and a container that does not seek
-    exactly (:func:`_seeks_exactly`) gets the full pass instead of windows."""
+    exactly (:func:`seeks_exactly`) gets the full pass instead of windows."""
 
     def __init__(
         self,
@@ -818,7 +818,7 @@ class EdgeCuts:
         ]
         if not need:
             return sorted(cuts)
-        if not _seeks_exactly(self.io):  # MPEG-TS and the like: a window would seek inexactly
+        if not seeks_exactly(self.io):  # MPEG-TS and the like: a window would seek inexactly
             logger.info(
                 "%s: no exact seek in this container; detecting scene cuts in one pass",
                 self.io.name,

@@ -182,7 +182,7 @@ def test_reanalyze_takes_a_file_without_style_and_uses_the_fallback_style(tmp_pa
     monkeypatch.setattr(analyze, "analyze", fake_analyze)
     assert reanalyze.reanalyze(tmp_path) == tmp_path / "highlights.json"
     assert seen["inputs"] == [Path(src)]
-    assert seen["style"].name == reanalyze._recorded_style({"sources": []}).name
+    assert seen["style"].name == reanalyze.recorded_style({"sources": []}).name
 
 
 def _remapped_project(home, tmp_path, monkeypatch, recorded):
@@ -522,7 +522,7 @@ def test_transcript_snippet_lists_unsure_words_by_index(
 ):
     if chars is not None:
         monkeypatch.setattr(analyze, "SNIPPET_CHARS", chars)
-    got, got_unsure = analyze._transcript_snippet(_words(probs, texts))
+    got, got_unsure = analyze.transcript_snippet(_words(probs, texts))
     assert (got, got_unsure) == (text, unsure)
 
 
@@ -532,7 +532,7 @@ def test_transcript_snippet_lists_unsure_words_by_index(
     ids=["missing-probability", "empty", "all-confident", "at-the-threshold"],
 )
 def test_transcript_snippet_without_unsure_words(words):
-    assert analyze._transcript_snippet(words)[1] is None
+    assert analyze.transcript_snippet(words)[1] is None
 
 
 @pytest.mark.parametrize(
@@ -544,7 +544,7 @@ def test_candidate_record_emits_transcript_unsure_only_when_set(unsure, present)
     c = analyze.Candidate(
         Path("a.mp4"), 1.0, 5.0, 3.0, 1.0, {}, transcript="hi", transcript_unsure=unsure
     )
-    rec = analyze._candidate_record(c, 0, get_style("funny"))
+    rec = analyze.candidate_record(c, 0, get_style("funny"))
     assert ("transcript_unsure" in rec) is present
     if present:
         assert rec["transcript_unsure"] == unsure

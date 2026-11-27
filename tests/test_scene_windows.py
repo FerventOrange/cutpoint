@@ -127,7 +127,7 @@ def test_scene_snapping_reaches_one_second_but_sentence_snapping_goes_further():
     got = []
     for cuts in ([102.4], [101.3]):  # each within reach of the unsnapped start 101.9
         c = analyze.Candidate(Path("a.mp4"), 101.9, 130.0, 110.0, 1.0, {})
-        analyze._snap(c, cuts, segs, 600.0, get_style("commentary"))
+        analyze.snap(c, cuts, segs, 600.0, get_style("commentary"))
         got.append(c.start)
     assert got[0] - got[1] > 2 * scenes.SNAP_REACH_S
 
@@ -284,7 +284,7 @@ def edges(res) -> list[float]:
 @pytest.mark.parametrize("name", ["funny", "commentary"])
 def test_a_style_without_scene_weight_runs_no_full_pass(world, monkeypatch, name):
     monkeypatch.setenv("CUTPOINT_ANALYZE_SCENE_OVERLAP", "1")  # no scene thread either
-    monkeypatch.setattr(scenes, "_SceneJob", lambda *a, **k: pytest.fail("scene thread"))
+    monkeypatch.setattr(scenes, "SceneJob", lambda *a, **k: pytest.fail("scene thread"))
     res = world.source(get_style(name))
     assert res.candidates and world.full == []
     assert world.decodes  # windows around the edges instead
@@ -298,13 +298,13 @@ def test_a_style_without_scene_weight_runs_no_full_pass(world, monkeypatch, name
 
 def test_every_unsnapped_edge_lies_inside_a_decoded_window(world, monkeypatch):
     seen = []
-    real = analyze._snap
+    real = analyze.snap
 
     def spy(c, cuts, segments, duration, style, index=None):
         seen.append((c.start, c.end))
         real(c, cuts, segments, duration, style, index)
 
-    monkeypatch.setattr(analyze, "_snap", spy)
+    monkeypatch.setattr(analyze, "snap", spy)
     world.source(get_style("funny"))
     wins = [(a, b) for _off, a, b in world.decodes]
     for t in (t for pair in seen for t in pair):
@@ -354,7 +354,7 @@ def test_a_long_source_of_a_style_without_scene_weight_overlaps_as_before(world,
         def result(self):
             return self.cuts
 
-    monkeypatch.setattr(scenes, "_SceneJob", Job)
+    monkeypatch.setattr(scenes, "SceneJob", Job)
     tr = type("Tr", (StubTranscriber,), {"load": lambda self: None})()
     res = analyze.analyze_source(world.src, get_style("funny"), tr, True, None, {})
     assert len(started) == 1 and world.decodes == [] and res.stages["overlap"] is True

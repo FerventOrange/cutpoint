@@ -84,7 +84,7 @@ def test_a_weak_crash_marks_the_moment_it_overlaps_most():
     assert len(r.candidates) == 2  # no new candidate
     assert host.event["id"] == "c2" and other.event is None
     assert (host.start, host.end, host.score, host.must_include) == (140.0, 150.0, 40.0, False)
-    rec = analyze._candidate_record(host, 0, get_style("sport"))
+    rec = analyze.candidate_record(host, 0, get_style("sport"))
     assert (rec["crash_confidence"], rec["crash_forced"]) == (0.5, False)
     assert "must_include" not in rec
 
@@ -114,7 +114,7 @@ def test_a_forced_crash_record_has_the_additive_keys():
     crash_moments.add_crash_candidates(
         [r], get_style("action"), {"crashes": [record("c1", 50.0, 0.9)]}
     )
-    rec = analyze._candidate_record(r.candidates[0], 0, get_style("action"))
+    rec = analyze.candidate_record(r.candidates[0], 0, get_style("action"))
     assert rec["must_include"] is True and rec["kind"] == "crash"
     assert rec["crash"]["id"] == "c1"
     assert (rec["crash_confidence"], rec["crash_forced"]) == (0.9, True)
@@ -132,7 +132,7 @@ def test_action_cam_forced_crashes_keep_their_ski_record_plus_the_new_keys():
     style = get_style(ACTION_CAM)
     c = analyze.Candidate(SRC, 95.0, 108.0, 100.0, 0.72, {}, kind="wipeout", must_include=True)
     c.event = {"type": "crash", "id": "c1", "t": 100.0, "end": 101.5, "confidence": 0.72}
-    rec = analyze._candidate_record(c, 0, style)
+    rec = analyze.candidate_record(c, 0, style)
     assert rec["must_include"] is True and rec["crash"] is c.event and rec["kind"] == "wipeout"
     assert (rec["crash_confidence"], rec["crash_forced"]) == (0.72, True)
 
@@ -422,7 +422,7 @@ def test_recorded_style_of_a_deleted_style_is_its_base_with_the_crash_threshold(
     one INFO line; the recorded --must-include-crash still applies."""
     hl = {"style": "gone", "style_base": "action", "settings": {"must_include_crash": 0.8}}
     with caplog.at_level(logging.INFO):
-        style = reanalyze._recorded_style(hl)
+        style = reanalyze.recorded_style(hl)
     assert style == replace(get_style("action"), must_include_crash=0.8)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
         (
@@ -437,11 +437,11 @@ def test_a_file_without_style_takes_the_fallback_style_and_its_crash_threshold()
     the recorded --must-include-crash applies, and restyled tells no override from the
     fallback style's own threshold (#1015)."""
     hl = {"style_base": "sport", "settings": {"must_include_crash": 0.8}}
-    assert reanalyze._recorded_style(hl) == replace(get_style("sport"), must_include_crash=0.8)
+    assert reanalyze.recorded_style(hl) == replace(get_style("sport"), must_include_crash=0.8)
     hl = {"detection": {"style": "commentary"}, "settings": {}}
-    assert reanalyze._recorded_style(hl) == get_style("commentary")
+    assert reanalyze.recorded_style(hl) == get_style("commentary")
     bare = {"settings": {"must_include_crash": get_style("action").must_include_crash}}
-    assert reanalyze._recorded_style(bare) == get_style("action")
+    assert reanalyze.recorded_style(bare) == get_style("action")
     assert reanalyze.restyled(bare, get_style("funny")) is get_style("funny")  # same as its own
     bare["settings"]["must_include_crash"] = 0.9
     assert reanalyze.restyled(bare, get_style("funny")).must_include_crash == 0.9
@@ -455,7 +455,7 @@ def test_recorded_style_without_a_built_in_base_names_the_missing_style(tmp_path
     if base is not None:
         hl["style_base"] = base
     with pytest.raises(ValueError, match=r"'gone' of this analysis is not in the style library"):
-        reanalyze._recorded_style(hl)
+        reanalyze.recorded_style(hl)
     cache.save_json(tmp_path / "highlights.json", hl)
     with pytest.raises(ValueError, match="run 'cutpoint analyze' again with another --style"):
         crash_moments.rebuild_crash_moments(tmp_path)
