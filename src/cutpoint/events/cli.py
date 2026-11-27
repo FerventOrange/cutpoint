@@ -354,7 +354,7 @@ def _report_events(args: argparse.Namespace, jpath: Path, tpath: Path) -> None:
     jsonout.output("windows", len(data.get("windows") or []))
     jsonout.output("highlights", None)  # set below once the rescore wrote it
     if "crash" in layers and not args.only:  # the crash layer ranks all sources
-        jsonout.output("crashes", args.project / "crashes.json")
+        jsonout.output("crashes", args.project / projectfiles.CRASHES)
     if stats.get("sheets"):
         jsonout.output("sheets", [Path(p) for p in stats["sheets"]])
     if stats.get("discovery"):
