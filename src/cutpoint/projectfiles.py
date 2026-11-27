@@ -12,6 +12,22 @@ from typing import Any
 HIGHLIGHTS = "highlights.json"  # the ranked candidates of the analysis
 PRE_EVENTS = "highlights.pre-events.json"  # the ranking before the events (deleted once ranked)
 RERANK_BACKUP = "highlights.before-rerank.json"  # the highlights.json a rerank replaced (Undo)
+TRANSCRIPT = "transcript.txt"  # the time-stamped transcript
+EVENTS_JSON = "events.json"  # detected sounds, HUD events, model descriptions
+EVENTS_TXT = "events.txt"  # the same, as text
+PROGRESS = "progress.json"  # the last run, read by resume
+ACTIVITY = "activity.json"  # the activity profile in use
+CRASHES = "crashes.json"  # detected crashes
+TELEMETRY = "telemetry.json"  # action-cam telemetry
+MIX_SEGMENTS = "mix_segments.json"  # the arc ``cutpoint mix`` chose
+MIX_REPORT = "mix_report.json"  # the arc and its quality check
+MIX_SHEET = "mix_sheet.jpg"  # contact sheet of the arc
+MIX_EXCLUDE = "mix_exclude.json"  # source ranges ``360 repair`` cuts out
+PANO = "pano.json"  # the 360 project's scan
+PANO_TIMINGS = "pano_timings.json"  # step timings of ``360 analyze``
+MANIFEST = "manifest.json"  # in a clips folder: its clips, sources and times
+FINAL_VIDEO = "final.mp4"  # the assembled video
+FINAL_VERTICAL = "final_vertical.mp4"  # the assembled vertical video
 UI_DIR = "ui"  # per-project state folder of cutpoint ui
 REWRITE_HINT = "; re-run `cutpoint analyze` to rewrite it"
 

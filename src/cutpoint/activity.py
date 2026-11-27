@@ -112,7 +112,7 @@ from cutpoint.events.common import load_highlights
 from cutpoint.events.visual import load_visual, text_embeddings
 from cutpoint.events.vlm_windows import ACTION_CAM_TAGS
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import ACTIVITY, HIGHLIGHTS
 from cutpoint.utils import context_block, data_block, footage_context, slugify
 from cutpoint.vision import VisionRater
 
@@ -121,7 +121,7 @@ logger = logging.getLogger(__name__)
 # 2: a record holds the full profile (every caption section and the vlm wording); an older
 # record is resolved again
 PROFILE_VERSION = 2
-ACTIVITY_FILE = "activity.json"
+ACTIVITY_FILE = ACTIVITY
 BUILTIN_DIR = Path(__file__).parent / "presets" / "activities"
 MAX_PROMPTS = 16  # per caption list
 MAX_WORDS = 40

@@ -24,7 +24,16 @@ from cutpoint.config import (
 )
 from cutpoint.kinds import KINDS
 from cutpoint.pano import x3
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import (
+    ACTIVITY,
+    CRASHES,
+    EVENTS_JSON,
+    FINAL_VERTICAL,
+    FINAL_VIDEO,
+    HIGHLIGHTS,
+    MANIFEST,
+    PANO,
+)
 from cutpoint.sources import TRANSCRIPT_MODELS
 from cutpoint.styles import AUTO
 from cutpoint.ui.analysis import (
@@ -165,7 +174,7 @@ def _analyze_360_job(r: _JobRequest) -> JobSpec:
         only = [x3.clip_key(f["date"], f["time"], f["num"]) if c == f["num"] else c for c in only]
     live = ProjectStyle.of(meta, hl).library(style)  # a deleted style: its recorded base
     _own(p, HIGHLIGHTS)  # the analysis rewrites it
-    _own(p, "pano.json")  # and the scan this
+    _own(p, PANO)  # and the scan this
     args = cutpoint_cmd("360", "analyze", str(p), "--scan", str(_pano_folder(meta["source"])))
     args += ["--style", str(live)]
     prepare: Callable[[], None] | None = None
@@ -284,7 +293,7 @@ def _edit_job(r: _JobRequest) -> JobSpec:
     vertical = _flag(body, "vertical")
     force = _flag(body, "force")
     clips_name = "clips_vertical" if vertical else "clips"
-    final_name = "final_vertical.mp4" if vertical else "final.mp4"
+    final_name = FINAL_VERTICAL if vertical else FINAL_VIDEO
     _own(p, HIGHLIGHTS)  # the analysis rewrites it
     _own(p, clips_name)
     _own(p, f"{UI_DIR}/exports.json")  # refuse now, not after the edit
@@ -321,7 +330,7 @@ def _edit_job(r: _JobRequest) -> JobSpec:
             _keep_style(p, str(live), undo, det if isinstance(det, dict) else None)
 
     def on_success() -> None:
-        if not (p / clips_name / "manifest.json").is_file() or not (p / final_name).is_file():
+        if not (p / clips_name / MANIFEST).is_file() or not (p / final_name).is_file():
             raise RuntimeError("edit finished without its clips and final video")
         if skip:  # the analysis edit rewrote ran with it too
             save_analysis_skip(p, skip)
@@ -415,7 +424,7 @@ def _clips_job(r: _JobRequest) -> JobSpec:
             return stitch_first(job, p, seg_file if segments else None, chosen)
 
     def on_success() -> None:
-        if not (p / out_name / "manifest.json").is_file():
+        if not (p / out_name / MANIFEST).is_file():
             raise RuntimeError("clips finished without a manifest")
         record_export(p, out_name, "append", created=stamp, vertical=vertical, final=None)
 
@@ -440,7 +449,7 @@ def _extend_job(r: _JobRequest) -> JobSpec:
     args += _speech_args(body)
 
     def on_success() -> None:
-        if not (p / out_name / "manifest.json").is_file():
+        if not (p / out_name / MANIFEST).is_file():
             raise RuntimeError("extend finished without a manifest")
         record_export(p, out_name, "append", created=stamp, vertical=vertical, final=None)
 
@@ -563,11 +572,11 @@ def _refine_job(r: _JobRequest) -> JobSpec:
             raise bad(f"the description is at most {MAX_CONTEXT_CHARS} characters")
         if not crash_step_runs(p, meta, hl):
             raise bad("crash detection does not run for this footage")
-        _own(p, "activity.json")
-        _own(p, "crashes.json")
+        _own(p, ACTIVITY)
+        _own(p, CRASHES)
         args = cutpoint_cmd("crashes", str(p), f"--context={context.strip()}")
     else:
-        _own(p, "events.json")
+        _own(p, EVENTS_JSON)
         args = cutpoint_cmd("events", str(p))
 
     def on_result(job: Job) -> None:

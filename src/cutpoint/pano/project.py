@@ -64,10 +64,11 @@ from cutpoint import cache, paths, state
 from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.insta360 import parse_name
 from cutpoint.pano.x3 import X3Clip, assign_ids
+from cutpoint.projectfiles import PANO
 
 logger = logging.getLogger(__name__)
 
-PANO_FILE = "pano.json"
+PANO_FILE = PANO
 DEFAULT_STYLE = "action-cam"
 DEFAULT_STITCH_ARGS = (
     "-stitch_type",

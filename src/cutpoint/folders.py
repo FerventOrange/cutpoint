@@ -30,6 +30,7 @@ from cutpoint import cache, procs
 from cutpoint.cache import REPLACE_ATTEMPTS, created_dirs, load_json, make_dirs, save_json
 from cutpoint.config import path_key
 from cutpoint.errors import FolderBusyError
+from cutpoint.projectfiles import MANIFEST
 
 logger = logging.getLogger(__name__)
 
@@ -504,7 +505,7 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
     # record stays in new until every file is in (a failed swap keeps the clips resumable)
     names = sorted(
         (p.name for p in new.iterdir() if p.name != RESUME_FILE),
-        key=lambda n: (n == "manifest.json", n),
+        key=lambda n: (n == MANIFEST, n),
     )
     # one file per path_key (the first spelling): a case variant would move it twice
     present = {
@@ -512,7 +513,7 @@ def swap_in(new: Path, dst: Path, old: Iterable[str] = ()) -> None:
         for n in reversed([*old, *names])
         if (dst / n).exists() or (dst / n).is_symlink()
     }
-    olds = [] if created else sorted(present.values(), key=lambda n: (n != "manifest.json", n))
+    olds = [] if created else sorted(present.values(), key=lambda n: (n != MANIFEST, n))
     journal = {"old": olds, "new": names, "created": created}
     bak = backup_path(dst)
     bak.mkdir()

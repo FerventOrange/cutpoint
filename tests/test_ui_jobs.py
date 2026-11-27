@@ -701,6 +701,8 @@ def test_a_clips_job_reports_the_clips_it_took_over() -> None:
     assert job({"taken_over": 2})["taken_over"] == 2
     assert "taken_over" not in job({"taken_over": 0})
     assert "taken_over" not in job({})
+    assert "taken_over" not in job({"taken_over": True})
+    assert "taken_over" not in job({"taken_over": 2.0})
 
 
 @pytest.mark.slow

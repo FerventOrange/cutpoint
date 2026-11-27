@@ -32,7 +32,7 @@ from cutpoint.events import eventtypes
 from cutpoint.events.tails import EventTailSettings, group_events
 from cutpoint.ffmpeg_utils import probe
 from cutpoint.planning import Padding
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS
 from cutpoint.styles import STYLES, analysis_style, style_name
 from cutpoint.tail import TailSettings
 from cutpoint.utils import file_stamp
@@ -105,7 +105,7 @@ class EdgePlanner:
     def _stamp(self) -> tuple[int, ...]:
         """What the plan depends on besides the rows: the analysis files' modification times."""
         out = []
-        for name in (HIGHLIGHTS, "events.json"):
+        for name in (HIGHLIGHTS, EVENTS_JSON):
             try:
                 out.append((self.project / name).stat().st_mtime_ns)
             except OSError:
@@ -213,11 +213,11 @@ class EdgePlanner:
         """:func:`cutpoint.events.tails.load_events` of the project: grouped again only when
         events.json or the event types its sources resolve to (their HUD presets) changed.
         Under ``_lock``."""
-        data = self._load("events.json")
+        data = self._load(EVENTS_JSON)
         if not data:
             return None
         types = eventtypes.resolve(self.project, data)  # reads the presets each time: cheap
-        stamp = self._files.get("events.json", (None,))[0]
+        stamp = self._files.get(EVENTS_JSON, (None,))[0]
         held = self._grouped
         if held is not None and stamp is not None and held[0] == stamp and held[1] == types:
             return held[2]

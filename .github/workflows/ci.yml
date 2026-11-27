@@ -62,7 +62,8 @@ jobs:
       # verified tarball is also cached under the SHA256. If both fail, a loud ::warning:: is
       # raised and a bounded apt install (Ubuntu 24.04 ships ffmpeg 6.1) is the fallback. The
       # cache is saved only after a successful static install, never after an apt fallback.
-      # To bump: upload the new tarball to a new `ffmpeg-<version>` release of this repo and
+      # To bump: upload the new tarball to a new `ffmpeg-<version>` release of this repo (create it with
+      # `gh release create --latest=false`: a mirror must never be Latest, #1251) and
       # change FFMPEG_LINUX_URL and FFMPEG_LINUX_SHA256 both in this job's env and in the
       # Dockerfile ARGs (the docker job checks they match; BtbN's release API lists
       # `digest: sha256:...` per asset).

@@ -27,26 +27,45 @@ from pathlib import Path
 import send2trash
 
 from cutpoint import cache, folders, planning, runstate, winvol
-from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS, RERANK_BACKUP, UI_DIR
+from cutpoint.projectfiles import (
+    ACTIVITY,
+    CRASHES,
+    EVENTS_JSON,
+    EVENTS_TXT,
+    HIGHLIGHTS,
+    MANIFEST,
+    MIX_EXCLUDE,
+    MIX_REPORT,
+    MIX_SEGMENTS,
+    MIX_SHEET,
+    PANO,
+    PANO_TIMINGS,
+    PRE_EVENTS,
+    PROGRESS,
+    RERANK_BACKUP,
+    TELEMETRY,
+    TRANSCRIPT,
+    UI_DIR,
+)
 
 OWN_FILES = frozenset(
     {
         HIGHLIGHTS,
         PRE_EVENTS,
         RERANK_BACKUP,
-        "transcript.txt",
-        "events.json",
-        "events.txt",
-        "progress.json",
-        "activity.json",
-        "crashes.json",
-        "telemetry.json",
-        "mix_segments.json",
-        "mix_report.json",
-        "mix_sheet.jpg",
-        "mix_exclude.json",
-        "pano.json",
-        "pano_timings.json",
+        TRANSCRIPT,
+        EVENTS_JSON,
+        EVENTS_TXT,
+        PROGRESS,
+        ACTIVITY,
+        CRASHES,
+        TELEMETRY,
+        MIX_SEGMENTS,
+        MIX_REPORT,
+        MIX_SHEET,
+        MIX_EXCLUDE,
+        PANO,
+        PANO_TIMINGS,
     }
 )
 OWN_DIRS = frozenset(
@@ -169,7 +188,7 @@ def _clips_folder(folder: Path) -> tuple[list[Path], list[Path]]:
     """:func:`_walk` for a folder that may hold clips: only the files its ``manifest.json``
     lists (and their ``.srt``) and the manifest go, and only when Cutpoint wrote the manifest. A
     ``<clips>_qa`` folder of ``360 qa`` loses its report and sheets."""
-    manifest = folder / "manifest.json"
+    manifest = folder / MANIFEST
     if folder.name.endswith("_qa") and (folder / "qa.json").is_file():
         return _only(folder, set(), QA_FILE)
     if (
@@ -180,7 +199,7 @@ def _clips_folder(folder: Path) -> tuple[list[Path], list[Path]]:
         return [], [folder]
     data = cache.load_json(manifest)
     listed = data.get("clips") if isinstance(data, dict) else None
-    names = {"manifest.json"}
+    names = {MANIFEST}
     for entry in listed if isinstance(listed, list) else []:
         if not isinstance(entry, dict) or (file := _plain(entry.get("file"))) is None:
             continue

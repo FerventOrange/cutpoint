@@ -69,6 +69,7 @@ from cutpoint.dsp import bin_of, mask_runs
 from cutpoint.events.sheets import contact_sheet
 from cutpoint.events.visual import load_visual
 from cutpoint.pano import views
+from cutpoint.projectfiles import MIX_EXCLUDE, MIX_REPORT, MIX_SEGMENTS, MIX_SHEET, TELEMETRY
 from cutpoint.telemetry import DT
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ LENGTHS = {
 }
 MIN_MIX_PIECE_S = 2.5  # shortest clip left after cutting out excluded spans
 TRIM_FRAC = 0.75  # ... and at least this share of the category's LENGTHS minimum
-EXCLUDE_FILE = "mix_exclude.json"
+EXCLUDE_FILE = MIX_EXCLUDE
 CRASH_MAX_S = 12.0  # crash clip (approach, impact, aftermath) cap
 REACTION_MAX_S = 8.0
 LIFT_MIN_S = 20.0
@@ -519,7 +520,7 @@ def _runs_index(
 ) -> tuple[list[dict[str, Any]], dict[str, float | None]]:
     """Telemetry runs and each source's start (epoch; None if unknown) from telemetry.json,
     keyed by ``key`` (a cached :func:`~cutpoint.clips.source_key`)."""
-    tj = cache.load_json(project / "telemetry.json") or {}
+    tj = cache.load_json(project / TELEMETRY) or {}
     starts = {key(c["source"]): c.get("start_epoch") for c in tj.get("clips", [])}
     return tj.get("runs", []), starts
 
@@ -781,7 +782,7 @@ def run_mix(
     for seg, (s, c) in zip(segs, flat, strict=True):  # the profile's opener categories
         if s is c and c.category in pm.opener:
             seg["opener"] = True
-    out = out or project / "mix_segments.json"
+    out = out or project / MIX_SEGMENTS
     if previous is not None:
         prior = previous
     else:  # as written: a relative source is relative to the file's folder
@@ -819,7 +820,7 @@ def run_mix(
         length_window_s=length_window(target_s),
         opener=pm.opener or None,
     )
-    cache.save_json(out.with_name("mix_report.json"), report)
+    cache.save_json(out.with_name(MIX_REPORT), report)
     logger.info(
         "mix: %d segments, %.0f s; %s; %d/%d runs, %d sources -> %s",
         len(segs),
@@ -834,7 +835,7 @@ def run_mix(
     )
     failed = [k for k, v in report["content_qa"]["checks"].items() if not v["ok"]]
     logger.info("mix content QA: %s", f"FAIL ({', '.join(failed)})" if failed else "pass")
-    sheet_file = out.with_name("mix_sheet.jpg")
+    sheet_file = out.with_name(MIX_SHEET)
     report["sheet"] = _write_sheet(segs, sheet_file, pm.names) if sheet else None
     return report
 
