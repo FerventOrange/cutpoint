@@ -109,7 +109,7 @@ CACHE_FILLERS: dict[str, Callable[[Path, pytest.MonkeyPatch], None]] = {
     "cutpoint.ffmpeg_utils.find_tool": _fill_find_tool,
     "cutpoint.ffmpeg_utils._probe_stamp": lambda t, m: (
         _fill_find_tool(t, m),
-        ffmpeg_utils._probe_stamp(False),
+        ffmpeg_utils._probe_stamp(""),
     ),
     "cutpoint.ffmpeg_utils.encoder_error": _fill_encoder,
     "cutpoint.ffmpeg_utils.decoder_error": _fill_decoder,
