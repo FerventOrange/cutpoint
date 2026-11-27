@@ -926,9 +926,9 @@ def test_a_director_preview_renders_in_the_background_and_is_reused(
 def test_two_apps_in_one_process_share_no_planners_or_login_states(tmp_path: Path) -> None:
     """The routes read the state of the app that served them, not a module-level dict."""
     a, b = ui.create_app(PORT), ui.create_app(PORT)
-    assert a.state.planners is not b.state.planners
-    assert a.state.login_states is not b.state.login_states
     proj = tmp_path / "proj"
+    proj.mkdir()
+    assert a.state.login_states is not b.state.login_states
     assistant_routes.edge_planner(a, proj)
     assert proj in a.state.planners and b.state.planners == {}
 

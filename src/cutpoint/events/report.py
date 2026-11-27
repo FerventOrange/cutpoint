@@ -11,6 +11,7 @@ from cutpoint import cache
 from cutpoint.config import source_path
 from cutpoint.events.common import load_transcript_lines
 from cutpoint.events.scoring import DIALOGUE_TYPE
+from cutpoint.projectfiles import EVENTS_JSON, EVENTS_TXT
 from cutpoint.utils import clock
 
 
@@ -175,7 +176,7 @@ def write_outputs(
             for w in windows
         ],
     }
-    jpath = project / "events.json"
+    jpath = project / EVENTS_JSON
     cache.save_json(jpath, data)
 
     model = (settings.get("vlm") or {}).get("model") or "Vision model"
@@ -216,7 +217,7 @@ def write_outputs(
         lines.append(f"# {src}")
         lines.extend(r[2] for r in sorted(rows, key=lambda r: (r[0], r[1])))
         lines.append("")
-    tpath = project / "events.txt"
+    tpath = project / EVENTS_TXT
     # Text mode's line endings, as a plain write_text gave them; atomic, and held back with
     # events.json while `cutpoint analyze` runs (cache.hold_outputs)
     cache.save_bytes(tpath, "\n".join(lines).replace("\n", os.linesep).encode("utf-8"))
@@ -232,7 +233,7 @@ def kept_dialogue(project: Path, sources: list[str]) -> list[dict[str, Any]]:
     """The dialogue events of the events.json already in ``project`` for ``sources``: a run
     that does not read dialogue (``cutpoint events``, ``analyze --skip dialogue``) rewrites
     events.json and keeps them."""
-    doc = cache.load_json(project / "events.json")
+    doc = cache.load_json(project / EVENTS_JSON)
     found = doc.get("events") if isinstance(doc, dict) else None
     wanted = set(sources)
     return [
@@ -251,7 +252,7 @@ def replace_dialogue(project: Path, new: list[dict[str, Any]], sources: list[str
     The transcript lines of events.txt are those of the analysis in progress, if any
     (:func:`cutpoint.events.common.pending_highlights`).
     """
-    doc = cache.load_json(project / "events.json")
+    doc = cache.load_json(project / EVENTS_JSON)
     doc = doc if isinstance(doc, dict) else None
     old = [e for e in (doc or {}).get("events", []) if is_dialogue(e)]
     if not old and not new:

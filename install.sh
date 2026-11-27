@@ -1,8 +1,8 @@
 #!/bin/sh
 # Cutpoint installer for Linux (and macOS, CPU only).
 #
-#   curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh
-#   curl -LsSf https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.sh | sh -s -- --lite
+#   curl -LsSf https://github.com/FerventOrange/cutpoint/releases/latest/download/install.sh | sh
+#   curl -LsSf https://github.com/FerventOrange/cutpoint/releases/latest/download/install.sh | sh -s -- --lite
 #
 # Installs uv and ffmpeg when they are missing, then installs Cutpoint as a uv tool
 # with the right torch build for this machine. Re-running it upgrades or switches mode.

@@ -63,13 +63,13 @@ from cutpoint import __version__, cache, folders, jsonout, projectfiles
 from cutpoint.config import path_key
 from cutpoint.errors import LowMemoryError
 from cutpoint.progress import Run
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import HIGHLIGHTS, MANIFEST, PANO, PROGRESS
 from cutpoint.utils import command_line, file_stamp
 
 logger = logging.getLogger(__name__)
 
 VERSION = 1
-FILE = "progress.json"
+FILE = PROGRESS
 LOCK_NAME = "analysis.run"  # swap_lock(<project>/analysis.run): .analysis.run.cutpoint-lock
 # clips: so cutpoint resume replays an interrupted export (cutpoint.clipresume)
 COMMANDS = frozenset({"analyze", "edit", "events", "crashes", "profile", "360 analyze", "clips"})
@@ -185,7 +185,7 @@ class Recorder:
         alone only for ``analyze``, ``edit`` and ``360 analyze``, which resume it, so that
         ``events``, ``crashes`` or ``profile`` stop with ``not_found`` and leave the record of
         an interrupted first ``analyze`` as it was."""
-        names = [HIGHLIGHTS, "pano.json"]
+        names = [HIGHLIGHTS, PANO]
         if self.command in AFTER_TRANSCRIPT or self.command == "360 analyze":
             names.append(FILE)
         return any((self.project / n).is_file() for n in names)
@@ -509,14 +509,14 @@ def clips_written(project: Path, clips_dir: Path) -> None:
     """``edit`` exported (or kept) the clips of ``clips_dir``: record the stamp of their
     ``manifest.json`` (no-op outside :func:`record` or before ``progress.json``)."""
     rec = _active(project)
-    stamp = _stamp(clips_dir / "manifest.json")
+    stamp = _stamp(clips_dir / MANIFEST)
     if rec is None or stamp is None:
         return
     with rec._lock:
         entry = rec.data["steps"].setdefault(
             "clips", {"state": None, "done": None, "total": None, "pct": None}
         )
-        entry["manifest"] = {"path": str(clips_dir / "manifest.json"), "stamp": stamp}
+        entry["manifest"] = {"path": str(clips_dir / MANIFEST), "stamp": stamp}
         rec._write()
 
 
@@ -534,7 +534,7 @@ def clips_kept(project: Path, clips_dir: Path) -> bool:
     manifest = entry.get("manifest")
     if not isinstance(manifest, dict):
         return False
-    path = clips_dir / "manifest.json"
+    path = clips_dir / MANIFEST
     return path_key(str(manifest.get("path"))) == path_key(str(path)) and manifest.get(
         "stamp"
     ) == _stamp(path)

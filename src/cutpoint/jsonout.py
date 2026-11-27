@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import sys
 import threading
@@ -121,6 +122,19 @@ def warn(code: str, message: str, files: Iterable[Path | str] = ()) -> None:
             _active.warnings.append(
                 {"code": code, "message": message, "files": [_value(f) for f in files]}
             )
+
+
+def log_warn(
+    code: str,
+    message: str,
+    files: Iterable[Path | str] = (),
+    *,
+    logger: logging.Logger | None = None,
+) -> None:
+    """Log ``message`` at WARNING on ``logger`` (this module's when ``None``) and record
+    it with :func:`warn`; pass the caller's ``logger`` to keep its ``cutpoint.<module>`` name."""
+    (logger or logging.getLogger(__name__)).warning("%s", message, stacklevel=2)
+    warn(code, message, files)
 
 
 def drop_warnings(codes: Iterable[str]) -> None:

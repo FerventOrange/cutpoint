@@ -25,7 +25,7 @@ from cutpoint.assemble import JoinOptions, assemble, temporary_clips
 from cutpoint.clips import ExportOptions, Selection, export_clips
 from cutpoint.kinds import KINDS, Kind
 from cutpoint.planning import report_clips
-from cutpoint.projectfiles import HIGHLIGHTS
+from cutpoint.projectfiles import FINAL_VERTICAL, FINAL_VIDEO, HIGHLIGHTS
 from cutpoint.styles import ACTION_CAM, AUTO, AutoRequest, Style, get_style
 from cutpoint.telemetry import has_telemetry
 from cutpoint.utils import file_stamp, find_videos, input_name
@@ -249,7 +249,7 @@ def _edit_targets(
             "so nothing is written next to them"
         )
     clips_dir = project / ("clips_vertical" if vertical else "clips")
-    final_name = "final_vertical.mp4" if vertical else "final.mp4"
+    final_name = FINAL_VERTICAL if vertical else FINAL_VIDEO
     named = (project / f"{edit_name(inputs[0])}-{final_name}").with_suffix(f".{output_format}")
     named_srt = named.with_suffix(".srt")
     keys = set().union(*(folders.file_keys(v) for v in videos))
@@ -368,8 +368,7 @@ def _publish(
         cache.save_bytes(named_srt, srt.read_bytes())
     elif named_srt.exists():
         message = f"{named_srt} is from an earlier run and does not match {named.name}"
-        logger.warning("%s", message)
-        jsonout.warn("stale_srt", message, [named_srt])
+        jsonout.log_warn("stale_srt", message, [named_srt], logger=logger)
     logger.info("%s %s", "Final video:" if output_format == "mp4" else "Timeline:   ", named)
     logger.info("Subtitles:   %s", named_srt if written else "none (no transcript)")
     logger.info("Clips:       %s", to.clips_dir if keep_clips else "none (temporary, removed)")

@@ -29,6 +29,7 @@ from typing import Any
 from cutpoint import cache
 from cutpoint.events import eventtypes
 from cutpoint.events.audio_events import REACTION_GROUPS
+from cutpoint.projectfiles import EVENTS_JSON
 
 AUDIO_PAYOFFS = set(REACTION_GROUPS)
 OCR_HOLD_S = 1.0  # an OCR payoff counts as lasting this long from its first sighting
@@ -65,7 +66,7 @@ def load_events(project: Path) -> dict[str, list[dict[str, Any]]] | None:
     Events of a preset event type that sets ``payoff`` or ``tail_s`` get them as
     in-memory ``_payoff`` / ``_tail_s`` fields (events.json is not changed).
     """
-    data = cache.load_json(project / "events.json")
+    data = cache.load_json(project / EVENTS_JSON)
     if not data:
         return None
     return group_events(data, eventtypes.resolve(project, data))

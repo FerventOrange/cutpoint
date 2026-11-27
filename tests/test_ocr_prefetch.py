@@ -702,7 +702,9 @@ def test_without_the_hook_the_ocr_error_is_raised_unchanged(ocr_run, monkeypatch
     with pytest.raises(ValueError) as got:
         pipeline.run_events(ocr_run.project, layers=("ocr",), ocr=OcrParams(game="zonewar"))
     assert got.value is err
-    assert pipeline.ocr_failure(err) == ([str(p) for p in ocr_run.paths], False, 0)
+    assert pipeline.ocr_failure(err) == pipeline.OcrFailure(
+        [str(p) for p in ocr_run.paths], False, 0
+    )
 
 
 def test_without_the_hook_out_of_memory_stops_as_low_memory(ocr_run) -> None:

@@ -143,6 +143,9 @@ def parse_reply(content: str, thinking: str = "") -> dict[str, Any] | None:
     The thinking fallback covers a reply cut off after the model already wrote
     its answer in the reasoning. ``where`` is normalised to :data:`WHERES` (a
     blocked frame without a usable ``where`` counts as ``center``).
+
+    Not :func:`cutpoint.utils.json_object`: that returns the first object of any kind, while
+    this keeps only objects with a verdict key and takes the last one in a cut-off ``thinking``.
     """
     found = _objects(content)
     d = found[0] if found else (_objects(thinking) or [None])[-1]

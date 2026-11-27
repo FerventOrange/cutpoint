@@ -50,7 +50,7 @@ from cutpoint.assistant import context
 from cutpoint.assistant.providers import Capabilities, Provider, accepts_images, endpoint
 from cutpoint.errors import FFmpegError
 from cutpoint.ffmpeg_utils import GRAB_WORKERS, grab_frame_jpeg
-from cutpoint.projectfiles import UI_DIR
+from cutpoint.projectfiles import EVENTS_JSON, UI_DIR
 from cutpoint.utils import clock
 from cutpoint.vision import _frame_times
 
@@ -376,7 +376,7 @@ class Viewer:
     def events(self) -> list[Any]:
         """The project's ``events.json`` entries ([] without one), read once."""
         if self._events is None:
-            path = self.project / "events.json"
+            path = self.project / EVENTS_JSON
             data = cache.load_json(path) if _inside(self.project, path) else None
             found = data.get("events") if isinstance(data, dict) else None
             self._events = found if isinstance(found, list) else []

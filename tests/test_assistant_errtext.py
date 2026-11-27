@@ -174,6 +174,13 @@ def test_error_text_with_an_apostrophe_in_the_path() -> None:
     assert not any(w in got for w in ("Brien", "Videos", "Sean"))
 
 
+def test_quoted_refused_folder_with_spaces_is_fully_redacted(tmp_path: Any) -> None:
+    refused = tmp_path / "My Scratch"
+    got = errtext.no_paths(f'cannot open "{refused}"')
+    assert got == "cannot open <folder>"
+    assert "My" not in got and "Scratch" not in got
+
+
 # -- the turn ------------------------------------------------------------------------------------
 
 

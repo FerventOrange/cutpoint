@@ -1,7 +1,7 @@
 # Cutpoint installer for Windows (PowerShell 5.1 and 7).
 #
-#   irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
-#   $env:CUTPOINT_LITE = 1; irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+#   irm https://github.com/FerventOrange/cutpoint/releases/latest/download/install.ps1 | iex
+#   $env:CUTPOINT_LITE = 1; irm https://github.com/FerventOrange/cutpoint/releases/latest/download/install.ps1 | iex
 #
 # Installs uv and ffmpeg when they are missing, then installs Cutpoint as a uv tool
 # with the right torch build for this machine. Re-running it upgrades or switches mode.
@@ -91,7 +91,7 @@ function Invoke-CutpointInstaller {
 Cutpoint installer
 
 Usage: install.ps1 [options]
-       irm https://raw.githubusercontent.com/FerventOrange/cutpoint/main/install.ps1 | iex
+       irm https://github.com/FerventOrange/cutpoint/releases/latest/download/install.ps1 | iex
 
 Installs uv and ffmpeg when missing, then Cutpoint as a uv tool (run again to upgrade;
 do not use `uv tool upgrade`, it drops the torch build).
