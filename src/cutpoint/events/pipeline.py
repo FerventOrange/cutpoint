@@ -204,14 +204,16 @@ def run_events(
     batch_size: int = 0,
     dialogue: Callable[[dict[str, list[dict[str, Any]]]], list[dict[str, Any]]] | None = None,
     context: str | None = None,
+    vision: bool | None = None,
 ) -> tuple[Path, Path]:
     """Run the event layers on every source of ``project``.
 
     Args:
         project: Project folder containing highlights.json (and transcript.txt).
         layers: Layers to run; layers left out still contribute cached results.
-            None = audio, OCR and VLM; action-cam projects: audio, voice, visual and
-            VLM (no HUD, so no OCR).
+            None = audio, OCR, overlay and VLM; action-cam projects: audio, voice, visual,
+            crash, overlay and VLM (no HUD, so no OCR). The overlay layer
+            (:mod:`cutpoint.events.overlays`) reads nothing for gameplay styles.
         only: Glob patterns; restrict to sources whose file name matches.
         audio, ocr, vlm: Layer parameters (defaults when None).
         force: Layers whose caches are ignored.
@@ -228,7 +230,7 @@ def run_events(
             "project" (``<project>/hud_presets``).
         sheets: Write visual-layer contact sheets to ``<project>/visual_check``.
         stage: Called with each layer of ``layers`` that runs ("audio", "voice",
-            "visual", "ocr", "crash"; not "vlm"), then with "write" for the events
+            "visual", "ocr", "overlay", "crash"; not "vlm"), then with "write" for the events
             collected and written; the context manager it returns wraps that part
             (``cutpoint analyze`` reports its steps with it, and may suppress a layer's
             error to go on without it). None: each layer starts its step of the active
@@ -264,6 +266,9 @@ def run_events(
             with the layer-1 events per source path (before they are normalized) after the
             VLM layer; returns events.json entries (:func:`cutpoint.events.dialogue.to_events`)
             that replace the earlier dialogue events. None: the earlier ones are kept.
+        vision: ``--no-vision`` / ``"vision": false`` (False): no frames go to a vision model
+            for the HUD map, its top-up or the overlays (:func:`vision_off`); None: as the
+            analysis recorded it (``settings.vision_off``).
 
     Returns:
         Paths of events.json and events.txt.
@@ -296,6 +301,7 @@ def run_events(
         is_cam=is_cam,
         crash_run="crash" in layers and not only,  # project-wide ranking: all sources
         layer1={str(s.path): [] for s in sources},
+        vision_off=vision_off(vision, hl),
     )
     by_path = {str(s.path): s for s in sources}
     transcript = load_transcript_lines(project)
@@ -346,6 +352,10 @@ def run_events(
             prefetch.close()  # its worker uses the engine: stopped first (idempotent)
         _release_engine(run.make_engine)
         run.make_engine = None
+
+    # ---- on-screen overlays of non-gameplay footage (#1069 (c)): vision points, OCR reads
+    with run.stage("overlay") if "overlay" in layers else contextlib.nullcontext():
+        _overlay_layer(run, rater, context, hwaccel=ocr.hwaccel)
 
     # ---- crashes (after voice + visual, whose caches it reads): crashes.json
     if run.crash_run:
@@ -398,6 +408,16 @@ class _Run:
     kept: list[Any] = field(default_factory=list)  # a CLIP handed over to the crash layer
     # the OCR engine's maker; a stage that suppresses the OCR layer's error keeps the current one
     make_engine: Callable[[], OcrEngine] | None = None
+    vision_off: bool = False  # --no-vision: no HUD map, top-up or overlays (:func:`vision_off`)
+
+
+def vision_off(vision: bool | None, hl: dict[str, Any]) -> bool:
+    """Whether vision is off for the HUD map, its top-up and the overlays: ``vision`` False
+    (``--no-vision``, ``"vision": false`` in config.json), or None and the analysis recorded
+    it (``settings.vision_off``, so ``cutpoint events`` and ``edit --events`` follow it)."""
+    if vision is not None:
+        return vision is False
+    return (hl.get("settings") or {}).get("vision_off") is True
 
 
 def _raise_if_all_failed(
@@ -666,6 +686,17 @@ def _ocr_discovery(
     # the HUD map and the feed labels share the model check, load and budget; the map's
     # prompt carries the user's words about the footage (#1068)
     calls = VisionCalls(rater) if rater is not None else None
+    vision_rater = rater  # None with vision off: no frame or crop goes to the model
+    if run.vision_off:
+        logger.info(
+            'Vision is off (--no-vision or "vision": false): no HUD map or top-up; the HUD '
+            "regions come from pixels and OCR"
+        )
+        logger.info(
+            'Vision is off (--no-vision or "vision": false): no feed labels; the kill feed is '
+            "read by the rules"
+        )
+        vision_rater = None
     words = footage_context(
         context if context is not None else (run.hl.get("settings") or {}).get("context")
     )
@@ -678,8 +709,8 @@ def _ocr_discovery(
             bursts,
             scope,
             hint,
-            make_labeler(rater, calls) if rater is not None and calls else None,
-            make_mapper(rater, words, calls) if rater is not None and calls else None,
+            make_labeler(vision_rater, calls) if vision_rater is not None and calls else None,
+            make_mapper(vision_rater, words, calls) if vision_rater is not None and calls else None,
             # a top-up changes the preset the background OCR reads with: stopped first
             before_top_up=prefetch.close if prefetch is not None else None,
         )
@@ -782,6 +813,55 @@ def _ocr_layer(
             ocr_stats[ocr_stats_key(s.path, [t.path for t in sources])] = st
     run.vram["ocr"] = vm.summary()
     run.stats["ocr"] = ocr_stats
+
+
+def _overlay_layer(
+    run: _Run, rater: VisionRater | None, context: str | None, *, hwaccel: bool
+) -> None:
+    """The overlays of non-gameplay footage (:mod:`cutpoint.events.overlays`) for the project's
+    style (:func:`~cutpoint.events.layers.overlay_kinds`; none for gameplay): read when the
+    layer runs, else the events of an earlier run are kept. Optional: a failure or too little
+    memory gives a WARNING and a ``step_failed`` warning, and the run goes on without them."""
+    from cutpoint.events import overlays  # noqa: PLC0415
+    from cutpoint.events.feed_labels import VisionCalls  # noqa: PLC0415
+    from cutpoint.events.layers import overlay_kinds  # noqa: PLC0415
+    from cutpoint.events.ocr_engine import SharedOcr  # noqa: PLC0415
+
+    kinds = overlay_kinds(*analysis_names(run.hl))
+    if not kinds:
+        return
+    t0 = time.perf_counter()
+    words = footage_context(
+        context if context is not None else (run.hl.get("settings") or {}).get("context")
+    )
+    make_engine = SharedOcr(lanes=1, rec_batch=1)
+    try:
+        found, stats = overlays.run_overlays(
+            run.sources,
+            kinds,
+            VisionCalls(rater) if rater is not None else None,
+            context=words,
+            make_engine=make_engine,
+            run="overlay" in run.layers,
+            force="overlay" in run.force,
+            hwaccel=hwaccel,
+            avoid=run.bad,
+            vision=not run.vision_off,
+        )
+    except Exception as err:  # optional (a LowMemoryError too: the overlays only boost)
+        message = f"Overlays skipped: {err}; continuing without them"
+        logger.debug("overlay layer failed", exc_info=True)
+        logger.warning("%s", message)
+        jsonout.warn("step_failed", message)
+        return
+    finally:
+        make_engine.release()
+    for path, evs in found.items():
+        if path in run.layer1:
+            run.layer1[path] += evs
+    run.stats["overlays"] = stats
+    if "overlay" in run.layers:
+        run.timings["overlay_s"] = round(time.perf_counter() - t0, 1)
 
 
 def _confirm_explosions(run: _Run, boom: explosions.ExplosionParams) -> None:

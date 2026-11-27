@@ -1981,10 +1981,14 @@ def planned(style: str, skip=()):
         ("gaming", {"reactions": ("audio",), "keyframes": ("ocr",)}, {"crashes"}),
         (
             "action",
-            {"reactions": ("audio", "voice"), "keyframes": ("visual",), "crashes": ("crash",)},
+            {
+                "reactions": ("audio", "voice"),
+                "keyframes": ("visual", "overlay"),
+                "crashes": ("crash",),
+            },
             set(),
         ),
-        ("commentary", {"reactions": ("audio",)}, {"keyframes", "crashes"}),
+        ("commentary", {"reactions": ("audio",), "keyframes": ("overlay",)}, {"crashes"}),
     ],
 )
 def test_plan_by_style(env, style, layers, skipped):
@@ -1999,7 +2003,7 @@ def test_plan_by_style(env, style, layers, skipped):
     [
         ("funny", category.GENERAL, ("visual",), True),  # funny on camera footage: no HUD OCR
         ("action", category.GAMEPLAY, ("ocr",), False),
-        ("commentary", category.TALK, None, False),
+        ("commentary", category.TALK, ("overlay",), False),  # #1069: lower-thirds
         ("funny", category.ACTION, ("visual",), True),  # action footage: visual layer and crashes
     ],
 )
@@ -2014,10 +2018,10 @@ def test_plan_follows_the_detected_category_not_the_style(env, style, cat, keyfr
     [
         ("gaming", ("ocr",), ("ocr", "visual")),  # the index first, the HUD text after it
         ("funny", ("ocr",), ("ocr", "visual")),
-        ("commentary", None, ("visual",)),
-        ("action", ("visual",), ("visual",)),  # always has it: the option changes nothing
-        ("sport", ("visual",), ("visual",)),
-        ("action-cam", ("visual",), ("visual",)),
+        ("commentary", ("overlay",), ("visual", "overlay")),  # #1069: the overlays too
+        ("action", ("visual", "overlay"), ("visual", "overlay")),  # the option changes nothing
+        ("sport", ("visual", "overlay"), ("visual", "overlay")),
+        ("action-cam", ("visual", "overlay"), ("visual", "overlay")),
     ],
 )
 def test_plan_visual_index_is_opt_in_for_the_styles_without_it(env, style, off, on):
@@ -2042,12 +2046,14 @@ def test_plan_visual_index_without_cuda_is_the_light_index_after_the_hud_text(en
     assert p.layers["keyframes"] == ("ocr", "visual_light") and "keyframes" not in p.skipped
     assert p.no_visual == analyze.SKIP_NO_CUDA
     talk = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), None, True)
-    assert talk.layers["keyframes"] == ("visual_light",) and "keyframes" not in talk.skipped
+    assert (
+        talk.layers["keyframes"] == ("overlay", "visual_light") and "keyframes" not in talk.skipped
+    )
 
 
 @pytest.mark.parametrize(
     ("style", "keyframes"),
-    [("gaming", ("ocr",)), ("funny", ("ocr",)), ("commentary", None)],
+    [("gaming", ("ocr",)), ("funny", ("ocr",)), ("commentary", ("overlay",))],
 )
 def test_plan_without_cuda_gives_no_light_index_where_a_gpu_writes_none(env, style, keyframes):
     """Q5 option (a): only where a GPU run indexes (here: no --visual-index)."""
@@ -2061,10 +2067,10 @@ def test_plan_without_cuda_gives_no_light_index_where_a_gpu_writes_none(env, sty
 @pytest.mark.parametrize(
     ("style", "cat", "keyframes"),
     [
-        ("sport", None, ("visual_light",)),  # the sport style is action footage
-        ("action-cam", None, ("visual_light",)),
+        ("sport", None, ("overlay", "visual_light")),  # the sport style is action footage
+        ("action-cam", None, ("overlay", "visual_light")),
         ("funny", "general", ("visual_light",)),
-        ("commentary", "general", ("visual_light",)),
+        ("commentary", "general", ("overlay", "visual_light")),
         ("funny", "gameplay", ("ocr",)),
     ],
 )
@@ -2083,7 +2089,8 @@ def test_plan_light_index_without_clip_files_is_left_out(env):
     p = analyze.plan_layers(get_style("gaming"), [Path("a.mp4")], (), None, True)
     assert p.layers["keyframes"] == ("ocr",)
     got, why = planned("action")
-    assert "keyframes" not in got and "cutpoint setup --only visual" in why["keyframes"]
+    # #1069: the overlay layer needs no model files, so the keyframes step keeps it
+    assert got["keyframes"] == ("overlay",) and "keyframes" not in why
 
 
 def test_plan_visual_index_without_clip_files_keeps_the_hud_text(env):
@@ -2106,7 +2113,7 @@ def test_analyze_hands_the_option_to_the_plan(run):
 
 def test_plan_ski_is_action_footage(env):
     got, _ = planned("action-cam")
-    assert got["crashes"] == ("crash",) and got["keyframes"] == ("visual",)
+    assert got["crashes"] == ("crash",) and got["keyframes"] == ("visual", "overlay")
 
 
 def test_plan_telemetry_turns_crashes_on_for_any_style(env):
@@ -2119,7 +2126,7 @@ def test_plan_telemetry_turns_crashes_on_for_any_style(env):
 def test_plan_without_cuda_writes_the_light_index_in_place_of_the_clip_keyframes(env):
     env.cuda = False
     p = analyze.plan_layers(get_style("action"), [Path("a.mp4")], ())
-    assert p.layers["keyframes"] == ("visual_light",) and "keyframes" not in p.skipped
+    assert p.layers["keyframes"] == ("overlay", "visual_light") and "keyframes" not in p.skipped
     assert p.no_visual == analyze.SKIP_NO_CUDA  # the crashes step still says why
     assert p.layers["crashes"] == ("crash",)
     assert planned("funny")[0]["keyframes"] == ("ocr",)  # HUD text needs no CUDA
@@ -2149,13 +2156,13 @@ def test_plan_a_broken_torch_counts_as_no_cuda(env, monkeypatch, broken):
         monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(
             is_available=dll_error)))  # fmt: skip
     got, why = planned("action")
-    assert got["keyframes"] == ("visual_light",) and "keyframes" not in why
+    assert got["keyframes"] == ("overlay", "visual_light") and "keyframes" not in why
     assert got["crashes"] == ("crash",)
 
 
 def test_plan_skip_option_leaves_steps_out(env):
     got, why = planned("action", skip=("reactions", "crashes"))
-    assert got == {"keyframes": ("visual",)}
+    assert got == {"keyframes": ("visual", "overlay")}
     assert why == dict.fromkeys(("reactions", "crashes"), "left out by --skip or analysis.skip")
     # skipping crashes drops the voice layer
     assert planned("action", skip=("crashes",))[0]["reactions"] == ("audio",)
@@ -2175,8 +2182,8 @@ def test_plan_without_the_events_extra_skips_every_step(env, monkeypatch):
 
 def test_plan_without_the_extra_still_reports_the_steps_not_wanted(env, monkeypatch):
     monkeypatch.setattr(analyze, "EVENTS_MODULES", ("no_such_module_for_cutpoint_tests",))
-    _got, why = planned("commentary")
-    assert why["keyframes"].startswith("no keyframe layer")
+    _got, why = planned("funny")  # #1069: commentary has the overlay layer
+    assert why["crashes"] == "not action-cam footage"
     assert why["reactions"] == "events extra not installed"
 
 
@@ -3149,7 +3156,7 @@ def test_action_footage_plans_the_layers_of_action_footage(env):
     p = analyze.plan_layers(get_style("commentary"), [Path("a.mp4")], (), category.ACTION)
     assert p.layers == {
         "reactions": ("audio", "voice"),
-        "keyframes": ("visual",),
+        "keyframes": ("visual", "overlay"),  # #1069: commentary looks for lower-thirds
         "crashes": ("crash",),
     }
     assert not p.game

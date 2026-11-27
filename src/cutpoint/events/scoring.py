@@ -42,7 +42,14 @@ from typing import TYPE_CHECKING, Any
 
 from cutpoint import cache, projectfiles, repeats, scorer, selfcheck, sources
 from cutpoint.events.audio_events import CHEERING, DEFAULT_GROUPS, LAUGHTER, SCREAM
-from cutpoint.events.eventtypes import DEFAULT_EVENT_TYPES, EventType, first_match, resolve
+from cutpoint.events.eventtypes import (
+    DEFAULT_EVENT_TYPES,
+    OVERLAY_MAX_POINTS,
+    OVERLAY_TYPE_NAMES,
+    EventType,
+    first_match,
+    resolve,
+)
 from cutpoint.events.menu_spans import drop_menu_time, source_menu_spans
 from cutpoint.events.tails import OCR_HOLD_S
 from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
@@ -274,6 +281,10 @@ def event_boost(
 
     ``index`` (a :class:`SpanIndex` of ``events``) lets it visit only the events near the
     candidate, in the same order, so the result is the same.
+
+    The overlay types (:data:`~cutpoint.events.eventtypes.OVERLAY_TYPES`, #1069) add at most
+    :data:`~cutpoint.events.eventtypes.OVERLAY_MAX_POINTS` together; their evidence keys are
+    present only with a count.
     """
     a, b = cand["start"], cand["end"] + LOOKAHEAD_S
     laugh = scream = dialogue = 0.0
@@ -323,12 +334,20 @@ def event_boost(
 
         laugh_points *= min(1.0, laughs / minutes / DENSITY_FULL)
     boost = laugh_points + min(6.0, 40 * scream) + DIALOGUE_POINTS * dialogue
+    overlay = 0.0  # the overlay types' points: together at most OVERLAY_MAX_POINTS (#1069)
     for name in counts:  # defaults first, in the original order
         if name in scored:
             n = worth[name]
-            boost += scored[name].score * min(scored[name].max, n / minutes if long else n)
+            points = scored[name].score * min(scored[name].max, n / minutes if long else n)
+            if name in OVERLAY_TYPE_NAMES:
+                overlay += points
+            else:
+                boost += points
+    boost += min(OVERLAY_MAX_POINTS, overlay)
     for name, n in reactions.items():
         boost += reacting[name].reaction * n
+    # an overlay type's count only where it counted (the overlay layer read the footage)
+    counts = {k: v for k, v in counts.items() if v or k not in OVERLAY_TYPE_NAMES}
     evidence = {"laughter": round(laugh, 3), "scream": round(scream, 3), **counts}
     if dialogue:  # only where the dialogue reader ran
         evidence["dialogue"] = round(dialogue, 3)

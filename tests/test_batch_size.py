@@ -371,6 +371,7 @@ def test_events_records_its_layers_as_steps_and_dry_run_lists_them(layers_run, c
         "voice": "done",
         "visual": "done",
         "ocr": "done",
+        "overlay": "skipped",  # #1069: not in this run's layers
         "crash": "skipped",
         "vlm": "skipped",
         "write": "done",

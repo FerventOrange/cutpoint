@@ -282,7 +282,7 @@ class VisionCalls:
             else:
                 self.ok = bool(self.rater.available())
                 if not self.ok:
-                    logger.info("Feed labels: no vision model answers; the rules decide")
+                    logger.info("No vision model answers; the rules decide")
         return self.ok
 
     def begin(self, game: object, budget: float) -> None:
