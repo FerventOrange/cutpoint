@@ -129,7 +129,13 @@ skill names exists.
 3. Merge the pull request.
 4. Create a GitHub release with tag `X.Y.Z` (no `v` prefix) and the CHANGELOG notes.
 
-Publishing the release runs `.github/workflows/release.yml`, which builds the package, checks
+Asset-mirror releases (`ffmpeg-*`, `models-*`; they hold files for CI, Docker and `cutpoint
+setup`, not Cutpoint versions) must never be marked Latest, because the install hints use
+`releases/latest/download/...` and would 404. Create them with
+`gh release create <tag> --latest=false ...` (in the web UI, untick "Set as the latest release").
+Only the `X.Y.Z` releases above may be Latest.
+
+Publishing an `X.Y.Z` release runs `.github/workflows/release.yml`, which builds the package, checks
 that its version equals the tag, and publishes it to PyPI with Trusted Publishing.
 Once PyPI has it, the workflow attaches `install.sh` and `install.ps1` with the release version
 stamped in as the default, plus `SHA256SUMS`, to the release (#684; `scripts/stamp_installers.py`).
