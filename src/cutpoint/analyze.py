@@ -2113,7 +2113,7 @@ def _ocr_failed(err: BaseException) -> tuple[str, list[str]]:
             f"{effect} every source"
         )
     elif where.fit:  # after discovery: the presets are not checked (no "no preset" claim)
-        message = f"OCR failed in the HUD fit check ({reason}): {effect} the sources not read yet"
+        message = f"OCR failed in the HUD fit check ({reason}): {effect} every source"
     elif not paths:
         message = f"OCR failed ({reason}): {effect} every source"
     else:

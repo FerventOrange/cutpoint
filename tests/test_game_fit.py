@@ -393,6 +393,7 @@ def test_a_plain_error_in_the_fit_check_is_not_a_discovery_failure(folder, monke
     """#1287: an error in the HUD fit check is warned as a fit-check failure, not as HUD
     region discovery (which would say no preset is installed)."""
     from cutpoint.analyze import _ocr_failed  # noqa: PLC0415
+    from cutpoint.events import pipeline  # noqa: PLC0415
 
     folder.run(folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a"}))
     srcs = folder.sources({"alpha one.mp4": "a", "alpha two.mp4": "a", "alpha three.mp4": "a"})
@@ -404,11 +405,16 @@ def test_a_plain_error_in_the_fit_check_is_not_a_discovery_failure(folder, monke
     monkeypatch.setattr(game_fit, "sample_frames", sample)
     with pytest.raises(RuntimeError) as got:
         folder.run(srcs)
-    message, _ = _ocr_failed(got.value)
+    assert got.value is err
+    assert pipeline.ocr_failure(err) == pipeline.OcrFailure(
+        [str(s.path) for s in srcs], False, 0, True
+    )
+    message, files = _ocr_failed(got.value)
     assert message == (
         "OCR failed in the HUD fit check (decoder broke): menu filtering and HUD events "
-        "(kill feed, banners, notices) skipped for the sources not read yet"
+        "(kill feed, banners, notices) skipped for every source"
     )
+    assert files == [str(s.path) for s in srcs]
 
 
 def test_a_new_source_is_checked_against_the_preset_found(folder, caplog) -> None:

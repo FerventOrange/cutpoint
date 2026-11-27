@@ -163,7 +163,7 @@ class DiscoverRun:
             self.decided[str(tested[0].path)] = (game, None)
             self._persist()
             return
-        with self._fit_check():
+        with self._fit_check(game):
             got = self._fit_frames(game, proposal, srcs, tested)
             fits, _ = self._split(srcs, got)
             misfits = self._decide(game, tested, fits)
@@ -190,7 +190,7 @@ class DiscoverRun:
                 ref = (proposal.get("discovery") or {}).get("fit_ref")
                 self._add_fit_ref(game, existing.path, ref)
             return
-        with self._fit_check():
+        with self._fit_check(game):
             got = self._fit_frames(game, proposal, srcs, tested)
             if proposal is not None:
                 fits = self._refit(game, srcs, tested, existing, got)
@@ -610,17 +610,19 @@ class DiscoverRun:
         return got
 
     @contextlib.contextmanager
-    def _fit_check(self) -> Iterator[None]:
+    def _fit_check(self, game: str) -> Iterator[None]:
         """The HUD fit check's steps: an error (not out of memory) is noted as a fit-check
-        failure, not a discovery one, so the run's WARNING names the right step."""
+        failure, not a discovery one, so the run's WARNING names the right step. The fit check
+        runs before any source is read by the OCR layer, so every source is not read."""
         try:
             yield
         except LowMemoryError:
             raise
         except Exception as err:
-            memguard.raise_if_out_of_memory(err, "the HUD fit check", "this game")
+            name = "this game" if game == "game" else game
+            memguard.raise_if_out_of_memory(err, "the HUD fit check", name)
             if ocr_failure(err) is None:
-                _mark_ocr_failure(err, [], discovery=False, fit=True)
+                _mark_ocr_failure(err, self.sources, discovery=False, fit=True)
             raise
 
     def _fit_frames(
