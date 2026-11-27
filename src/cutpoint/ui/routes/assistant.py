@@ -83,7 +83,12 @@ owned_revert = APIRouter()
 
 def edge_planner(app: FastAPI, p: Path) -> ai_edges.EdgePlanner:
     planners = app.state.planners
-    return planners.setdefault(p, ai_edges.EdgePlanner(p, remap_source))
+    planner = planners.get(p)
+    if planner is None:
+        planner = ai_edges.EdgePlanner(p, remap_source)
+        if p.is_dir():  # a deleted project's running request must not re-add its planner
+            planner = planners.setdefault(p, planner)
+    return planner
 
 
 @owned.post("/projects/{pid}/edges")
