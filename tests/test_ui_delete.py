@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from conftest import link_dir, link_file, patch_ui, write
 from cutpoint import folders, projectdelete, projectfiles, runstate, ui
 from cutpoint.ui import ranking as ui_ranking
+from cutpoint.ui.routes import assistant as assistant_routes
 from cutpoint.ui.routes import jobs as jobs_routes
 
 REAL_TRASH_BLOCKER = projectdelete.trash_blocker
@@ -155,6 +156,16 @@ def test_a_project_made_again_under_the_same_name_keeps_nothing_of_the_deleted_o
     assert other in previews.pruned and other in planners
     assert str(other) in sources.kept and other in undo_seen and str(other) in remote
     assert len(turns.of(str(other))) == 1
+
+
+def test_a_chat_request_running_during_delete_leaves_no_planner(ui_client: TestClient) -> None:
+    make()
+    app = ui_client.app
+    p = ui.project_dir("trip")
+    assert ui_client.request("DELETE", "/api/projects/trip").status_code == 200
+    assert not p.exists()
+    assert assistant_routes.edge_planner(app, p) is not None  # the running request's call
+    assert p not in app.state.planners
 
 
 def test_permanent_must_be_a_boolean(ui_client: TestClient) -> None:
