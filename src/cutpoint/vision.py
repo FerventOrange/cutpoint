@@ -1542,6 +1542,13 @@ _NOTHING_RE = re.compile(
     r"|nothing (?:is |was )?(?:found|visible))\b",
     re.I,
 )
+# a contrast ("but a scoreboard"), or talk about the input itself ("I don't see any image")
+_NOT_NOTHING_RE = re.compile(
+    r"\b(?:but|however|except|besides|apart from|aside from|other than|although|though|while"
+    r"|only|yet|attach\w*|upload\w*"
+    r"|(?:any|no|the) (?:images?|pictures?|photos?|screenshots?|attachments?|frames?))\b",
+    re.I,
+)
 _NOTHING_MAX = 300  # chars: a longer reply is more than a plain "nothing here"
 
 
@@ -1550,13 +1557,14 @@ def _nothing_reply(content: object, schema: dict | None) -> dict | None:
     mark (hosted models sometimes answer an element-list ``schema`` in prose: "I found no
     overlays in this frame, so I'm marking nothing."), else None. Narrow on purpose: only for
     a schema that requires ``elements``, and the reply must be short, carry an explicit
-    negative phrase and nothing box-like (no digit, brace or bracket, no "but"/"however")."""
+    negative phrase and nothing box-like (no digit, brace or bracket), no contrast ("but",
+    "however") and no talk of the image or an attachment (the frame may never have arrived)."""
     if not isinstance(content, str) or "elements" not in (schema or {}).get("required", ()):
         return None
     text = content.strip()
     if not text or len(text) > _NOTHING_MAX or re.search(r"[\d{}\[\]]", text):
         return None
-    if re.search(r"\b(?:but|however|except)\b", text, re.I) or not _NOTHING_RE.search(text):
+    if _NOT_NOTHING_RE.search(text) or not _NOTHING_RE.search(text):
         return None
     logger.debug("Vision reply is prose for no elements: %.120s", text)
     return {"elements": []}

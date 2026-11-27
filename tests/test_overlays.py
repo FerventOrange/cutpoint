@@ -238,6 +238,11 @@ def test_prose_nothing_gives_the_same_result_as_an_empty_json_answer(world, monk
         "garbage {not json",
         "There is a scoreboard at 450, 25 but I found no overlays elsewhere.",
         "I found no overlays [450, 25, 560, 110]",
+        "I don't see any image attached to your message. Could you share the frame again?",
+        "I can't see any images in this conversation.",
+        "I do not see any image. Please upload it.",
+        "There are no other overlays besides the scoreboard in the top-left corner.",
+        "I see no scoreboard; there is only a channel logo.",
     ],
 )
 def test_a_garbage_reply_is_still_no_answer(world, monkeypatch, caplog, reply) -> None:
