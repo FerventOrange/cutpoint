@@ -58,7 +58,7 @@ the hooks with `uv run pre-commit install`; they run ruff on commit. Ruff settin
 (line length 100, rule set) are in `pyproject.toml`.
 
 When you change `src/cutpoint/web/*.js`, also run `npm ci && npm test` (Node 22 or newer; the
-harness is in `tests/js`).
+harness is in `tests/js`). Older Node, such as 20, is not supported, even where the suite passes.
 
 ## Writing tests
 
