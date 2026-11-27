@@ -70,6 +70,7 @@ from cutpoint.planning import (
     warn_kept,
     warn_pano_sources,
 )
+from cutpoint.projectfiles import MANIFEST
 from cutpoint.sources import project_language
 from cutpoint.utils import clip_files, seconds_keys
 
@@ -483,7 +484,7 @@ def _claim(
     # One run at a time on each folder: another would remove this one's staging folder.
     held.enter_context(folders.swap_lock(clips_dir))
     folders.recover_swap(clips_dir)  # a hard-killed earlier replace, before the clips are read
-    manifest = cache.load_json(clips_dir / "manifest.json")
+    manifest = cache.load_json(clips_dir / MANIFEST)
     if manifest is None:
         raise FileNotFoundError(
             f"No manifest.json in {clips_dir}; it must come from `cutpoint clips`"
@@ -522,7 +523,7 @@ def _plan_extend(
     the speech pass comes later); a file without a manifest entry is skipped, with a WARNING
     unless ``in_place``."""
     fmt_d, entries = manifest_parts(
-        manifest, need_format=True, need_range=True, path=clips_dir / "manifest.json"
+        manifest, need_format=True, need_range=True, path=clips_dir / MANIFEST
     )
     by_file = {e["file"]: e for e in entries}
     fmt = OutputFormat(int(fmt_d["width"]), int(fmt_d["height"]), int(fmt_d["fps"]))
@@ -542,7 +543,7 @@ def _plan_extend(
         logger.info(
             "%s names the project %s, not the folder's parent %s: its highlights.json and "
             "360 clip list are read there, and 360 path files are written under %s",
-            clips_dir / "manifest.json",
+            clips_dir / MANIFEST,
             project,
             clips_dir.resolve().parent,
             clips_dir.resolve().parent / "pano_paths",
@@ -633,10 +634,10 @@ def _reuse_entries(
         return None
     if reuse_dir.resolve() in (out_dir.resolve(), work.resolve()):
         raise ValueError("--reuse must be an earlier output, not the output folder")
-    reuse_manifest = cache.load_json(reuse_dir / "manifest.json")
+    reuse_manifest = cache.load_json(reuse_dir / MANIFEST)
     if reuse_manifest is None:
         raise FileNotFoundError(f"No manifest.json in --reuse folder {reuse_dir}")
-    reuse_fmt, reuse_entries = manifest_parts(reuse_manifest, path=reuse_dir / "manifest.json")
+    reuse_fmt, reuse_entries = manifest_parts(reuse_manifest, path=reuse_dir / MANIFEST)
     return _Reuse(reuse_dir, {x["file"]: x for x in reuse_entries}, reuse_fmt == fmt_d)
 
 
@@ -931,7 +932,7 @@ def _write_extend_manifest(
     # Off when every clip has "speech_aware": false (the pass left them all alone).
     speech_on = speech.enabled and any(p.entry.get("speech_aware") is not False for p in plans)
     cache.save_json(
-        work / "manifest.json",
+        work / MANIFEST,
         {k: v for k, v in manifest.items() if k != "compress_peaks"}
         | {
             "generator": MANIFEST_GENERATOR,

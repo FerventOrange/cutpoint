@@ -25,6 +25,7 @@ from cutpoint import cache, jsonout, sources
 from cutpoint.config import path_key, remap_source, source_path
 from cutpoint.ffmpeg_utils import MediaInfo
 from cutpoint.planning import manifest_parts, manifest_project
+from cutpoint.projectfiles import MANIFEST
 from cutpoint.timeline import clip_offsets
 from cutpoint.transcribe import Segment, flat_words
 
@@ -267,7 +268,7 @@ def final_cues(
 def clips_language(clips_dir: Path) -> str | None:
     """Transcription language the analysis of ``clips_dir``'s project forced (the project
     of :func:`~cutpoint.planning.manifest_project`), or None: detected, or no analysis."""
-    manifest = cache.load_json(clips_dir / "manifest.json")
+    manifest = cache.load_json(clips_dir / MANIFEST)
     if not isinstance(manifest, dict):
         manifest = {}
     return sources.project_language(manifest_project(manifest, clips_dir))
@@ -293,9 +294,7 @@ def write_final_srt(
         The .srt path, or None if none was written.
     """
     try:
-        entries = {
-            e["file"]: e for e in manifest_parts(cache.load_json(clips_dir / "manifest.json"))[1]
-        }
+        entries = {e["file"]: e for e in manifest_parts(cache.load_json(clips_dir / MANIFEST))[1]}
     except ValueError:
         entries = {}  # none, or not a clips manifest: no entries
     if language is None:

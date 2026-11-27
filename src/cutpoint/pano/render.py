@@ -92,6 +92,7 @@ from cutpoint.pano.project import (
 )
 from cutpoint.pano.project import cmd_every as pano_cmd_every
 from cutpoint.pano.x3 import X3Clip
+from cutpoint.projectfiles import PANO
 
 logger = logging.getLogger(__name__)
 
@@ -1032,6 +1033,6 @@ def exporter_for(
     cmd_every: int | None = None,
 ) -> PanoExporter | None:
     """A :class:`PanoExporter` when the project has ``pano.json``, else None."""
-    if not (project / "pano.json").is_file():
+    if not (project / PANO).is_file():
         return None
     return PanoExporter(project, out_dir, vertical, source_mode, cmd_every)

@@ -46,6 +46,7 @@ from cutpoint.errors import FFmpegError, FolderBusyError
 from cutpoint.events import paths as event_paths
 from cutpoint.kinds import KINDS
 from cutpoint.progress import SKIPPABLE
+from cutpoint.projectfiles import MANIFEST, MIX_EXCLUDE, MIX_REPORT, MIX_SEGMENTS
 from cutpoint.styles import (
     AUTO,
     FUNNY,
@@ -75,7 +76,7 @@ logger = logging.getLogger("cutpoint")
 
 # Parser-time constants of modules imported only when their command runs, so that every
 # ``cutpoint`` start does not load the action-cam and proxy code (tests check they match).
-MIX_EXCLUDE_FILE = "mix_exclude.json"  # cutpoint.mix.EXCLUDE_FILE
+MIX_EXCLUDE_FILE = MIX_EXCLUDE  # cutpoint.mix.EXCLUDE_FILE
 PROXY_PROVIDERS = ("claude-code", "codex", "antigravity")  # cutpoint.assistant.cliproxy.PROVIDERS
 
 
@@ -463,7 +464,7 @@ def _cmd_clips(a: argparse.Namespace) -> None:
     if a.mix:  # cutpoint mix's selection, played in arc order
         from cutpoint.mix import run_mix  # noqa: PLC0415 - action-cam module
 
-        segments, order = project / "mix_segments.json", a.order or "arc"
+        segments, order = project / MIX_SEGMENTS, a.order or "arc"
         if not segments.is_file():
             run_mix(project, out=segments)
     export_clips(
@@ -482,7 +483,7 @@ def _set_clips_project(clips_dir: Path) -> None:
     if jsonout.active():
         from cutpoint.planning import manifest_project  # noqa: PLC0415
 
-        manifest = cache.load_json(clips_dir / "manifest.json")
+        manifest = cache.load_json(clips_dir / MANIFEST)
         jsonout.set_project(
             manifest_project(manifest if isinstance(manifest, dict) else {}, clips_dir)
         )
@@ -993,7 +994,7 @@ def _report_mix(out: Path, report: dict) -> None:
     """``--json`` outputs of ``mix``: the files written, the moments and their durations."""
     segs = cache.load_json(out) or []
     jsonout.output("segments", out)
-    jsonout.output("report", out.with_name("mix_report.json"))
+    jsonout.output("report", out.with_name(MIX_REPORT))
     jsonout.output("sheet", report.get("sheet"))  # only one this run wrote
     jsonout.output(
         "moments",
@@ -1040,7 +1041,7 @@ def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
     candidates = (given, resolve_project_path(a.clips_dir))
     if a.segments:
         project = candidates[1]
-        if (project / "manifest.json").is_file():
+        if (project / MANIFEST).is_file():
             raise jsonout.ArgumentError(
                 f"{project} is a clips folder; --segments needs the project folder"
             )
@@ -1049,7 +1050,7 @@ def _assemble_project(a: argparse.Namespace, given: Path) -> Path | None:
         if (candidate / projectfiles.HIGHLIGHTS).is_file():
             return candidate
     folder = next((c for c in candidates if c.is_dir()), None)
-    if folder is not None and not (folder / "manifest.json").exists():
+    if folder is not None and not (folder / MANIFEST).exists():
         marks = [folder / "clips", folder / "clips_vertical"]
         if any(m.is_dir() for m in marks) or (folder / "project.json").is_file():
             raise jsonout.ArgumentError(
@@ -2475,7 +2476,7 @@ def _add_mix_parser(sub: argparse._SubParsersAction) -> None:
     )
     mx.add_argument(
         "--out",
-        default="mix_segments.json",
+        default=MIX_SEGMENTS,
         help="segments file (relative = inside the project; default mix_segments.json)",
     )
     mx.add_argument(

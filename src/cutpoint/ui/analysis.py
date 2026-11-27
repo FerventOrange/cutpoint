@@ -26,6 +26,7 @@ from cutpoint.config import (
 )
 from cutpoint.pano import project as pano_project
 from cutpoint.pano import stitch as pano_stitch
+from cutpoint.projectfiles import ACTIVITY, CRASHES
 from cutpoint.segments import MAX_SEGMENTS
 from cutpoint.styles import (
     ACTION_CAM,
@@ -673,12 +674,12 @@ def crash_step_runs(p: Path, meta: dict[str, Any], hl: dict[str, Any] | None) ->
         and det.get("category") in (category.ACTION_CAM, category.ACTION, category.GENERAL)
     ):
         return True
-    return _inside(p, "crashes.json") and (p / "crashes.json").is_file()
+    return _inside(p, CRASHES) and (p / CRASHES).is_file()
 
 
 def footage_context(p: Path) -> str | None:
     """The description of the footage ``activity.json`` was made with (``request.context``)."""
-    rec = _load(p, "activity.json")
+    rec = _load(p, ACTIVITY)
     req = rec.get("request") if isinstance(rec, dict) else None
     ctx = req.get("context") if isinstance(req, dict) else None
     return ctx if isinstance(ctx, str) and ctx.strip() else None
