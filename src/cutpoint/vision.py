@@ -1537,7 +1537,7 @@ def _json_object(content: str) -> object:
 
 _NOTHING_RE = re.compile(
     r"\b(?:marking nothing|nothing to (?:mark|report)|no (?:\w+ ){0,2}overlays?"
-    r"|(?:do not|donWt|cannot|canWt|did not|didnWt) (?:see|find) any"
+    r"|(?:do not|don.t|cannot|can.t|did not|didn.t) (?:see|find) any"
     r"|(?:found|see) no"
     r"|nothing (?:is |was )?(?:found|visible))\b",
     re.I,
