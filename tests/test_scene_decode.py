@@ -313,6 +313,27 @@ def test_the_one_decode_sweeps_old_proxies_and_keeps_a_live_run_s(ff, monkeypatc
     assert live.exists() and not dead.exists() and not old.exists()
 
 
+def test_the_split_and_window_proxies_use_unique_names_and_dead_runs_leftovers_go(ff, monkeypatch):
+    host = ffmpeg_utils._host_tag()
+    live, dead = {}, {}
+    for kind in ("gpu", "cpu", "window"):
+        live[kind] = ff.cdir / f"proxy-{kind}.{os.getpid()}.{host}.abcd1234.tmp.mp4"
+        dead[kind] = ff.cdir / f"proxy-{kind}.99999999.{host}.abcd1234.tmp.mp4"
+        write(live[kind], "x")
+        write(dead[kind], "x")
+    monkeypatch.setattr(ffmpeg_utils.procs, "pid_alive", lambda pid, mtime=None: pid == os.getpid())
+    scenes.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
+    assert {p.name.split(".")[0] for p in ff.seen} == {"proxy-gpu", "proxy-cpu"}
+    assert all(f".{os.getpid()}." in p.name and p.name.endswith(".tmp.mp4") for p in ff.seen)
+    assert all(p.exists() for p in live.values())
+    assert not any(p.exists() for p in dead.values())
+    write(dead["window"], "x")
+    monkeypatch.setattr(scenes, "_make_proxy", lambda src, proxy, *a, **k: write(proxy, "p"))
+    monkeypatch.setattr(scenes, "_scan", lambda proxy, cancel: [])
+    scenes._window_cuts(ff.src, ff.cdir, 0.0, 17.5, 22.5)
+    assert live["window"].exists() and not dead["window"].exists()
+
+
 def test_scene_cuts_saves_the_merged_cuts_as_one_pass_would(ff, monkeypatch):
     monkeypatch.setattr(scenes, "_make_proxy", lambda *a, **k: pytest.fail("one decode"))
     cuts = scenes.scene_cuts(ff.src, ff.cdir, 200.0, cpu_free=True)
