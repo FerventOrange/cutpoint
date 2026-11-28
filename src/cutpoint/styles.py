@@ -180,6 +180,7 @@ _ACTION_CAM_KEYWORDS = {
 
 # The telemetry-driven action-cam style (and its ``kind``).
 ACTION_CAM = "action-cam"
+ACTION_STYLES = ("action", "sport", ACTION_CAM)  # keyframes: CLIP; crash detection
 # ``--style auto`` (analyze, edit; their default): the style follows the detected footage
 # category (:mod:`cutpoint.category`). A reserved name: a learned ``auto.json`` is ignored.
 AUTO = "auto"

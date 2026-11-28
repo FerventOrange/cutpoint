@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 from cutpoint import config, default_fit, jsonout, progress, scorer
 from cutpoint.config import remap_source
 from cutpoint.events.scoring import heard_laughter, rescore
-from cutpoint.styles import ACTION_CAM, Style
+from cutpoint.styles import ACTION_CAM, ACTION_STYLES, Style
 from cutpoint.utils import footage_context
 from cutpoint.vision import PRIOR_N, RATING_PRIOR, VisionRater, speech_excerpt
 from cutpoint.vision_record import vision_blend
@@ -33,10 +33,8 @@ VISION_BAND_SHARE, VISION_BAND_MIN, VISION_BAND_MAX = 0.3, 2, 24
 
 def prior_group(base: str) -> str:
     """The style group of the vision rating prior (#948) for a style whose built-in base is
-    ``base``: ``"action"`` for :data:`~cutpoint.analyze.ACTION_STYLES`, ``"other"`` for every other
+    ``base``: ``"action"`` for :data:`~cutpoint.styles.ACTION_STYLES`, ``"other"`` for every other
     style."""
-    from cutpoint.analyze import ACTION_STYLES  # noqa: PLC0415 - analyze imports this module
-
     return "action" if base in ACTION_STYLES else "other"
 
 
