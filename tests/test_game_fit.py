@@ -417,6 +417,31 @@ def test_a_plain_error_in_the_fit_check_is_not_a_discovery_failure(folder, monke
     assert files == [str(s.path) for s in srcs]
 
 
+def test_a_plain_error_writing_the_preset_is_not_a_discovery_failure(folder, monkeypatch) -> None:
+    """#1297: an error in installing a discovered HUD preset is warned as an install failure,
+    not as HUD region discovery (which would say no preset is installed); every source is
+    listed as not read."""
+    from cutpoint.analyze import _ocr_failed  # noqa: PLC0415
+    from cutpoint.events import discover_run  # noqa: PLC0415
+
+    srcs = folder.sources({"alpha one.mp4": "a"})
+    err = RuntimeError("disk full")
+
+    def install(self, game, proposal):
+        raise err
+
+    monkeypatch.setattr(discover_run.DiscoverRun, "_install_preset", install)
+    with pytest.raises(RuntimeError) as got:
+        folder.run(srcs)
+    assert got.value is err
+    message, files = _ocr_failed(got.value)
+    assert message == (
+        "OCR failed writing the HUD preset (disk full): menu filtering and HUD events "
+        "(kill feed, banners, notices) skipped for every source"
+    )
+    assert files == [str(s.path) for s in srcs]
+
+
 def test_a_new_source_is_checked_against_the_preset_found(folder, caplog) -> None:
     from cutpoint.events import regions  # noqa: PLC0415
 

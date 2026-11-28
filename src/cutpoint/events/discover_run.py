@@ -172,7 +172,7 @@ class DiscoverRun:
         if misfits:
             keep = {discover.src_key(s) for s in srcs if s not in misfits}
             proposal = self._discover(game, srcs, None, keep=keep, install=False)
-        self._install_preset(game, proposal)
+        self._install_marked(game, proposal)
         self._persist()
         self._place_misfits(game, misfits, fits, got)
 
@@ -392,7 +392,7 @@ class DiscoverRun:
         rec = self._record(game, proposal, t0, keep is not None)
         if existing is None:
             if install:
-                self._install_preset(game, proposal)
+                self._install_marked(game, proposal)
         else:
             rec["preset"] = str(existing.path)
         if existing is not None and not topping:
@@ -564,6 +564,17 @@ class DiscoverRun:
         logger.info(
             "Added the HUD fit check to the preset '%s' (its regions are unchanged): %s", game, path
         )
+
+    def _install_marked(self, game: str, proposal: dict[str, Any]) -> None:
+        """:meth:`_install_preset`, an error of which is noted as an install failure (not a
+        discovery one: the discovery itself succeeded), re-raised unchanged."""
+        try:
+            self._install_preset(game, proposal)
+        except LowMemoryError:
+            raise
+        except Exception as err:
+            _mark_ocr_failure(err, self.sources, discovery=False, install=True)
+            raise
 
     def _install_preset(self, game: str, proposal: dict[str, Any]) -> None:
         """Write a discovered preset (its record in ``out`` says where)."""
