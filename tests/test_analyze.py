@@ -466,10 +466,13 @@ def test_reanalyze_asks_again_for_an_action_cam_style_that_fell_back(tmp_path, m
     ("settings", "vision"),
     [
         ({"vision_requested": True, "vision_used": False}, True),  # asked; Ollama was down
-        ({"vision_requested": False, "vision_used": False}, False),
+        # not asked: no rating (None: as no --vision given; the HUD map and overlays as usual)
+        ({"vision_requested": False, "vision_used": False}, None),
         # before vision was opt-in: an automatic run is no request, so no Ollama call now
-        ({"vision_used": True}, False),
-        ({}, False),
+        ({"vision_used": True}, None),
+        ({}, None),
+        # --no-vision recorded (#1069 V1): every vision call stays off
+        ({"vision_requested": False, "vision_off": True}, False),
     ],
 )
 def test_reanalyze_uses_vision_only_when_the_earlier_run_asked_for_it(
@@ -803,3 +806,15 @@ def test_reanalyze_skips_recorded_sources_without_a_path(tmp_path, monkeypatch):
     )
     reanalyze.reanalyze(tmp_path)
     assert [str(p).replace("\\", "/") for p in seen["inputs"]] == ["/v/a.mp4"]
+
+
+@pytest.mark.parametrize(("vision", "off"), [(False, True), (None, None), (True, None)])
+def test_analyze_records_no_vision_for_the_later_runs(home, tmp_path, monkeypatch, vision, off):
+    """#1069 V1: --no-vision is recorded as settings.vision_off (only then), so events,
+    rerank --analyze and resume keep the HUD map and overlays off."""
+    write(tmp_path / "a.mp4")
+    _stub_probe_and_transcriber(monkeypatch)
+    proj = tmp_path / "proj"
+    analyze.analyze(tmp_path / "a.mp4", get_style("funny"), proj, vision=vision, use_scenes=False)
+    st = json.loads((proj / "highlights.json").read_text(encoding="utf-8"))["settings"]
+    assert st.get("vision_off") is off

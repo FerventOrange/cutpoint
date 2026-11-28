@@ -24,7 +24,7 @@ flowchart TD
         PL["Plan layers by style or detected category"]
         TALK["--style auto: talk decided from the transcript"]
         RE["2 Reactions: PANNs audio events"]
-        KF["3 Keyframes: HUD OCR for game styles, CLIP for action"]
+        KF["3 Keyframes: HUD OCR for game styles, CLIP for action, overlays for sport, action and commentary"]
         DISC["HUD discovery, preset per game"]
         CR["4 Crashes: action-cam footage only"]
         DLG["5 Dialogue: text model marks funny or heated talk, gaming only"]

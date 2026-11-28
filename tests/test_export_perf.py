@@ -3,15 +3,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
+import types
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from conftest import media_info
-from cutpoint import assemble, clips, encode, extend, ffmpeg_utils, jsonout, paths
+from cutpoint import assemble, clips, encode, extend, ffmpeg_utils, folders, jsonout, paths
 from cutpoint.boundaries import SpeechSettings
 from cutpoint.planning import Padding
 from test_extend import _two_clips, reads  # noqa: F401 - reads is a fixture
@@ -271,3 +273,123 @@ def test_concurrent_verdict_updates_leave_valid_json(fake_probe):
         t.join()
     assert isinstance(json.loads(file.read_text(encoding="utf-8")), dict)
     assert [p.name for p in file.parent.iterdir() if p.name.endswith(".tmp")] == []
+
+
+def test_two_processes_updating_the_verdicts_keep_both_entries(fake_probe, monkeypatch):
+    """Two processes do not share the in-process lock: each reads the file before the other
+    writes it, unless the file lock keeps them apart (#1239)."""
+    monkeypatch.setattr(ffmpeg_utils, "_PROBE_LOCK", contextlib.nullcontext())
+    monkeypatch.setattr(ffmpeg_utils, "PROBE_LOCK_WAIT_S", 30.0)
+    both_read = threading.Barrier(2, timeout=1.0)
+
+    def loads(text):
+        with contextlib.suppress(threading.BrokenBarrierError):
+            both_read.wait()  # without a lock both read the old file; with it, one times out
+        return json.loads(text)
+
+    monkeypatch.setattr(ffmpeg_utils, "json", types.SimpleNamespace(loads=loads, dumps=json.dumps))
+    file = paths.cache_dir() / ffmpeg_utils.PROBE_FILE
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("{}", encoding="utf-8")
+    keys = ["enc:amf:", "enc:vaapi:/dev/dri/renderD128"]
+    threads = [
+        threading.Thread(
+            target=ffmpeg_utils._update_probe_file, args=(k, {"stamp": "s", "error": None, "at": 1})
+        )
+        for k in keys
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(json.loads(file.read_text(encoding="utf-8"))) == sorted(keys)
+    assert not list(file.parent.glob("*.cutpoint-lock"))  # released
+
+
+def test_a_busy_verdict_file_stores_nothing_and_does_not_fail(fake_probe, monkeypatch):
+    _exe, calls, _new = fake_probe
+    monkeypatch.setattr(ffmpeg_utils, "PROBE_LOCK_WAIT_S", 0.1)
+    monkeypatch.setattr(ffmpeg_utils, "_PROBE_FILE_BUSY", False)
+    file = paths.cache_dir() / ffmpeg_utils.PROBE_FILE
+    with folders.swap_lock(file.with_suffix("")):  # another process's update
+        assert ffmpeg_utils.encoder_error(ffmpeg_utils.VideoEncoder("amf")) is None
+    assert calls == ["amf"]
+    assert not file.exists()
+
+
+def test_a_lock_that_stays_busy_is_waited_for_once_and_warned_once(fake_probe, monkeypatch, caplog):
+    monkeypatch.setattr(ffmpeg_utils, "PROBE_LOCK_WAIT_S", 0.05)
+    monkeypatch.setattr(ffmpeg_utils, "_PROBE_FILE_BUSY", False)
+    waits = []
+    real = ffmpeg_utils._probe_file_lock
+    monkeypatch.setattr(ffmpeg_utils, "_probe_file_lock", lambda f: (waits.append(f), real(f))[1])
+    file = paths.cache_dir() / ffmpeg_utils.PROBE_FILE
+    verdict = {"stamp": "s", "error": None, "at": 1}
+    with folders.swap_lock(file.with_suffix("")), caplog.at_level("WARNING"):
+        ffmpeg_utils._update_probe_file("enc:amf:", verdict)
+        ffmpeg_utils._update_probe_file("enc:nvenc:", verdict)
+    assert len(waits) == 1  # the second update returned at once
+    warned = [r for r in caplog.records if ".probe-verdicts.cutpoint-lock" in r.getMessage()]
+    assert len(warned) == 1
+
+
+def _fake_linux(monkeypatch, tmp_path, release="6.8.0"):
+    monkeypatch.setattr(ffmpeg_utils.sys, "platform", "linux")
+    monkeypatch.setattr(
+        ffmpeg_utils.os, "uname", lambda: types.SimpleNamespace(release=release), raising=False
+    )
+    drivers = tmp_path / "dri"
+    drivers.mkdir(exist_ok=True)
+    monkeypatch.setenv("LIBVA_DRIVERS_PATH", str(drivers))
+    return drivers
+
+
+@pytest.mark.parametrize("change", ["mesa", "kernel"])
+def test_a_changed_vaapi_driver_probes_again(fake_probe, monkeypatch, tmp_path, change):
+    _exe, calls, new_process = fake_probe
+    drivers = _fake_linux(monkeypatch, tmp_path)
+    (drivers / "radeonsi_drv_video.so").write_bytes(b"mesa 24.0")
+    enc = ffmpeg_utils.VideoEncoder("vaapi", "/dev/dri/renderD128")
+    ffmpeg_utils.encoder_error(enc)
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    assert calls == ["vaapi"]  # the same driver: the stored verdict
+    if change == "mesa":
+        (drivers / "radeonsi_drv_video.so").write_bytes(b"mesa 24.2.1")  # an updated Mesa
+    else:
+        _fake_linux(monkeypatch, tmp_path, release="6.11.0")  # a new kernel (amdgpu in it)
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    assert calls == ["vaapi", "vaapi"]
+
+
+def test_a_changed_windows_amd_driver_probes_again(fake_probe, monkeypatch):
+    _exe, calls, new_process = fake_probe
+    monkeypatch.setattr(ffmpeg_utils.sys, "platform", "win32")
+    version = ["AMD Radeon RX 7800 XT=31.0.24027.1012"]
+    monkeypatch.setattr(ffmpeg_utils, "_windows_amd_drivers", lambda: version[0])
+    enc = ffmpeg_utils.VideoEncoder("amf")
+    ffmpeg_utils.encoder_error(enc)
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    version[0] = "AMD Radeon RX 7800 XT=32.0.12011.1036"
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    assert calls == ["amf", "amf"]
+
+
+def test_an_unreadable_driver_stamp_keeps_the_verdict(fake_probe, monkeypatch):
+    """Nothing read about the driver: the verdict still holds for the ffmpeg build (as before
+    #1239), rather than every run probing again."""
+    _exe, calls, new_process = fake_probe
+    monkeypatch.setattr(ffmpeg_utils.sys, "platform", "win32")
+
+    def unreadable():
+        raise OSError("no registry")
+
+    monkeypatch.setattr(ffmpeg_utils, "_windows_amd_drivers", unreadable)
+    enc = ffmpeg_utils.VideoEncoder("amf")
+    ffmpeg_utils.encoder_error(enc)
+    new_process()
+    ffmpeg_utils.encoder_error(enc)
+    assert calls == ["amf"]

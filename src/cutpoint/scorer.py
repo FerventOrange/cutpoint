@@ -337,4 +337,12 @@ def rescore_events(
         n = len(default_fit.fit_target(cands, target))
         hl["suggested_top"] = n
     hl.setdefault("settings", {})["events_rescored"] = ev.get("created")
+    # what the overlay layer did (#1069 (c)); absent when it did not look (gameplay, no extra)
+    from cutpoint.events.overlays import summary  # noqa: PLC0415
+
+    overlays = summary((ev.get("stats") or {}).get("overlays"))
+    if overlays is None:
+        hl["settings"].pop("overlays", None)
+    else:
+        hl["settings"]["overlays"] = overlays
     return changed

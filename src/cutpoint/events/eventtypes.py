@@ -40,6 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cutpoint.events.layers import OVERLAY_STYLES
 from cutpoint.events.regions import HudPreset, as_list, game_key_for_path, load_preset
 from cutpoint.styles import style_names
 
@@ -199,7 +200,47 @@ class EventType:
 # sound (``confirmed``, :mod:`cutpoint.events.explosions`): two thirds of a kill,
 # at most 2 counted, a VLM seed a little below a player kill; only where blasts are moments
 # (gaming, action, sport), not in the funny or talk styles.
+# Overlays of non-gameplay footage (#1069 (c), :mod:`cutpoint.events.overlays`): the vision model
+# points at them, OCR reads them. Boost-only (no moment or VLM seed, no tail payoff), each type
+# only in the styles of its kind (:data:`cutpoint.events.layers.OVERLAY_STYLES`), and together at
+# most OVERLAY_MAX_POINTS on a moment (:func:`cutpoint.events.scoring.event_boost`): a score
+# change of a scoreboard (a ``score`` event flagged ``overlay``, as the HUD's score readout makes
+# it), a peak of a gauge (speed, altitude) and a lower-third (a name or title) coming on screen,
+# the last weak and repeat-damped. They come first: they match flagged overlay events only.
+OVERLAY_MAX_POINTS = 3.0
+OVERLAY_TYPES: tuple[EventType, ...] = (
+    EventType(
+        "overlay_scores",
+        (Matcher("score", flag="overlay"),),
+        score=3.0,
+        max=1,
+        payoff=False,
+        styles=OVERLAY_STYLES.get("scoreboard", ()),
+        nominate=False,
+    ),
+    EventType(
+        "overlay_gauges",
+        (Matcher("gauge_peak", flag="overlay"),),
+        score=2.0,
+        max=1,
+        payoff=False,
+        styles=OVERLAY_STYLES.get("gauge", ()),
+        nominate=False,
+    ),
+    EventType(
+        "overlay_lower_thirds",
+        (Matcher("lower_third", flag="overlay"),),
+        score=1.0,
+        max=1,
+        payoff=False,
+        styles=OVERLAY_STYLES.get("lower_third", ()),
+        nominate=False,
+        damp_repeats=True,
+    ),
+)
+OVERLAY_TYPE_NAMES = frozenset(t.name for t in OVERLAY_TYPES)
 DEFAULT_EVENT_TYPES: tuple[EventType, ...] = (
+    *OVERLAY_TYPES,
     EventType(
         "teamkills",
         (Matcher("kill", flag="teamkill"),),

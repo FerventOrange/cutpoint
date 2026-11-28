@@ -807,8 +807,10 @@ class VisionRater:
             if reply is None:
                 return None
             if not isinstance(data, dict):
-                logger.warning("Vision reply has no JSON object: %.120s", reply)
-                return None
+                empty = _nothing_reply(reply, schema)
+                if empty is None:
+                    logger.warning("Vision reply has no JSON object: %.120s", reply)
+                return empty
             return data
         if self.consent_needed:
             self.warn_consent()
@@ -837,6 +839,9 @@ class VisionRater:
         tokens = body.get("prompt_eval_count")
         self.last_prompt_tokens = tokens if isinstance(tokens, int) else None
         if not isinstance(data, dict):
+            empty = _nothing_reply(content, schema)
+            if empty is not None:
+                return empty
             logger.warning(
                 "Vision reply has no JSON object (done_reason=%s): %.120s",
                 body.get("done_reason"),
@@ -1528,6 +1533,48 @@ def _json_object(content: str) -> object:
         return json.loads(content.strip())
     except ValueError:
         return None
+
+
+_NOTHING_RE = re.compile(
+    r"\b(?:marking nothing|nothing to (?:mark|report)|no (?:\w+ ){0,2}overlays?"
+    r"|(?:do not|don.t|cannot|can.t|did not|didn.t) (?:see|find) any"
+    r"|(?:found|see) no"
+    r"|nothing (?:is |was )?(?:found|visible))\b",
+    re.I,
+)
+_IMG = r"(?:images?|pictures?|photos?|screenshots?|attachments?|frames?)"
+# a contrast ("but a scoreboard", "just a watermark"), or talk about the input itself that
+# never arrived ("I don't see any image", "I'm unable to view images"); "no overlays in the
+# image" is not that
+_NOT_NOTHING_RE = re.compile(
+    r"\b(?:but|however|except|besides|apart from|aside from|other than|although|though|while"
+    r"|only|yet|just|save for|there (?:is|are) (?:a|an|one|some)|attach\w*|upload\w*"
+    r"|(?:any|no) (?:images?|pictures?|photos?|screenshots?|attachments?)"
+    rf"|(?:see|view|open|access|load|receiv\w*|get|got|provided?|sent|shared?) (?:\w+ )?{_IMG}"
+    rf"|{_IMG} (?:\w+ ){{0,2}}(?:provided|attached|uploaded|sent|shared|received|loaded|arrived"
+    r"|came through|come through)"
+    r"|(?:didn.t|did not|never|wasn.t|was not) (?:come through|arrive\w*|load\w*|included))\b",
+    re.I,
+)
+_NOTHING_MAX = 300  # chars: a longer reply is more than a plain "nothing here"
+
+
+def _nothing_reply(content: object, schema: dict | None) -> dict | None:
+    """``{"elements": []}`` for a reply that is no JSON but plainly says there is nothing to
+    mark (hosted models sometimes answer an element-list ``schema`` in prose: "I found no
+    overlays in this frame, so I'm marking nothing."), else None. Narrow on purpose: only for
+    a schema that requires ``elements``, and the reply must be short, carry an explicit
+    negative phrase and nothing box-like (no digit, brace or bracket), no contrast ("but",
+    "however") and no talk of the image or an attachment (the frame may never have arrived)."""
+    if not isinstance(content, str) or "elements" not in (schema or {}).get("required", ()):
+        return None
+    text = content.strip()
+    if not text or len(text) > _NOTHING_MAX or re.search(r"[\d{}\[\]]", text):
+        return None
+    if _NOT_NOTHING_RE.search(text) or not _NOTHING_RE.search(text):
+        return None
+    logger.debug("Vision reply is prose for no elements: %.120s", text)
+    return {"elements": []}
 
 
 def _matching(data: object, schema: dict | None, who: str = "") -> dict | None:

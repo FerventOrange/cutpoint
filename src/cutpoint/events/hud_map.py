@@ -252,10 +252,13 @@ def to_ref(box: Any, size: tuple[int, int], pixels: bool | None = None) -> Rect 
     return clamp_box(round(x0 * sx), round(y0 * sy), round((x1 - x0) * sx), round((y1 - y0) * sy))
 
 
-def parse(reply: Any, size: tuple[int, int]) -> list[dict[str, Any]] | None:
+def parse(
+    reply: Any, size: tuple[int, int], kinds: tuple[str, ...] = KINDS
+) -> list[dict[str, Any]] | None:
     """The elements of a model ``reply`` (``{"kind", "box"}``, the box in reference px); None
-    when the reply has no element list. Elements of unknown kinds or without a usable box are
-    left out; what the model read is logged at DEBUG only, never kept."""
+    when the reply has no element list. Elements of kinds not in ``kinds`` (the overlay map of
+    :mod:`cutpoint.events.overlays` has its own) or without a usable box are left out; what the
+    model read is logged at DEBUG only, never kept."""
     els = reply.get("elements") if isinstance(reply, dict) else None
     if not isinstance(els, list):
         return None
@@ -264,7 +267,7 @@ def parse(reply: Any, size: tuple[int, int]) -> list[dict[str, Any]] | None:
     pixels = bool(nums) and max(nums) > 1000
     out = []
     for e in els:
-        if not isinstance(e, dict) or e.get("kind") not in KINDS:
+        if not isinstance(e, dict) or e.get("kind") not in kinds:
             continue
         box = to_ref(e.get("box"), size, pixels)
         if box is None or box[2] * box[3] < 16:

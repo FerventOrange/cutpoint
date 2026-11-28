@@ -437,10 +437,10 @@ def test_default_own_death_type_sets_nothing(name):
 
 
 def test_only_announcements_are_boost_only():
-    """Announcements add points but nominate nothing; every other type, and a preset type
-    (``nominate`` is not a preset key), keeps seeding."""
+    """Announcements and the overlay types (#1069) add points but nominate nothing; every
+    other type, and a preset type (``nominate`` is not a preset key), keeps seeding."""
     off = [t.name for t in eventtypes.DEFAULT_EVENT_TYPES if not t.nominate]
-    assert off == ["announcements"]
+    assert off == [*(t.name for t in eventtypes.OVERLAY_TYPES), "announcements"]
     t = eventtypes.from_dict({**PLACER, "nominate": False})
     assert t.nominate
     raw = {"kind": "ocr", "type": "bigtext", "text": "SIGNAL", "announce": True, "t": 1.0}

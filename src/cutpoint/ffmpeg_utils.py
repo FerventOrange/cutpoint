@@ -32,7 +32,7 @@ import uuid
 import wave
 from collections import deque
 from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from fractions import Fraction
 from functools import cache
@@ -41,13 +41,14 @@ from typing import IO, Any, Literal
 
 import numpy as np
 
-from cutpoint import paths, procs, state
+from cutpoint import folders, paths, procs, state
 from cutpoint.cache import atomic_path, host_tag
 from cutpoint.config import get_config
 from cutpoint.errors import (
     EncoderUnavailableError,
     FFmpegError,
     FFmpegNotFoundError,
+    FolderBusyError,
 )
 from cutpoint.utils import file_stamp
 
@@ -1145,19 +1146,107 @@ def vaapi_devices() -> list[str]:
 
 # Encoder and decoder probes really encode and decode a test clip, and `cutpoint ui` starts one
 # process per job, so their verdicts are kept in the cache folder (A737). A verdict is used while
-# the ffmpeg build (path, size, modification time) and, for NVIDIA, the driver version are the
-# same, for a week. Only a working verdict is stored: a failure (a busy GPU, a timeout) may be
+# the ffmpeg build (path, size, modification time) and the GPU driver (:func:`_driver_stamp`) are
+# the same, for a week. Only a working verdict is stored: a failure (a busy GPU, a timeout) may be
 # temporary, so it is kept for this process only. `cutpoint capabilities` probes again
-# (find_encoder with ``refresh``).
+# (find_encoder with ``refresh``). Processes update the file under its lock
+# (``.probe-verdicts.cutpoint-lock``, :func:`cutpoint.folders.swap_lock`), so none loses
+# another's entry; one that cannot get it in time stores nothing (it probes again next time).
 PROBE_FILE = "probe-verdicts.json"
 PROBE_OK_TTL_S = 7 * 86400
+PROBE_LOCK_WAIT_S = 5.0
 _PROBE_LOCK = threading.Lock()  # around the file update only, never the probe itself
+_PROBE_FILE_BUSY = False  # the lock timed out once: no later update of this process waits again
+# Where libva looks for its drivers (``<name>_drv_video.so``, Mesa's radeonsi, Intel's iHD) when
+# LIBVA_DRIVERS_PATH is not set; the common distribution folders.
+_VA_DRIVER_DIRS = (
+    "/usr/lib/x86_64-linux-gnu/dri",
+    "/usr/lib/aarch64-linux-gnu/dri",
+    "/usr/lib64/dri",
+    "/usr/lib/dri",
+)
+
+
+def _probe_driver(kind: str) -> str:
+    """Which driver family the encoder or decoder ``kind`` depends on (see :func:`_driver_stamp`)."""
+    if kind in ("nvenc", "cuda"):
+        return "nvidia"
+    return kind if kind in ("amf", "vaapi") else ""
+
+
+def _driver_stamp(driver: str) -> str:
+    """What identifies the installed ``driver`` (``"nvidia"``, ``"amf"``, ``"vaapi"``, or ``""``
+    for the CPU), read cheaply and never raising. NVIDIA: nvidia-smi's driver version. Linux AMF
+    and VAAPI: the kernel release (amdgpu and i915 are in the kernel), the amdgpu module version
+    (a DKMS amdgpu-pro install) and the size and modification time of every VAAPI driver library
+    (Mesa's radeonsi, Intel's iHD; an update replaces them). Windows AMF: the version of each AMD
+    display driver in the registry. A part that cannot be read is left out; with nothing read the
+    stamp is ``""``, as before this was stamped, so the verdict still holds for the ffmpeg build
+    and expires after :data:`PROBE_OK_TTL_S`, instead of every run probing again."""
+    try:
+        if driver == "nvidia":
+            from cutpoint import memguard  # noqa: PLC0415 - not needed for the CPU or AMD paths
+
+            return memguard.gpu_driver_version()
+        if driver not in ("amf", "vaapi"):
+            return ""
+        if sys.platform == "win32":
+            return _windows_amd_drivers()
+        if not sys.platform.startswith("linux"):
+            return ""
+        parts = [os.uname().release]
+        with suppress(OSError):
+            parts.append("amdgpu=" + Path("/sys/module/amdgpu/version").read_text().strip())
+        dirs = os.environ.get("LIBVA_DRIVERS_PATH", "").split(os.pathsep)
+        for d in [d for d in dirs if d] or _VA_DRIVER_DIRS:
+            for lib in sorted(Path(d).glob("*_drv_video.so")):
+                st = file_stamp(lib)
+                if st is not None:
+                    parts.append(f"{lib.name}={st[0]}:{st[1]}")
+        return ";".join(parts)
+    except Exception:  # a stamp never fails a probe
+        logger.debug("Could not read the %s driver stamp", driver, exc_info=True)
+        return ""
+
+
+def _windows_display_adapters() -> list[tuple[str, str]]:
+    """``(DriverDesc, DriverVersion or "")`` of each display adapter in the Windows registry."""
+    import winreg  # noqa: PLC0415
+
+    key = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    found = []
+    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as cls:
+        for i in range(winreg.QueryInfoKey(cls)[0]):
+            try:
+                with winreg.OpenKey(cls, winreg.EnumKey(cls, i)) as sub:
+                    desc = str(winreg.QueryValueEx(sub, "DriverDesc")[0])
+                    try:
+                        version = str(winreg.QueryValueEx(sub, "DriverVersion")[0])
+                    except OSError:
+                        version = ""
+            except OSError:  # "Configuration" / "Properties" folders have no adapter
+                continue
+            found.append((desc, version))
+    return found
+
+
+def _windows_amd_drivers() -> str:
+    """``DriverDesc=DriverVersion`` of each AMD display adapter in the registry (as
+    :func:`cutpoint.capabilities.gpu_vendors` reads them), ``;``-joined; ``""`` if none."""
+    return ";".join(
+        sorted(
+            f"{desc}={version}"
+            for desc, version in _windows_display_adapters()
+            if re.search(r"amd|radeon", desc, re.I)
+        )
+    )
 
 
 @state.register_cache
 @cache
-def _probe_stamp(nvidia: bool) -> str | None:
-    """What a stored verdict depends on (None: unknown, so nothing is stored or used)."""
+def _probe_stamp(driver: str) -> str | None:
+    """What a stored verdict depends on (None: unknown, so nothing is stored or used):
+    the ffmpeg build and :func:`_driver_stamp` of ``driver``."""
     try:
         exe = find_tool("ffmpeg")
     except FFmpegNotFoundError:
@@ -1165,18 +1254,13 @@ def _probe_stamp(nvidia: bool) -> str | None:
     st = file_stamp(Path(exe))
     if st is None:
         return None
-    driver = ""
-    if nvidia:
-        from cutpoint import memguard  # noqa: PLC0415 - not needed for the CPU or AMD paths
-
-        driver = memguard.gpu_driver_version()
-    return f"{exe}|{st[0]}|{st[1]}|{driver}"
+    return f"{exe}|{st[0]}|{st[1]}|{_driver_stamp(driver)}"
 
 
-def _probe_verdict(ident: str, probe: Callable[[], str | None], *, nvidia: bool) -> str | None:
+def _probe_verdict(ident: str, probe: Callable[[], str | None], *, driver: str) -> str | None:
     """``probe()``, or the verdict an earlier process stored for ``ident`` with the same stamp
     (see :data:`PROBE_FILE`); a fresh "works" verdict is stored, a failure is not."""
-    stamp = _probe_stamp(nvidia)
+    stamp = _probe_stamp(driver)
     file = paths.cache_dir() / PROBE_FILE
     data: dict[str, Any] = {}
     if stamp is not None:
@@ -1200,11 +1284,47 @@ def _probe_verdict(ident: str, probe: Callable[[], str | None], *, nvidia: bool)
     return error
 
 
+@contextmanager
+def _probe_file_lock(file: Path) -> Iterator[bool]:
+    """Hold the lock of ``file`` (:func:`cutpoint.folders.swap_lock`) for one read-modify-write,
+    waiting up to :data:`PROBE_LOCK_WAIT_S` for another process; yields False when it could not be
+    taken (busy that long, or not creatable), and the caller then stores nothing."""
+    deadline = time.monotonic() + PROBE_LOCK_WAIT_S
+    with ExitStack() as stack:
+        while True:
+            try:
+                stack.enter_context(folders.swap_lock(file.with_suffix("")))
+                break
+            except FolderBusyError:
+                if time.monotonic() >= deadline:
+                    global _PROBE_FILE_BUSY
+                    _PROBE_FILE_BUSY = True
+                    logger.warning(
+                        "%s has been held for %g s; encoder verdicts are not saved. "
+                        "If no other cutpoint run is active, delete it.",
+                        folders.lock_path(file.with_suffix("")),
+                        PROBE_LOCK_WAIT_S,
+                    )
+                    yield False
+                    return
+                time.sleep(0.02)
+            except OSError as err:
+                logger.debug("Cannot lock %s (%s); this verdict is not stored", file, err)
+                yield False
+                return
+        yield True
+
+
 def _update_probe_file(ident: str, verdict: dict[str, Any] | None) -> None:
     """Set (or, with None, drop) the stored verdict of ``ident``: the file is read again, changed
-    and replaced atomically under a lock, as the parallel export threads all call this."""
+    and replaced atomically under a lock, as the parallel export threads and other processes all
+    call this."""
     file = paths.cache_dir() / PROBE_FILE
-    with _PROBE_LOCK:
+    if _PROBE_FILE_BUSY:
+        return
+    with _PROBE_LOCK, _probe_file_lock(file) as locked:
+        if not locked:
+            return
         try:
             loaded = json.loads(file.read_text(encoding="utf-8"))
             data: dict[str, Any] = loaded if isinstance(loaded, dict) else {}
@@ -1236,7 +1356,7 @@ def encoder_error(enc: VideoEncoder) -> str | None:
     return _probe_verdict(
         f"enc:{enc.kind}:{enc.device or ''}",
         lambda: _encoder_probe(enc),
-        nvidia=enc.kind == "nvenc",
+        driver=_probe_driver(enc.kind),
     )
 
 
@@ -1347,7 +1467,9 @@ def decoder_error(dec: HwDecoder) -> str | None:
     to software (which ffmpeg does silently) fails here instead of passing. The verdict is kept
     across processes (see :data:`PROBE_FILE`)."""
     return _probe_verdict(
-        f"dec:{dec.kind}:{dec.device or ''}", lambda: _decoder_probe(dec), nvidia=dec.kind == "cuda"
+        f"dec:{dec.kind}:{dec.device or ''}",
+        lambda: _decoder_probe(dec),
+        driver=_probe_driver(dec.kind),
     )
 
 

@@ -214,9 +214,13 @@ def test_edit_events_still_exports_the_clips_and_assembles(pipeline, monkeypatch
     ("argv", "layers", "expected"),
     [
         # no layer of a skipped step among them: None, the events defaults
-        (["--style", "action", "--skip", "crashes"], ("audio", "ocr", "vlm"), None),
+        (["--style", "action", "--skip", "crashes"], ("audio", "ocr", "overlay", "vlm"), None),
         (["--style", "action", "--skip", "keyframes"], ("audio", "vlm"), ["audio", "vlm"]),
-        (["--style", "action", "--skip", "reactions"], ("ocr", "vlm"), ["ocr", "vlm"]),
+        (
+            ["--style", "action", "--skip", "reactions"],
+            ("ocr", "overlay", "vlm"),
+            ["ocr", "overlay", "vlm"],
+        ),
         (
             ["--style", "action-cam", "--skip", "keyframes"],
             ("audio", "voice", "crash", "vlm"),
@@ -224,8 +228,8 @@ def test_edit_events_still_exports_the_clips_and_assembles(pipeline, monkeypatch
         ),
         (
             ["--style", "action-cam", "--skip", "crashes"],
-            ("audio", "voice", "visual", "vlm"),
-            ["audio", "voice", "visual", "vlm"],
+            ("audio", "voice", "visual", "overlay", "vlm"),
+            ["audio", "voice", "visual", "overlay", "vlm"],
         ),
     ],
 )
@@ -248,7 +252,10 @@ def test_edit_events_leaves_out_the_layers_of_skipped_steps(
 
 @pytest.mark.parametrize(
     ("telemetry", "layers"),
-    [(True, ("audio", "voice", "visual", "crash", "vlm")), (False, ("audio", "ocr", "vlm"))],
+    [
+        (True, ("audio", "voice", "visual", "crash", "overlay", "vlm")),
+        (False, ("audio", "ocr", "overlay", "vlm")),
+    ],
 )
 def test_edit_events_of_action_cam_without_telemetry_are_the_defaults(
     pipeline, monkeypatch, telemetry, layers
@@ -272,9 +279,9 @@ def test_edit_events_of_action_cam_without_telemetry_are_the_defaults(
 @pytest.mark.parametrize(
     ("kind", "telemetry", "emphasis", "layers"),
     [
-        ("highlights", True, "hype", ("audio", "voice", "visual", "crash", "vlm")),
-        ("funny-moments", True, "funny", ("audio", "ocr", "vlm")),  # funny: not action-cam
-        ("highlights", False, "hype", ("audio", "ocr", "vlm")),
+        ("highlights", True, "hype", ("audio", "voice", "visual", "crash", "overlay", "vlm")),
+        ("funny-moments", True, "funny", ("audio", "ocr", "overlay", "vlm")),  # not action-cam
+        ("highlights", False, "hype", ("audio", "ocr", "overlay", "vlm")),
     ],
 )
 def test_edit_style_auto_probes_before_the_events_preflight(
