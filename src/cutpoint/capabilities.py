@@ -16,7 +16,13 @@ from typing import Any
 
 from cutpoint.config import get_config
 from cutpoint.errors import EncoderUnavailableError, FFmpegError
-from cutpoint.ffmpeg_utils import VIDEO_CODECS, find_encoder, run, video_encoder
+from cutpoint.ffmpeg_utils import (
+    VIDEO_CODECS,
+    _windows_display_adapters,
+    find_encoder,
+    run,
+    video_encoder,
+)
 
 # Said in ``capabilities`` and before ``cutpoint 360 stitch`` when no NVIDIA GPU is found.
 SDK_NEEDS_NVIDIA = (
@@ -38,18 +44,7 @@ def _adapters() -> list[str]:
         return [p.read_text().strip().lower() for p in drm.glob("card*/device/vendor")]
     if sys.platform != "win32":
         return []
-    import winreg  # noqa: PLC0415
-
-    key = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
-    names = []
-    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as cls:
-        for i in range(winreg.QueryInfoKey(cls)[0]):
-            try:
-                with winreg.OpenKey(cls, winreg.EnumKey(cls, i)) as sub:
-                    names.append(str(winreg.QueryValueEx(sub, "DriverDesc")[0]))
-            except OSError:  # "Configuration" / "Properties" folders have no adapter
-                continue
-    return names
+    return [desc for desc, _ in _windows_display_adapters()]
 
 
 def gpu_vendors() -> dict[str, bool]:
