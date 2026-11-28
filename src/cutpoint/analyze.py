@@ -216,7 +216,7 @@ class Candidate:
     keywords: list[str] = field(default_factory=list)
     label_hint: str = ""
     transcript: str = ""
-    transcript_unsure: list[tuple[int, float]] | None = None  # see _transcript_snippet
+    transcript_unsure: list[tuple[int, float]] | None = None  # see transcript_snippet
     score: float = 0.0
     label: str = ""
     kind: str = ""  # action-cam: dominant feature (airtime, crash, ...); a crash moment: crash
@@ -735,7 +735,7 @@ def _longest_pause(words: list[dict[str, Any]], lo: float, hi: float) -> tuple[f
 
 class _SnapIndex:
     """The words, sentence edges and speech stretches of one part's ``segments``, built once
-    for every candidate :func:`_snap` snaps there (A685). Every lookup returns what the scan
+    for every candidate :func:`snap` snaps there (A685). Every lookup returns what the scan
     over the segments gave, to the float."""
 
     def __init__(self, segments: list[Segment]) -> None:
@@ -826,7 +826,7 @@ def _snap_sentences(
         c.end = min(duration, t + min(0.4, ix.gap_after(t) / 2))
 
 
-def _snap(
+def snap(
     c: Candidate,
     cuts: list[float],
     segments: list[Segment],
@@ -1026,7 +1026,7 @@ def scene_signal(ps: PartSignals, style: Style) -> None:
 
 def _cover_edges(ps: PartSignals, cands: Sequence[Candidate]) -> None:
     """With ``ps.edge_cuts``, detect the scene cuts around the edges of ``cands`` (part-relative,
-    not snapped yet) so :func:`_snap` finds every cut it can reach."""
+    not snapped yet) so :func:`snap` finds every cut it can reach."""
     if ps.edge_cuts is not None and cands:
         ps.cuts = ps.edge_cuts.around(t for c in cands for t in (c.start, c.end))
 
@@ -1165,7 +1165,7 @@ def find_resume_point(src: Path, fail_t: float, duration: float) -> tuple[float,
         Absolute resume time and where the unreadable stretch before it ends (the last
         failed probe, or ``fail_t``, plus :data:`READ_PROBE_S`, at most the first good probe:
         the scene pass of the recovered part never seeks before it,
-        :func:`~cutpoint.scenes._lead_in`), or None if nothing readable was found.
+        the lead-in seek of ``scenes``), or None if nothing readable was found.
     """
     last_bad, good = fail_t, None
     for step in RESUME_STEPS_S:
@@ -1230,7 +1230,7 @@ def analyze_source(
     ``on_transcript`` is called once the transcript is there (made or cached), before the
     scene cuts. ``cpu_busy`` says whether a CPU-heavy step of the caller (the background HUD
     OCR) runs right now (None: none does); the scene cuts split their decode between NVDEC and
-    the CPU only when it does not, nor Whisper on the CPU (:func:`~cutpoint.scenes._hybrid_plan`).
+    the CPU only when it does not, nor Whisper on the CPU (the hybrid plan of ``scenes``).
     ``readable_from`` (a recovered part): where the unreadable stretch before ``offset`` ends,
     for :func:`~cutpoint.scenes.scene_cuts`.
     """
@@ -1251,7 +1251,7 @@ def analyze_source(
     cdir = cache.source_dir(src, offset)
     span = info.duration - offset
     read_error: dict[str, Any] | None = None
-    overlap: scene_mod._SceneJob | None = None  # the scene cuts, run alongside Whisper
+    overlap: scene_mod.SceneJob | None = None  # the scene cuts, run alongside Whisper
     segments: list[Segment] = []
     lufs_data: tuple[np.ndarray, np.ndarray] | None = None
     if info.audio_streams:
@@ -1304,7 +1304,7 @@ def analyze_source(
                 free = getattr(tr, "device", None) == "cuda" and not (cpu_busy and cpu_busy())
                 limit = span if read_error else None
                 lead = {"readable_from": readable_from} if readable_from is not None else {}
-                overlap = scene_mod._SceneJob(io, cdir, span, offset, limit, free, **lead)
+                overlap = scene_mod.SceneJob(io, cdir, span, offset, limit, free, **lead)
             segments = _transcript(wav, cdir, tr, transcribed if report else None, src)
             tick("transcribe_s", t0)
             if on_transcript is not None:
@@ -1330,7 +1330,7 @@ def analyze_source(
     edge_cuts: scene_mod.EdgeCuts | None = None
     # A style that does not weigh the scene curve: cuts only around candidate edges (#730), in a
     # container that seeks exactly (MPEG-TS takes the full pass, #976)
-    windowed = use_scenes and scene_mod.edge_windows(style, span) and scene_mod._seeks_exactly(io)
+    windowed = use_scenes and scene_mod.edge_windows(style, span) and scene_mod.seeks_exactly(io)
     if windowed:  # a full pass already cached is used as it is
         if (found := cache.load_json(cdir / scene_mod.SCENES_FILE)) is not None:
             cuts = found
@@ -1426,7 +1426,7 @@ def pick_candidates(
         _cover_edges(ps, cands)
         snap_index = _SnapIndex(segments)
         for c in cands:
-            _snap(c, ps.cuts, segments, span, style, snap_index)
+            snap(c, ps.cuts, segments, span, style, snap_index)
         cands = _resolve_overlaps(cands, style)
         taken = [(c.start, c.end) for c in cands]
         tail = [c for c in tail if not any(a <= c.peak_t <= b for a, b in taken)]
@@ -1499,7 +1499,7 @@ def describe_candidates(
         if not c.label_hint:  # action-cam picks bring their own ("jump 0.6s", "crash 7g")
             c.label_hint = strong[0] if strong else ""
         said = [w for w in words if c.start <= w["start"] <= c.end]
-        c.transcript, c.transcript_unsure = _transcript_snippet(said)
+        c.transcript, c.transcript_unsure = transcript_snippet(said)
         if offset:  # back to absolute source time: clips cut the original file
             c.start, c.end = round(c.start + offset, 3), round(c.end + offset, 3)
             c.peak_t += offset
@@ -1535,7 +1535,7 @@ def _place_free(
     _cover_edges(ps, cands)
     snap_index = _SnapIndex(ps.segments)
     for c in cands:
-        _snap(c, ps.cuts, ps.segments, span, style, snap_index)
+        snap(c, ps.cuts, ps.segments, span, style, snap_index)
     cands = [
         c for c in _resolve_overlaps(cands, style) if c.over or _fit_free(c, taken, span, style)
     ]
@@ -1698,7 +1698,7 @@ def cached_grid_parts(hl: dict[str, Any], style: Style) -> list[GridPart]:
     return out
 
 
-def _transcript_snippet(
+def transcript_snippet(
     words: list[dict[str, Any]],
 ) -> tuple[str, list[tuple[int, float]] | None]:
     """A transcript snippet of ``words`` (at most ``SNIPPET_CHARS``) and the words Whisper was
@@ -1778,13 +1778,13 @@ def _action_cam_candidates(
             event=p.event if any(p is f for f in forced) else None,
         )
         # Word edges only (no scene snapping): never cut a word in half.
-        _snap(c, [], segments, span, style, snap_index)
+        snap(c, [], segments, span, style, snap_index)
         cands.append(c)
     timings["action_cam_s"] = round(timings.get("action_cam_s", 0.0) + time.perf_counter() - t0, 2)
     return cands, src_avail
 
 
-def _find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[Path]:
+def find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[Path]:
     """``find_videos`` for one input, read through ``source_remap`` when it is missing.
 
     A missing file or folder whose ``source_remap`` target exists is listed there;
@@ -1818,25 +1818,25 @@ def _find_input(target: Path, exclude: Sequence[str], recursive: bool) -> list[P
     return found
 
 
-def _find_inputs(
+def find_inputs(
     target: Path | Sequence[Path], exclude: Sequence[str], recursive: bool
 ) -> list[Path]:
-    """Videos of every input (see :func:`_find_input`), de-duplicated, in input order."""
+    """Videos of every input (see :func:`find_input`), de-duplicated, in input order."""
     targets = [target] if isinstance(target, (str, Path)) else target
-    found = [p for t in targets for p in _find_input(Path(t), exclude, recursive)]
+    found = [p for t in targets for p in find_input(Path(t), exclude, recursive)]
     return list(dict.fromkeys(found))
 
 
 def find_sources(
     target: Path | Sequence[Path], exclude: Sequence[str], recursive: bool
 ) -> list[Path]:
-    """The sources ``analyze`` reads for ``target`` (:func:`_find_inputs`), de-duplicated by
+    """The sources ``analyze`` reads for ``target`` (:func:`find_inputs`), de-duplicated by
     the file actually read (``source_remap``; the first spelling given is the one recorded).
 
     Raises:
         FileNotFoundError: If no video is found.
     """
-    found = _find_inputs(target, exclude, recursive)
+    found = find_inputs(target, exclude, recursive)
     # Projects record the original paths; files are read through config source_remap.
     by_read: dict[Path, Path] = {}
     for s in found:
@@ -2457,7 +2457,7 @@ def _features_by_source(results: list[SourceResult]) -> dict[str, list[str]]:
     return out
 
 
-def _candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str, Any]:
+def candidate_record(c: Candidate, source_index: int, style: Style) -> dict[str, Any]:
     """A highlights.json candidate without its ``id`` (given by the final rank)."""
     return {
         "source": str(c.source),
@@ -2520,7 +2520,7 @@ def _visual_pool(
         r = results[w.index]
         words = r.signals.words if r.signals is not None else []
         said = [x for x in words if w.start - r.offset <= x["start"] <= w.end - r.offset]
-        transcript, unsure = _transcript_snippet(said)
+        transcript, unsure = transcript_snippet(said)
         out.append(
             {
                 "id": f"v{i:03d}",
@@ -3450,7 +3450,7 @@ def _records(parts: Sequence[CrashPart], style: Style) -> list[dict[str, Any]]:
     """The candidates of ``parts``, best first; ``source_index`` is the index into ``parts``."""
     found = [(c, i) for i, r in enumerate(parts) for c in r.candidates]
     found.sort(key=lambda ci: -ci[0].score)
-    return [_candidate_record(c, i, style) for c, i in found]
+    return [candidate_record(c, i, style) for c, i in found]
 
 
 def rank_parts(
@@ -3517,7 +3517,7 @@ def rank_parts(
 
     # ---- 6. vision: the rating of the default edit and the moments below its cut, blended into
     # their scores
-    vision_step._vision_step(
+    vision_step.vision_step(
         hl,
         ev,
         grids,

@@ -626,9 +626,9 @@ def _stage_files(targets: Sequence[Path], exclude: Sequence[str], recursive: boo
         FileNotFoundError: As ``find_videos``, when an input cannot be listed.
     """
     # Lazy: analyze is heavy and stage is imported by the CLI at startup.
-    from cutpoint.analyze import _find_inputs  # noqa: PLC0415
+    from cutpoint.analyze import find_inputs  # noqa: PLC0415
 
-    found = _find_inputs(list(targets), exclude, recursive)
+    found = find_inputs(list(targets), exclude, recursive)
     return list(dict.fromkeys(remap_source(p) for p in found))
 
 

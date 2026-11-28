@@ -300,7 +300,7 @@ def _vision_batches(top: list[dict[str, Any]], size: int) -> list[list[dict[str,
     return [[c for g in parts[i : i + size] for c in g] for i in range(0, len(parts), size)]
 
 
-def _vision_step(
+def vision_step(
     hl: dict[str, Any],
     ev: Any,
     grids: list[GridPart],

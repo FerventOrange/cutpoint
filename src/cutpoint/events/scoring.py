@@ -910,7 +910,7 @@ def nominate(
         if not segs(src):
             return None
         said = [w for w in flat_words(segs(src)) if a <= w["start"] <= b]
-        return analyze._transcript_snippet(said)
+        return analyze.transcript_snippet(said)
 
     grids = parts
 
@@ -1004,7 +1004,7 @@ def nominate(
             taken = [(c["start"], c["end"]) for c in kept if c["source"] == src]  # pool too
             recs = []
             for c in analyze.nominate_candidates(part, style, here, taken):
-                rec = analyze._candidate_record(c, part.index, style)
+                rec = analyze.candidate_record(c, part.index, style)
                 rec["signals"]["events"] = {"nominated": c.nominated}
                 if any(str(n).startswith("dialogue-") for n in c.nominated) and (
                     title := stretch_title(by_src[src], src, rec["start"], rec["end"])
