@@ -52,8 +52,9 @@ def _run_sh_version_check(version: str) -> subprocess.CompletedProcess[str]:
     text = (_ROOT / "install.sh").read_text(encoding="utf-8")
     die = re.search(r"^die\(\) \{.*?^\}", text, re.S | re.M)
     check = re.search(r"^check_version\(\) \{.*?^\}", text, re.S | re.M)
-    assert die and check
-    script = f"{die.group(0)}\n{check.group(0)}\nCUTPOINT_VERSION={version}\ncheck_version\n"
+    clamp = re.search(r"^clamp_num\(\) \{.*?^\}", text, re.S | re.M)
+    assert die and check and clamp
+    script = f"{die.group(0)}\n{clamp.group(0)}\n{check.group(0)}\nCUTPOINT_VERSION={version}\ncheck_version\n"
     return subprocess.run(
         ["sh", "-c", script], capture_output=True, text=True, timeout=30, check=False
     )  # fmt: skip
@@ -80,11 +81,114 @@ def test_install_sh_allows_0_4_0_and_later_and_unparsable(version):
     assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
 
 
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.parametrize("version", ["0.99999999999.0", "99999999999999999999.1.0", "0.00004.0"])
+def test_install_sh_leaves_an_oversized_version_part_to_uv(version):
+    """A part too big for shell arithmetic is a huge number, not an `integer expression` error."""
+    done = _run_sh_version_check(version)
+    assert (done.returncode, done.stdout, done.stderr) == (0, "", "")
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.parametrize("version", ["0.00003.0", "000.3.1"])
+def test_install_sh_refuses_an_old_version_written_with_leading_zeros(version):
+    assert _run_sh_version_check(version).returncode == 1
+
+
+@pytest.mark.skipif(shutil.which("sh") is None, reason="sh not on PATH")
+@pytest.mark.parametrize(
+    ("uv_version", "ok"),
+    [("0.13.0", 0), ("0.12.9", 1), ("1.0.0", 0), ("0.99999999999.0", 0),
+     ("99999999999999999999.0.0", 0), ("0.5", 1)],
+)  # fmt: skip
+def test_install_sh_uv_version_check_survives_oversized_parts(uv_version, ok):
+    text = (_ROOT / "install.sh").read_text(encoding="utf-8")
+    funcs = [
+        re.search(rf"^{n}\(\) \{{.*?^\}}", text, re.S | re.M)
+        for n in ("clamp_num", "uv_version_ok")
+    ]
+    assert all(funcs)
+    script = (
+        "UV_MIN_MAJOR=0\nUV_MIN_MINOR=13\n"
+        + "\n".join(m.group(0) for m in funcs)
+        + f"\nuv() {{ echo 'uv {uv_version}'; }}\nuv_version_ok\n"
+    )
+    done = subprocess.run(
+        ["sh", "-c", script], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert (done.returncode, done.stderr) == (ok, "")
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None and shutil.which("powershell") is None,
+                    reason="PowerShell not on PATH")  # fmt: skip
+@pytest.mark.parametrize("version", ["0.99999999999.0", "99999999999999999999.1.0", "0.00004.0"])
+def test_install_ps1_test_version_survives_an_oversized_part(version):
+    """Windows CI runs this: an oversized part is left to uv, never a cast error."""
+    text = (_ROOT / "install.ps1").read_text(encoding="utf-8")
+    parts = [re.search(rf"^    function {n}\b.*?^    \}}", text, re.S | re.M)
+             for n in ("ConvertTo-VersionPart", "Test-Version")]  # fmt: skip
+    assert all(parts)
+    script = (
+        "$ErrorActionPreference = 'Stop'\nfunction Die($m) { throw $m }\n"
+        + "\n".join(m.group(0) for m in parts)
+        + f"\nTest-Version '{version}'\n'ok'\n"
+    )
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    done = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=60, check=False)  # fmt: skip
+    assert (done.returncode, done.stdout.strip(), done.stderr) == (0, "ok", "")
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None and shutil.which("powershell") is None,
+                    reason="PowerShell not on PATH")  # fmt: skip
+@pytest.mark.parametrize("version", ["0.3.0", "0.00003.0", "000.3.1"])
+def test_install_ps1_test_version_still_refuses_an_old_version(version):
+    text = (_ROOT / "install.ps1").read_text(encoding="utf-8")
+    parts = [re.search(rf"^    function {n}\b.*?^    \}}", text, re.S | re.M)
+             for n in ("ConvertTo-VersionPart", "Test-Version")]  # fmt: skip
+    assert all(parts)
+    script = (
+        "$ErrorActionPreference = 'Stop'\nfunction Die($m) { throw $m }\n"
+        + "\n".join(m.group(0) for m in parts)
+        + f"\nTest-Version '{version}'\n'ok'\n"
+    )
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    done = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=60, check=False)  # fmt: skip
+    assert done.returncode != 0
+    assert "older than 0.4.0" in done.stderr
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None and shutil.which("powershell") is None,
+                    reason="PowerShell not on PATH")  # fmt: skip
+@pytest.mark.parametrize(
+    ("uv_version", "ok"),
+    [("0.12.9", "False"), ("0.13.0", "True"), ("0.99999999999.0", "True")],
+)
+def test_install_ps1_uv_version_check_survives_oversized_parts(uv_version, ok):
+    text = (_ROOT / "install.ps1").read_text(encoding="utf-8")
+    parts = [re.search(rf"^    function {n}\b.*?^    \}}", text, re.S | re.M)
+             for n in ("ConvertTo-VersionPart", "Test-UvVersionOk")]  # fmt: skip
+    assert all(parts)
+    script = (
+        "$ErrorActionPreference = 'Stop'\n$UV_MIN_MAJOR = 0\n$UV_MIN_MINOR = 13\n"
+        + f"function Get-UvVersionText {{ '{uv_version}' }}\n"
+        + "\n".join(m.group(0) for m in parts)
+        + "\nTest-UvVersionOk\n"
+    )
+    exe = shutil.which("pwsh") or shutil.which("powershell")
+    done = subprocess.run([exe, "-NoProfile", "-NonInteractive", "-Command", script],
+                          capture_output=True, text=True, timeout=60, check=False)  # fmt: skip
+    assert (done.returncode, done.stdout.strip(), done.stderr) == (0, ok, "")
+
+
 def test_install_ps1_has_the_same_version_floor():
     text = (_ROOT / "install.ps1").read_text(encoding="utf-8")
     assert 'if ($S.Source -eq "pypi") { Test-Version $S.Version }' in text
     assert r"-match '^v?(\d+)\.(\d+)'" in text
-    assert "[int]$Matches[1] -eq 0 -and [int]$Matches[2] -lt 4" in text
+    assert "(ConvertTo-VersionPart $Matches[1]) -eq 0" in text
+    assert "(ConvertTo-VersionPart $Matches[2]) -lt 4" in text
+    assert "[int]$Matches[2]" not in text
     sh = (_ROOT / "install.sh").read_text(encoding="utf-8")
     msg = "is older than 0.4.0, the oldest release this installer can install; install it with pip or uv directly, or use a newer version."
     assert msg in text and msg in sh

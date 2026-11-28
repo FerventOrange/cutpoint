@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The installers (`install.sh`, `install.ps1`) refuse or pass on a version with a very long number part (such as `0.99999999999.0`) cleanly instead of failing with a shell or PowerShell conversion error (#1273).
 - A scene pass that was hard-killed (power loss, a forced kill) no longer leaves its large split and window scene proxies in the source cache: the next scene pass removes those of runs that are gone (#1271).
 - `mix` content QA no longer fails an under-filled selection of three or more categories inside the length window on max_share: it accepts up to 48% (40% of the budget at the shortest accepted length) (#1272).
 - Action-cam telemetry, crash and mix steps turn a time into its 0.1 s bin the same way (#1085, A187): a time on a bin edge, such as 0.3 s, was read one bin early through float error (`int(0.3 / 0.1)` is 2), and the voice features of a recovered part were sliced at a rounded offset while its telemetry was sliced at a rounded-down one. Crash stop times, a crash clip's end, painted telemetry spans and the mix's lift and moment windows can move by one bin (0.1 s) on new analyses (cached telemetry is recomputed once), so a borderline crash or moment can come or go.
