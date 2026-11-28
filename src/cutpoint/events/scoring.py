@@ -1117,7 +1117,7 @@ def rescore_highlights(project: Path) -> int:
         Number of candidates whose score changed (0 if either file is missing).
     """
     hl = projectfiles.load_highlights(project)
-    ev = cache.load_json(project / "events.json")
+    ev = cache.load_json(project / projectfiles.EVENTS_JSON)
     if not hl or not ev:
         return 0
     # widened spans back to their own first: the menu check below sees the real candidates,

@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from cutpoint import cache, jsonout, memguard, progress, tsrepair
+from cutpoint import cache, jsonout, memguard, progress, projectfiles, tsrepair
 from cutpoint import paths as cutpoint_paths
 from cutpoint.errors import LowMemoryError
 from cutpoint.events import explosions, paths
@@ -1374,7 +1374,7 @@ def _telemetry_layer(
     """
     from cutpoint.telemetry import DT, extract  # noqa: PLC0415
 
-    data = cache.load_json(project / "telemetry.json") or {}
+    data = cache.load_json(project / projectfiles.TELEMETRY) or {}
     out: dict[str, list[dict[str, Any]]] = {}
     guard = SourceGuard("Telemetry coverage", log=logger)
     for s in sources:

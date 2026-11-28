@@ -81,7 +81,16 @@ from cutpoint.ffmpeg_utils import (
     wav_duration,
 )
 from cutpoint.progress import ANALYZE_STEPS, LABELS, SKIPPABLE
-from cutpoint.projectfiles import HIGHLIGHTS, PRE_EVENTS
+from cutpoint.projectfiles import (
+    ACTIVITY,
+    CRASHES,
+    EVENTS_JSON,
+    EVENTS_TXT,
+    HIGHLIGHTS,
+    PRE_EVENTS,
+    TELEMETRY,
+    TRANSCRIPT,
+)
 from cutpoint.sources import READ_ERRORS_FILE, load_read_errors, source_segments
 from cutpoint.styles import (
     ACTION_CAM,
@@ -181,15 +190,15 @@ MAX_RECOVERED_PARTS = 5  # per source
 # purpose: discovery/ (HUD discovery's proposal, for the preset it installs in the user's
 # preset folder at once) and the caches outside the project.
 HELD_OUTPUTS = (
-    "transcript.txt",
+    TRANSCRIPT,
     HIGHLIGHTS,
     PRE_EVENTS,  # deleted once ranked with the events
-    "events.json",
-    "events.txt",
-    "crashes.json",
+    EVENTS_JSON,
+    EVENTS_TXT,
+    CRASHES,
     "crash_check",  # the crash contact sheets crashes.json names
-    "activity.json",
-    "telemetry.json",  # action-cam
+    ACTIVITY,
+    TELEMETRY,  # action-cam
     "action_cam_features",
 )
 
@@ -2193,7 +2202,7 @@ def _ocr_options(project: Path, *, log: bool = True) -> tuple[tuple[str, ...], s
     from cutpoint.config import player_tags  # noqa: PLC0415
 
     tags, game = player_tags(), "auto"
-    doc = cache.load_json(project / "events.json")
+    doc = cache.load_json(project / EVENTS_JSON)
     settings = doc.get("settings") if isinstance(doc, dict) else None
     prev = settings.get("ocr") if isinstance(settings, dict) else None
     if not isinstance(prev, dict):
@@ -2339,7 +2348,7 @@ def _dialogue_alone(
     from cutpoint.events.common import pending_highlights  # noqa: PLC0415
 
     with _StepHook(steps)("dialogue"):
-        doc = cache.load_json(project / "events.json")
+        doc = cache.load_json(project / EVENTS_JSON)
         old = doc.get("events") if isinstance(doc, dict) else None
         audio = [e for e in old or [] if isinstance(e, dict) and e.get("kind") == "audio"]
         found = reader(audio)
@@ -3426,9 +3435,7 @@ def _write_outputs(
         timings["rerank_s"] = took
     # Text mode's line endings, as a plain write_text gave them; highlights.json last, so
     # the commit renames it last.
-    cache.save_bytes(
-        out_dir / "transcript.txt", transcript.replace("\n", os.linesep).encode("utf-8")
-    )
+    cache.save_bytes(out_dir / TRANSCRIPT, transcript.replace("\n", os.linesep).encode("utf-8"))
     out = out_dir / HIGHLIGHTS
     cache.save_json(out, backends.saved_settings(hl), durable=True)
     if ev:  # ranked with the events: a pre-events copy of an older analysis is stale
@@ -3497,7 +3504,7 @@ def rank_parts(
     hl["candidates"] = _records(parts, style)
     ev = None
     if style.kind != ACTION_CAM:  # action-cam: the events are features of its scorer
-        ev = cache.load_json(project / "events.json")
+        ev = cache.load_json(project / EVENTS_JSON)
     grids = [
         GridPart(r.source, i, r.offset, r.duration, r.signals)
         for i, r in enumerate(parts)
@@ -3564,7 +3571,7 @@ def report_highlights(out_dir: Path, highlights: Path) -> None:
     saved = cache.load_json(highlights)
     saved = saved if isinstance(saved, dict) else {}
     jsonout.output("highlights", highlights)
-    jsonout.output("transcript", out_dir / "transcript.txt")
+    jsonout.output("transcript", out_dir / TRANSCRIPT)
     jsonout.output("candidates", len(saved.get("candidates") or []))
     from cutpoint import visual_pool  # noqa: PLC0415
 
