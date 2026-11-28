@@ -25,9 +25,10 @@ Kinds (each outside the lift/still mask):
 Per source at most :data:`PER_KIND` of each kind and :data:`PER_SOURCE` in all, with no
 overlap between them and :data:`SPACING_S` between two of a kind; a window that overlaps a
 scored candidate of its source by :data:`SCORED_OVERLAP` of the shorter clip or more is
-dropped. ``analyze`` writes them as ``pool: "visual"`` candidates (ids ``v001``...) with
-``score`` = peak x 10 (display only); :func:`cutpoint.planning.select_moments` gives them a
-few reserved slots (:func:`reserved_slots`, :data:`SLOT_MIN_PEAK`).
+dropped. ``analyze`` writes them as ``pool: "visual"`` candidates
+(:func:`cutpoint.pool_record.is_pool`; ids ``v001``...) with ``score`` = peak x 10 (display
+only); :func:`cutpoint.planning.select_moments` gives them a few reserved slots
+(:func:`reserved_slots`, :data:`SLOT_MIN_PEAK`).
 """
 
 from __future__ import annotations
@@ -45,7 +46,6 @@ from cutpoint.dsp import bin_of, clean_mask, mask_runs
 from cutpoint.intervals import overlap
 from cutpoint.styles import ACTION_CAM, Style, style_name
 
-POOL = "visual"  # the ``pool`` value of these candidates
 POOL_BASES = ("action", "sport")  # with the action-cam kind: the styles that get a pool
 KINDS = ("view", "crew", "cruise")
 LABELS = {
@@ -134,11 +134,6 @@ def project_has_pool(hl: Mapping[str, Any]) -> bool:
         or hl.get("style_base") in POOL_BASES
         or style_name(hl) in POOL_BASES
     )
-
-
-def is_pool(c: Mapping[str, Any]) -> bool:
-    """Whether the candidate ``c`` is a pool moment."""
-    return c.get("pool") == POOL
 
 
 def peak_of(c: Mapping[str, Any]) -> float:

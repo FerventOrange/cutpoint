@@ -48,6 +48,7 @@ from cutpoint import (
 from cutpoint.config import projects_dir, remap_source
 from cutpoint.errors import NeedsAnalyzeError, StaleRankingError
 from cutpoint.ffmpeg_utils import probe
+from cutpoint.pool_record import is_pool
 from cutpoint.projectfiles import EVENTS_JSON, HIGHLIGHTS, RERANK_BACKUP, check_candidates
 from cutpoint.scenes import scores_scenes
 from cutpoint.styles import ACTION_CAM, Style, style_hash
@@ -666,8 +667,6 @@ def rerank(
 
 def _ranks(hl: dict[str, Any]) -> dict[str, int]:
     """The rank (1 = first) of each scored candidate's id in ``hl`` (its file order)."""
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415
-
     cands = [c for c in hl.get("candidates") or [] if not is_pool(c) and "id" in c]
     return {str(c["id"]): i for i, c in enumerate(cands, 1)}
 
@@ -676,8 +675,6 @@ def rows(hl: dict[str, Any], top: int, other: dict[str, Any] | None = None) -> l
     """The first ``top`` scored candidates of ``hl``: ``rank``, ``id``, ``source``, ``start``,
     ``end``, ``score``, ``label`` and, with ``other`` (the ranking compared with), ``was``: the
     id's rank there, or None for a span it does not have."""
-    from cutpoint.visual_pool import is_pool  # noqa: PLC0415
-
     there = _ranks(other) if other is not None else None
     cands = [c for c in hl.get("candidates") or [] if not is_pool(c)][:top]
     out = []
